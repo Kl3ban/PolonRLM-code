@@ -1,0 +1,79 @@
+{
+  "name": "polonrlm-agent",
+  "version": "0.5.0",
+  "description": "Modular, budget-aware terminal coding agent for Windows and Node.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kl3ban/PolonRLM-code.git"
+  },
+  "homepage": "https://github.com/Kl3ban/PolonRLM-code#readme",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "PolonRLM": "bin/polonrlm.cjs",
+    "polonrlm": "bin/polonrlm.cjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "skills",
+    "src",
+    "tests",
+    "scripts",
+    "docs",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test tests/*.test.ts",
+    "start": "node bin/polonrlm.cjs",
+    "bench": "node scripts/benchmark.mjs",
+    "test:live": "node scripts/live-smoke.mjs",
+    "test:web:live": "tsx scripts/live-web-smoke.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.98",
+    "@ai-sdk/google": "^4.0.113",
+    "@ai-sdk/openai": "^4.0.110",
+    "@ai-sdk/openai-compatible": "^3.0.86",
+    "@inquirer/prompts": "^8.7.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ai": "^7.0.164",
+    "cli-highlight": "^2.1.11",
+    "diff": "^9.0.0",
+    "exceljs": "^4.4.0",
+    "execa": "^10.2.1",
+    "ink": "^8.0.0",
+    "mammoth": "^1.13.0",
+    "marked": "^18.1.3",
+    "pdfjs-dist": "^6.5.438",
+    "playwright": "^1.65.0",
+    "react": "^19.3.1",
+    "string-width": "^8.3.0",
+    "typescript-api": "npm:typescript@^5.9.3",
+    "wrap-ansi": "^10.0.2",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  }
+}

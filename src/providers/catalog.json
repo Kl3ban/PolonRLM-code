@@ -1,0 +1,254 @@
+[
+  {
+    "id": "fireworks-ai",
+    "name": "Fireworks AI",
+    "baseURL": "https://api.fireworks.ai/inference/v1",
+    "apiKeyEnv": "FIREWORKS_API_KEY"
+  },
+  {
+    "id": "huggingface",
+    "name": "Hugging Face",
+    "baseURL": "https://router.huggingface.co/v1",
+    "apiKeyEnv": "HF_TOKEN"
+  },
+  {
+    "id": "moonshotai",
+    "name": "Moonshot AI",
+    "baseURL": "https://api.moonshot.ai/v1",
+    "apiKeyEnv": "MOONSHOT_API_KEY"
+  },
+  {
+    "id": "alibaba",
+    "name": "Alibaba",
+    "baseURL": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "apiKeyEnv": "DASHSCOPE_API_KEY"
+  },
+  {
+    "id": "zai",
+    "name": "Z.AI",
+    "baseURL": "https://api.z.ai/api/paas/v4",
+    "apiKeyEnv": "ZHIPU_API_KEY"
+  },
+  {
+    "id": "zhipuai",
+    "name": "Zhipu AI",
+    "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+    "apiKeyEnv": "ZHIPU_API_KEY"
+  },
+  {
+    "id": "siliconflow",
+    "name": "SiliconFlow",
+    "baseURL": "https://api.siliconflow.com/v1",
+    "apiKeyEnv": "SILICONFLOW_API_KEY"
+  },
+  {
+    "id": "novita-ai",
+    "name": "Novita AI",
+    "baseURL": "https://api.novita.ai/openai",
+    "apiKeyEnv": "NOVITA_API_KEY"
+  },
+  {
+    "id": "sambanova",
+    "name": "SambaNova",
+    "baseURL": "https://api.sambanova.ai/v1",
+    "apiKeyEnv": "SAMBANOVA_API_KEY"
+  },
+  {
+    "id": "nebius",
+    "name": "Nebius Token Factory",
+    "baseURL": "https://api.tokenfactory.nebius.com/v1",
+    "apiKeyEnv": "NEBIUS_API_KEY"
+  },
+  {
+    "id": "scaleway",
+    "name": "Scaleway",
+    "baseURL": "https://api.scaleway.ai/v1",
+    "apiKeyEnv": "SCALEWAY_API_KEY"
+  },
+  {
+    "id": "ovhcloud",
+    "name": "OVHcloud AI Endpoints",
+    "baseURL": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+    "apiKeyEnv": "OVHCLOUD_API_KEY"
+  },
+  {
+    "id": "baseten",
+    "name": "Baseten",
+    "baseURL": "https://inference.baseten.co/v1",
+    "apiKeyEnv": "BASETEN_API_KEY"
+  },
+  {
+    "id": "chutes",
+    "name": "Chutes",
+    "baseURL": "https://llm.chutes.ai/v1",
+    "apiKeyEnv": "CHUTES_API_KEY"
+  },
+  {
+    "id": "inception",
+    "name": "Inception",
+    "baseURL": "https://api.inceptionlabs.ai/v1",
+    "apiKeyEnv": "INCEPTION_API_KEY"
+  },
+  {
+    "id": "ai21",
+    "name": "AI21 Labs",
+    "baseURL": "https://api.ai21.com/studio/v1",
+    "apiKeyEnv": "AI21_API_KEY"
+  },
+  {
+    "id": "upstage",
+    "name": "Upstage",
+    "baseURL": "https://api.upstage.ai/v1/solar",
+    "apiKeyEnv": "UPSTAGE_API_KEY"
+  },
+  {
+    "id": "stepfun",
+    "name": "StepFun (China)",
+    "baseURL": "https://api.stepfun.com/v1",
+    "apiKeyEnv": "STEPFUN_API_KEY"
+  },
+  {
+    "id": "xiaomi",
+    "name": "Xiaomi",
+    "baseURL": "https://api.xiaomimimo.com/v1",
+    "apiKeyEnv": "XIAOMI_API_KEY"
+  },
+  {
+    "id": "longcat",
+    "name": "LongCat",
+    "baseURL": "https://api.longcat.chat/openai",
+    "apiKeyEnv": "LONGCAT_API_KEY"
+  },
+  {
+    "id": "poe",
+    "name": "Poe",
+    "baseURL": "https://api.poe.com/v1",
+    "apiKeyEnv": "POE_API_KEY"
+  },
+  {
+    "id": "requesty",
+    "name": "Requesty",
+    "baseURL": "https://router.requesty.ai/v1",
+    "apiKeyEnv": "REQUESTY_API_KEY"
+  },
+  {
+    "id": "helicone",
+    "name": "Helicone",
+    "baseURL": "https://ai-gateway.helicone.ai/v1",
+    "apiKeyEnv": "HELICONE_API_KEY"
+  },
+  {
+    "id": "aimlapi",
+    "name": "AI/ML API",
+    "baseURL": "https://api.aimlapi.com/v1",
+    "apiKeyEnv": "AIMLAPI_API_KEY"
+  },
+  {
+    "id": "302ai",
+    "name": "302.AI",
+    "baseURL": "https://api.302.ai/v1",
+    "apiKeyEnv": "302AI_API_KEY"
+  },
+  {
+    "id": "friendli",
+    "name": "Friendli",
+    "baseURL": "https://api.friendli.ai/serverless/v1",
+    "apiKeyEnv": "FRIENDLI_TOKEN"
+  },
+  {
+    "id": "vultr",
+    "name": "Vultr",
+    "baseURL": "https://api.vultrinference.com/v1",
+    "apiKeyEnv": "VULTR_API_KEY"
+  },
+  {
+    "id": "digitalocean",
+    "name": "DigitalOcean",
+    "baseURL": "https://inference.do-ai.run/v1",
+    "apiKeyEnv": "DIGITALOCEAN_ACCESS_TOKEN"
+  },
+  {
+    "id": "gmicloud",
+    "name": "GMI Cloud",
+    "baseURL": "https://api.gmi-serving.com/v1",
+    "apiKeyEnv": "GMICLOUD_API_KEY"
+  },
+  {
+    "id": "tinfoil",
+    "name": "Tinfoil",
+    "baseURL": "https://inference.tinfoil.sh/v1",
+    "apiKeyEnv": "TINFOIL_API_KEY"
+  },
+  {
+    "id": "nearai",
+    "name": "NEAR AI Cloud",
+    "baseURL": "https://cloud-api.near.ai/v1",
+    "apiKeyEnv": "NEARAI_API_KEY"
+  },
+  {
+    "id": "modelscope",
+    "name": "ModelScope",
+    "baseURL": "https://api-inference.modelscope.cn/v1",
+    "apiKeyEnv": "MODELSCOPE_API_KEY"
+  },
+  {
+    "id": "clarifai",
+    "name": "Clarifai",
+    "baseURL": "https://api.clarifai.com/v2/ext/openai/v1",
+    "apiKeyEnv": "CLARIFAI_PAT"
+  },
+  {
+    "id": "nano-gpt",
+    "name": "NanoGPT",
+    "baseURL": "https://nano-gpt.com/api/v1",
+    "apiKeyEnv": "NANO_GPT_API_KEY"
+  },
+  {
+    "id": "llmgateway-providers",
+    "name": "LLM Gateway",
+    "baseURL": "https://api.llmgateway.io/v1",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY"
+  },
+  {
+    "id": "edenai",
+    "name": "Eden AI",
+    "baseURL": "https://api.edenai.run/v3",
+    "apiKeyEnv": "EDENAI_API_KEY"
+  },
+  {
+    "id": "kilo",
+    "name": "Kilo Gateway",
+    "baseURL": "https://api.kilo.ai/api/gateway",
+    "apiKeyEnv": "KILO_API_KEY"
+  },
+  {
+    "id": "llmgateway",
+    "name": "DevPass (LLM Gateway)",
+    "baseURL": "https://api.llmgateway.io/v1",
+    "apiKeyEnv": "LLMGATEWAY_API_KEY"
+  },
+  {
+    "id": "orcarouter",
+    "name": "OrcaRouter",
+    "baseURL": "https://api.orcarouter.ai/v1",
+    "apiKeyEnv": "ORCAROUTER_API_KEY"
+  },
+  {
+    "id": "zenmux",
+    "name": "ZenMux",
+    "baseURL": "https://zenmux.ai/api/v1",
+    "apiKeyEnv": "ZENMUX_API_KEY"
+  },
+  {
+    "id": "xai",
+    "name": "xAI (Grok)",
+    "baseURL": "https://api.x.ai/v1",
+    "apiKeyEnv": "XAI_API_KEY"
+  },
+  {
+    "id": "perplexity-agent",
+    "name": "Perplexity",
+    "baseURL": "https://api.perplexity.ai/v1",
+    "apiKeyEnv": "PERPLEXITY_API_KEY"
+  }
+]

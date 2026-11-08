@@ -1,0 +1,4 @@
+curl_cffi==0.17.0
+trafilatura==2.3.1
+rank-bm25==0.2.2
+pydantic==2.14.3
