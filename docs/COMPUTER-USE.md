@@ -25,7 +25,7 @@ There is no overlay, separate preview window, or animation. A screenshot capture
 
 ## User images
 
-Press `Ctrl+Shift+V` in the task field to paste an image from the Windows clipboard. `Alt+I` opens attachments: `A` adds an image from a file, `P` pastes from the clipboard, `X` removes the selected image, and `C` clears the list. Up to four PNG, JPEG, WebP, or GIF images can be attached, each up to 8 MB. The list and the selected model's vision support are shown before sending. Images are not stored in SQLite conversation history.
+Press `Ctrl+V` in the task field to paste a Windows clipboard screenshot or text. An image takes priority when both formats are present. The composer shows `Screenshot.png` and confirms `Screenshot attached`. You can send an image without typing a description. The conversation keeps the attachment name, while image bytes are available only during that run. `Ctrl+Shift+V` also attaches an image if your terminal forwards the shortcut. `Alt+I` opens attachments: `A` adds an image from a file, `P` pastes from the clipboard, `X` removes the selected image, and `C` clears the list. Up to four PNG, JPEG, WebP, or GIF images can be attached, each up to 8 MB. The list and the selected model's vision support are shown before sending. Images are not stored in SQLite conversation history.
 
 You can also use `/image "C:\Users\Administrator\Pictures\image.png"`, then send a normal message describing the task. `/image clear` removes pending images.
 

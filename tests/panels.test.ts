@@ -188,15 +188,15 @@ test('attachment panel lists model vision status and adds file and clipboard ima
   view.app.stdin.write('\u0018\u0001\u0003');
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.match(view.app.lastFrame() ?? '', /reference\.png/);
-  assert.doesNotMatch(view.app.lastFrame() ?? '', /Plik:/);
+  assert.doesNotMatch(view.app.lastFrame() ?? '', /File:/);
   await press(view.app, 'a');
-  await until(() => /Plik:/.test(view.app.lastFrame() ?? ''), 'enter file picker');
+  await until(() => /File:/.test(view.app.lastFrame() ?? ''), 'enter file picker');
   view.app.stdin.write('C:\\Pictures\\second.png');
   await until(() => /second\.png/.test(view.app.lastFrame() ?? ''), 'show image path');
   view.app.stdin.write('\r');
   await until(() => files.length === 1, 'add an image file');
   assert.equal(files[0], 'C:\\Pictures\\second.png');
-  await until(() => !/Wczytywanie obrazu/.test(view.app.lastFrame() ?? ''), 'finish image loading');
+  await until(() => !/File:/.test(view.app.lastFrame() ?? ''), 'finish adding image');
   await press(view.app, 'p');
   await until(() => clipboard.length === 1, 'paste an image from clipboard');
   assert.deepEqual(clipboard, ['clipboard-png']);

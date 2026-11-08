@@ -253,7 +253,7 @@ export class Controller implements UIController {
     const resolved = path.resolve(this.workspace.root, filename);
     this.pendingImages.push(await loadUserImage(resolved)); this.notify();
   }
-  addImageData(data: string, name = 'Schowek.png'): void {
+  addImageData(data: string, name = 'Screenshot.png'): void {
     if (this.state.busy || this.pendingImages.length >= 4) throw new Error(this.state.busy ? 'Add attachments before submitting the task.' : 'Up to 4 images per message.');
     if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new Error('The clipboard does not contain a valid image.');
     this.pendingImages.push(imageFromBuffer(Buffer.from(data, 'base64'), name)); this.notify();
@@ -312,7 +312,8 @@ export class Controller implements UIController {
     return result;
   }
   async submit(text: string): Promise<void> {
-    text = text.trim(); if (!text || this.closing) return;
+    text = text.trim(); if (this.closing || (!text && !this.pendingImages.length)) return;
+    if (!text) text = 'Describe the attached image.';
     if (text.startsWith('/')) { try { await this.command(text); } catch (error: any) { this.note(redact(error.message), 'error'); } return; }
     if (this.state.busy) { this.note('The agent is working. Use /cancel to stop the task.'); return; }
     const visionCandidates = [this.config.settings.provider, ...this.config.settings.fallback]
@@ -321,7 +322,7 @@ export class Controller implements UIController {
     const images = this.pendingImages; this.pendingImages = [];
     this.state.taskUsage = { input: 0, output: 0, cached: 0, cost: 0, costKnown: true };
     this.state.agents = [];
-    this.state.busy = true; this.abort = new AbortController(); this.note(redact(text), 'user');
+    this.state.busy = true; this.abort = new AbortController(); this.note(redact(text) + (images.length ? '\n[Attached: ' + images.map(image => image.name ?? 'Image').join(', ') + ']' : ''), 'user');
     this.active = (async () => {
       try {
         let task = text; const startUsage = this.store.usage(this.session);
@@ -415,7 +416,7 @@ export class Controller implements UIController {
         this.note(`${visible.length} tools available in ${settings.mode}:\n` + visible.map(tool => `${tool.name} — ${tool.description}`).join('\n')); break;
       }
       case '/image': {
-        if (!tail) { this.note(`Attached images: ${this.pendingImages.length}/4. /image "C:\\folder\\image.png" adds a file. Ctrl+Shift+V pastes an image from the clipboard. /image clear removes attachments. Model: ${settings.providers[settings.provider]?.vision === true ? 'supports images' : settings.providers[settings.provider]?.vision === false ? 'does not support images' : 'image support unknown'}.`); break; }
+        if (!tail) { this.note(`Attached images: ${this.pendingImages.length}/4. /image "C:\\folder\\image.png" adds a file. Ctrl+V pastes a screenshot or text from the clipboard. /image clear removes attachments. Model: ${settings.providers[settings.provider]?.vision === true ? 'supports images' : settings.providers[settings.provider]?.vision === false ? 'does not support images' : 'image support unknown'}.`); break; }
         if (tail === 'clear') { this.clearImages(); this.note('Removed pending images.'); break; }
         if (this.pendingImages.length >= 4) throw new Error('Up to 4 images per message.');
         const filename = tail.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1');

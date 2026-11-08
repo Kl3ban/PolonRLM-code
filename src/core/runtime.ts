@@ -35,6 +35,9 @@ function repeatedObservation(name: string, args: Record<string, unknown>): boole
 }
 
 function foldPolish(value: string): string { return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().replaceAll('ł', 'l'); }
+function explicitlyRequestsInteractiveBrowser(task: string): boolean {
+  return /\b(?:use|open|launch|interact with|browse in)\s+(?:the\s+)?(?:web\s+)?browser\b|\b(?:browser tool|browser session|browser automation)\b|(?:użyj|otwórz|uruchom|interaguj z).{0,40}przegl[aą]dark/i.test(task);
+}
 function asksForAction(task: string): boolean {
   return /\b(?:run|execute|create|modify|edit|delete|fix|write|build|test|search|find|inspect|open|close|move|install|uruchom\w*|napraw\w*|utworz\w*|stworz\w*|zmien\w*|zrob\w*|dodal\w*|usun\w*|edytuj\w*|sprawdz\w*|przetestuj\w*|wyszukaj\w*|znajdz\w*|otworz\w*|skopiuj\w*|przenies\w*|pobierz\w*|zmodyfikuj\w*|wdroz\w*|wlacz\w*)\b/i.test(foldPolish(task));
 }
@@ -144,7 +147,7 @@ export class AgentRuntime {
     const budget: RunBudget = { usage: emptyUsage(), reserved: 0, reservedCost: 0, calls: 0, agents: 0, active: 0 };
     const messages = this.store.context(session);
     this.repairInterrupted(session, messages);
-    const user: Message = { role: 'user', content: redact(task), ...(images?.length ? { images } : {}) }; messages.push(user); this.store.append(session, user);
+    const user: Message = { role: 'user', content: redact(task) + (images?.length ? '\n[Attached: ' + images.map(image => image.name ?? 'Image').join(', ') + ']' : ''), ...(images?.length ? { images } : {}) }; messages.push(user); this.store.append(session, user);
     try { return await this.loop(session, messages, signal, budget, 0, 'orchestrator', this.settings.mode); }
     finally { this.repairInterrupted(session, messages); }
   }
@@ -237,10 +240,15 @@ ${skills.join('\n')}`;
     const enabled = new Set(['read_file', 'list_directory', 'search_files', 'search_content', 'inspect_project', 'write_file', 'edit_file', 'apply_patch', 'execute_command', 'run_tests', 'git_status', 'git_diff',
       ...messages.flatMap(message => message.toolCalls?.map(call => call.name) ?? [])]);
     const research = isWebResearch(task);
+    const browserRestrictedForTask = research && !explicitlyRequestsInteractiveBrowser(task);
+    const taskRestrictedTools = new Set<string>();
     if (research) {
       ['web_search', 'read_webpage', 'github_repo_inspector'].forEach(name => enabled.add(name));
-      if (!/kursor|mysz|cursor|mouse|pulpit|desktop|klik/i.test(task)) ['browser', 'browser_sessions', 'browser_automation', 'computer_use'].forEach(name => enabled.delete(name));
+      if (!/kursor|mysz|cursor|mouse|pulpit|desktop|klik/i.test(task)) {
+        ['browser', 'browser_sessions', 'browser_automation', 'computer_use'].forEach(name => { enabled.delete(name); if (browserRestrictedForTask) taskRestrictedTools.add(name); });
+      }
     }
+    if (browserRestrictedForTask) instructions += '\nFor this task, use web_search and read_webpage for ordinary research. Interactive browser tools are unavailable unless the user explicitly asks to use a browser. Do not try to re-enable them with discover_tools.';
     if (/pobierz|download|ściągnij/i.test(task) && /https?:\/\//i.test(task)) enabled.add('download_to_disk');
     const steps = Math.min(this.settings.maxSteps, CORTEX[this.settings.cortex]!.steps, depth ? 12 : Infinity);
     const append = (message: Message) => { messages.push(message); if (!depth) this.store.append(session, message); };
@@ -413,6 +421,7 @@ ${skills.join('\n')}`;
         const signature = callSignature(call.name, call.arguments);
         let duplicateReadOnly = false;
         try {
+          if (taskRestrictedTools.has(call.name)) throw new Error(`Tool ${call.name} is unavailable for ordinary web research. Use web_search and read_webpage, or explicitly ask to use a browser.`);
           if (call.validationError) {
             const active = specs.some(spec => spec.name === call.name);
             const known = available.find(spec => spec.name === call.name);
@@ -466,10 +475,11 @@ ${skills.join('\n')}`;
           } else if (call.name === 'discover_tools') {
             const { query } = z.object({ query: z.string().max(200) }).parse(call.arguments);
             const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-            const found = tools.discovery(mode).filter(spec => words.some(word => `${spec.name} ${spec.description}`.toLowerCase().includes(word))).slice(0, 5);
+            const found = tools.discovery(mode).filter(spec => !taskRestrictedTools.has(spec.name) && words.some(word => `${spec.name} ${spec.description}`.toLowerCase().includes(word))).slice(0, 5);
             found.filter(spec => spec.available).forEach(spec => enabled.add(spec.name));
             found.filter(spec => !spec.available && spec.reason).forEach(spec => unavailableTools.set(spec.name, spec.reason!));
-            result = found.length ? JSON.stringify(found.map(spec => ({ ...spec })))
+            result = taskRestrictedTools.size && /browser|przegl[aą]dark|computer|desktop|screen|mouse|cursor/i.test(query) ? 'Interactive browser and desktop tools are unavailable for ordinary web research. Use web_search and read_webpage.'
+              : found.length ? JSON.stringify(found.map(spec => ({ ...spec })))
               : desktopIntent.test(query) ? `computer_use: unavailable. ${this.computerAvailability(mode, tools, isolated)}`
               : 'No matching tools found. If a tool is disabled, its catalog entry explains why and what to do.';
             if (!found.length && wantsComputer) {

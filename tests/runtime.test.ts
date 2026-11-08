@@ -235,15 +235,32 @@ test('web research executes at most two searches and feeds a clear stop signal f
     if (calls === 1) return reply('', ['one', 'two', 'three', 'four'].map((query, index) => ({ id: `search-${index}`, name: 'web_search', arguments: { query } })));
     const tools = messages.filter(message => message.role === 'tool' && message.name === 'web_search');
     assert.equal(tools.length, 4);
-    assert.equal(tools.filter(message => message.content.includes('Limit dwóch wyszukiwań')).length, 2);
+    assert.equal(tools.filter(message => message.content.includes('two-search limit')).length, 2);
     assert.match(messages.at(-1)?.content ?? '', /two-search limit/);
-    return reply('Odczytam najlepszy wynik i podam źródło.');
+    return reply('I will read the best result and cite it.');
   });
   const { z } = await import('zod');
   h.tools.add('web_search', 'Fixture local search', z.object({ query: z.string() }), true, async args => { executed++; return [{ title: args.query, url: `https://example.org/${args.query}`, snippet: 'result' }]; });
   await h.runtime.run(h.session, 'Search the web for reliable documentation.', new AbortController().signal);
   assert.equal(executed, 2);
   assert.equal(calls, 2);
+});
+
+test('ordinary web research cannot re-enable browser tools through discovery or schema repair', async t => {
+  let calls = 0, browserExecutions = 0;
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'discover-browser', name: 'discover_tools', arguments: { query: 'browser' } }]);
+    assert.match(messages.at(-1)?.content ?? '', /unavailable for ordinary web research/i);
+    if (calls === 2) return reply('', [{ id: 'hidden-browser', name: 'browser', arguments: { action: 'launch', url: 'https://example.org' }, validationError: 'Unknown tool schema.' }]);
+    return reply('Finished with local research.');
+  }, { permissions: 'all' });
+  const { z } = await import('zod');
+  h.tools.add('browser', 'Fixture browser.', z.object({ action: z.literal('launch'), url: z.url() }), false, async () => { browserExecutions++; return 'Launched.'; });
+  const answer = await h.runtime.run(h.session, 'Search the web for official documentation.', new AbortController().signal);
+  assert.equal(answer, 'Finished with local research.');
+  assert.equal(browserExecutions, 0);
+  assert.equal(calls, 3);
 });
 
 test('unlimited token budget permits the next step after usage exceeds the old factory limit', async t => {
@@ -424,11 +441,11 @@ test('request_tool shows the exact blocked action, waits for approval, and autho
       assert.equal(found[0]?.name, 'fixture_disabled');
       assert.equal(found[0]?.available, false);
       assert.match(found[0]?.reason ?? '', /denylist/);
-      return reply('', [{ id: 'request-fixture', name: 'request_tool', arguments: { tool: 'fixture_disabled', arguments: { value }, reason: 'Użytkownik wyraźnie poprosił o tę akcję.' } }]);
+      return reply('', [{ id: 'request-fixture', name: 'request_tool', arguments: { tool: 'fixture_disabled', arguments: { value }, reason: 'The user explicitly requested this action.' } }]);
     }
     assert.equal(messages.at(-1)?.role, 'tool');
-    assert.match(messages.at(-1)?.content ?? '', /Jednorazowa zgoda zaakceptowana/);
-    return reply('Akcja wykonana.');
+    assert.match(messages.at(-1)?.content ?? '', /One-time approval granted/);
+    return reply('Action completed.');
   }, { permissions: 'ask', denyTools: ['fixture_disabled'] });
   const { z } = await import('zod');
   h.tools.add('fixture_disabled', 'A controlled fixture action.', z.object({ value: z.string() }), false, async (args, context) => {
@@ -453,7 +470,7 @@ test('request_tool shows the exact blocked action, waits for approval, and autho
   assert.equal(calls, 2, 'model call remains paused until the user decides');
   assert.equal(executions, 0, 'the disabled tool cannot run before approval');
   resolveApproval(true);
-  assert.equal(await run, 'Akcja wykonana.');
+  assert.equal(await run, 'Action completed.');
   assert.equal(approvals, 1);
   assert.equal(executions, 1);
   assert.equal(calls, 3);
@@ -469,13 +486,13 @@ test('request_tool refusal blocks the requested tool for the rest of the run', a
       assert.match(messages.at(-1)?.content ?? '', /Approval denied/);
       return reply('', [{ id: 'request-again', name: 'request_tool', arguments: { tool: 'fixture_disabled', arguments: { value: 'no' }, reason: 'Retry.' } }]);
     }
-    assert.match(messages.at(-1)?.content ?? '', /zgoda.*odrzucona/i);
-    return reply('Nie wykonano akcji.');
+    assert.match(messages.at(-1)?.content ?? '', /already denied/i);
+    return reply('The action was not performed.');
   }, { permissions: 'ask', denyTools: ['fixture_disabled'] });
   const { z } = await import('zod');
   h.tools.add('fixture_disabled', 'A controlled fixture action.', z.object({ value: z.string() }), false, async () => { executions++; return 'unexpected'; });
   h.workspace.permissions.approve = async request => { approvals++; assert.equal(request.oneTimeOverride, true); return false; };
-  assert.equal(await h.runtime.run(h.session, 'Wykonaj fixture_disabled.', new AbortController().signal), 'Nie wykonano akcji.');
+  assert.equal(await h.runtime.run(h.session, 'Wykonaj fixture_disabled.', new AbortController().signal), 'The action was not performed.');
   assert.equal(calls, 4);
   assert.equal(approvals, 1);
   assert.equal(executions, 0);
@@ -491,11 +508,11 @@ test('rejected approval pauses repeated calls to that tool until the run ends', 
       assert.match(messages.at(-1)?.content ?? '', /Approval denied/);
       return reply('', [{ id: 'write-twice', name: 'execute_command', arguments: { command: 'Write-Output must-not-run' } }]);
     }
-    assert.match(messages.at(-1)?.content ?? '', /zgoda.*odrzucona/i);
-    return reply('Wstrzymano działanie.');
+    assert.match(messages.at(-1)?.content ?? '', /already denied/i);
+    return reply('The action was stopped.');
   }, { permissions: 'ask' });
   h.workspace.permissions.approve = async () => { approvals++; return false; };
-  assert.equal(await h.runtime.run(h.session, 'Uruchom bezpieczne polecenie.', new AbortController().signal), 'Wstrzymano działanie.');
+  assert.equal(await h.runtime.run(h.session, 'Uruchom bezpieczne polecenie.', new AbortController().signal), 'The action was stopped.');
   assert.equal(calls, 3);
   assert.equal(approvals, 1);
 });
@@ -508,7 +525,7 @@ test('parallel delegates share tools and budget while reviewer remains read-only
   let maximumActive = 0;
   let firstChildren = 0;
   const h = await harness(t, async (messages, tools) => {
-    const role = /Rola: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
+    const role = /Role: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
     const count = (counts.get(role) ?? 0) + 1; counts.set(role, count);
     if (role === 'orchestrator') {
       if (count === 1) return reply('', [{ id: 'delegate-1', name: 'delegate', arguments: { tasks: [{ role: 'coder', task: 'Create independent coder result file.' }, { role: 'reviewer', task: 'Inspect independent file safety.' }] } }]);
@@ -533,7 +550,7 @@ test('parallel delegates share tools and budget while reviewer remains read-only
       if (role === 'reviewer') assert.equal(tools.some(tool => tool.name === 'write_file'), false);
       return reply('', [{ id: `${role}-write`, name: 'write_file', arguments: { path: `${role}.txt`, content: role } }]);
     }
-    if (role === 'reviewer') assert.match(messages.at(-1)?.content ?? '', /REVIEW.*blokuje/);
+    if (role === 'reviewer') assert.match(messages.at(-1)?.content ?? '', /REVIEW.*blocks/);
     return reply(`${role} complete`);
   }, { maxAgents: 2, maxDepth: 1 });
   assert.equal(await h.runtime.run(h.session, 'Run independent parallel work.', new AbortController().signal), 'Delegates complete.');
@@ -552,7 +569,7 @@ test('parallel subagents exchange a bounded direct note at a safe turn boundary'
   const bothStarted = new Promise<void>(resolve => { releaseFirst = resolve; });
   const calls = new Map<string, number>();
   h = await harness(t, async (messages, tools) => {
-    const role = /Rola: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
+    const role = /Role: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
     const count = (calls.get(role) ?? 0) + 1; calls.set(role, count);
     if (role === 'orchestrator') {
       if (count === 1) return reply('', [{ id: 'team-delegate', name: 'delegate', arguments: { tasks: [
@@ -596,7 +613,7 @@ test('parallel subagents reserve one shared token budget before issuing API call
   let childCalls = 0;
   let h!: Awaited<ReturnType<typeof harness>>;
   h = await harness(t, async (messages, tools) => {
-    if (messages[0]!.content.includes('Rola: orchestrator.')) {
+    if (messages[0]!.content.includes('Role: orchestrator.')) {
       if (++parentCalls === 1) return reply('', [{ id: 'parallel-budget', name: 'delegate', arguments: { tasks: [{ role: 'reviewer', task: 'Inspect isolated alpha module.' }, { role: 'researcher', task: 'Inspect isolated beta module.' }] } }]);
       return reply('Complete.');
     }
@@ -777,7 +794,7 @@ test('project instructions include only nested AGENTS files on explicit target p
   const h = await harness(t, async messages => {
     const system = messages.find(message => message.role === 'system')?.content ?? '';
     assert.match(system, /Nested source rule/);
-    assert.match(system, /Instructions from src\/AGENTS\.md/);
+    assert.match(system, /Project instructions src\/AGENTS\.md/);
     assert.doesNotMatch(system, /Unrelated test rule/);
     return reply();
   });
@@ -818,7 +835,7 @@ test('all subagents share maxSteps rather than multiplying API call limit', asyn
   let calls = 0;
   const h = await harness(t, async messages => {
     calls++;
-    if (messages[0]!.content.includes('Rola: orchestrator.')) return reply('', [{ id: 'shared-step', name: 'delegate', arguments: { tasks: [{ role: 'reviewer', task: 'Inspect one isolated module.' }] } }]);
+    if (messages[0]!.content.includes('Role: orchestrator.')) return reply('', [{ id: 'shared-step', name: 'delegate', arguments: { tasks: [{ role: 'reviewer', task: 'Inspect one isolated module.' }] } }]);
     return reply('Reviewed.');
   }, { maxSteps: 2 });
   await assert.rejects(h.runtime.run(h.session, 'Run isolated review.', new AbortController().signal), /Shared limit of 2 model calls/);

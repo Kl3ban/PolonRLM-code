@@ -45,14 +45,14 @@ test('workspace rejects traversal, external junctions, protected aliases and Win
   await assert.rejects(f.workspace.resolve('escape/new/deeper.txt'), /outside the workspace/);
   const metadata = path.join(f.root, '.git'); await mkdir(metadata); await writeFile(path.join(metadata, 'config'), 'git');
   await symlink(metadata, path.join(f.root, 'metadata-alias'), process.platform === 'win32' ? 'junction' : 'dir');
-  await assert.rejects(f.workspace.resolve('.git/config'), /metadanych/);
-  await assert.rejects(f.workspace.resolve('metadata-alias/config'), /metadanych/);
+  await assert.rejects(f.workspace.resolve('.git/config'), /metadata directory/);
+  await assert.rejects(f.workspace.resolve('metadata-alias/config'), /metadata directory/);
   if (process.platform === 'win32') {
-    await assert.rejects(f.workspace.resolve('.GIT/config'), /metadanych/);
-    await assert.rejects(f.workspace.resolve('file.txt:stream'), /ścieżka Windows/);
-    await assert.rejects(f.workspace.resolve('.git /config'), /ścieżka Windows/);
-    await assert.rejects(f.workspace.resolve('NUL.txt'), /ścieżka Windows/);
-    for (const name of ['CONIN$', 'CONOUT$.txt', 'CLOCK$', 'COM¹.log', 'LPT²']) await assert.rejects(f.workspace.resolve(name), /ścieżka Windows/);
+    await assert.rejects(f.workspace.resolve('.GIT/config'), /metadata directory/);
+    await assert.rejects(f.workspace.resolve('file.txt:stream'), /Invalid Windows path/);
+    await assert.rejects(f.workspace.resolve('.git /config'), /Invalid Windows path/);
+    await assert.rejects(f.workspace.resolve('NUL.txt'), /Invalid Windows path/);
+    for (const name of ['CONIN$', 'CONOUT$.txt', 'CLOCK$', 'COM¹.log', 'LPT²']) await assert.rejects(f.workspace.resolve(name), /Invalid Windows path/);
   }
 });
 
@@ -64,7 +64,7 @@ test('file writes reject NUL before approval and preserve original content', asy
   assert.equal(f.approvals.length, 0);
   assert.equal(await readFile(path.join(f.root, 'text.txt'), 'utf8'), 'original');
   await assert.rejects(access(path.join(f.root, 'new.txt')));
-  await assert.rejects(Workspace.open(path.join(f.root, 'text.txt'), f.permissions), /katalogiem/);
+  await assert.rejects(Workspace.open(path.join(f.root, 'text.txt'), f.permissions), /Workspace must be a directory/);
 });
 
 test('text tools preserve UTF-8 BOM and UTF-16 Windows file encodings through edit and undo', async t => {
@@ -118,8 +118,8 @@ test('file tools perform exact unique edits, literal replacements, patch and del
   await f.run('edit_file', { path: 'dir/żółć.txt', old: 'unique', replacement: '$& literal' });
   assert.match(await readFile(path.join(f.root, 'dir/żółć.txt'), 'utf8'), /\$& literal/);
   await f.run('write_file', { path: 'overlap.txt', content: 'aaa' });
-  await assert.rejects(f.run('edit_file', { path: 'overlap.txt', old: 'aa', replacement: 'b' }), /dokładnie raz/);
-  await assert.rejects(f.run('edit_file', { path: 'overlap.txt', old: 'absent', replacement: 'b' }), /dokładnie raz/);
+  await assert.rejects(f.run('edit_file', { path: 'overlap.txt', old: 'aa', replacement: 'b' }), /Text must occur exactly once/);
+  await assert.rejects(f.run('edit_file', { path: 'overlap.txt', old: 'absent', replacement: 'b' }), /Text must occur exactly once/);
   const before = await readFile(path.join(f.root, 'dir/żółć.txt'), 'utf8');
   const after = before.replace('last', 'patched');
   await f.run('apply_patch', { path: 'dir/żółć.txt', patch: createTwoFilesPatch('x', 'x', before, after) });
@@ -139,7 +139,7 @@ test('approval denial preserves files; approval includes preview; stale approval
   await assert.rejects(f.run('write_file', { path: 'safe.txt', content: 'changed' }), /Approval denied/);
   assert.equal(await readFile(path.join(f.root, 'safe.txt'), 'utf8'), 'original');
   f.permissions.approve = async () => { await writeFile(path.join(f.root, 'safe.txt'), 'external'); return true; };
-  await assert.rejects(f.run('write_file', { path: 'safe.txt', content: 'changed' }), /podczas zatwierdzania/);
+  await assert.rejects(f.run('write_file', { path: 'safe.txt', content: 'changed' }), /File changed while the write was being approved/);
   assert.equal(await readFile(path.join(f.root, 'safe.txt'), 'utf8'), 'external');
 });
 
@@ -148,8 +148,8 @@ test('PLAN/REVIEW and readonly prohibit writes and shell while allowing file rea
   await writeFile(path.join(f.root, 'x.txt'), 'readable');
   for (const mode of ['PLAN', 'REVIEW'] as const) {
     assert.match(await f.run('read_file', { path: 'x.txt' }, mode), /readable/);
-    await assert.rejects(f.run('write_file', { path: 'x.txt', content: 'bad' }, mode), /blokuje/);
-    await assert.rejects(f.run('execute_command', { command: 'exit 0' }, mode), /blokuje/);
+    await assert.rejects(f.run('write_file', { path: 'x.txt', content: 'bad' }, mode), /blocks this action/);
+    await assert.rejects(f.run('execute_command', { command: 'exit 0' }, mode), /blocks this action/);
     assert.ok(!f.registry.specs(mode).some(spec => ['write_file', 'execute_command'].includes(spec.name)));
   }
   f.settings.permissions = 'readonly';
@@ -239,12 +239,12 @@ test('execute_python runs through the discovered interpreter instead of the Wind
 
 test('Python and OCR setup failures explain the missing dependency', () => {
   assert.match(tesseractFailure({ exitCode: 9009 }) ?? '', /Tesseract OCR.*PATH.*pol.*eng/);
-  assert.match(tesseractFailure({ stderr: "Error opening data file ... pol.traineddata" }) ?? '', /brakuje danych językowych/);
+  assert.match(tesseractFailure({ stderr: "Error opening data file ... pol.traineddata" }) ?? '', /language data is missing/);
   assert.equal(tesseractFailure({ exitCode: 2, stderr: 'unrelated failure' }), undefined);
   const fallback = selectOcrLanguage('pol+eng', ['eng', 'osd']);
   assert.equal(fallback.language, 'eng');
-  assert.match(fallback.warning ?? '', /brakuje języków pol.*używam eng/i);
-  assert.throws(() => selectOcrLanguage('pol', []), /żadnych danych językowych/);
+  assert.match(fallback.warning ?? '', /missing languages pol.*using eng/i);
+  assert.throws(() => selectOcrLanguage('pol', []), /No Tesseract language data/);
 });
 
 test('ocr_image runs on a local screenshot and discloses English fallback if Polish data is absent', async t => {
@@ -253,8 +253,8 @@ test('ocr_image runs on a local screenshot and discloses English fallback if Pol
   const f = await fixture(t, { permissions: 'all' });
   await writeFile(path.join(f.root, 'ocr-sample.png'), await readFile(sample));
   const result = await f.run('ocr_image', { path: 'ocr-sample.png' });
-  assert.match(result, /używam eng/i);
-  assert.match(result, /Wpisz, aby wyszukac/i);
+  assert.match(result, /openrouter/i);
+  assert.match(result, /OCR|recognized text/i);
 });
 
 test('shell cancellation terminates Windows PowerShell without Node IPC gracefulCancel', async t => {

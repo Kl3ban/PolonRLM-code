@@ -81,7 +81,8 @@ export function transcriptLines(messages: ViewMessage[], width: number, expanded
     const id = groupId(item), open = expanded.has(id);
     const running = item.some(message => message.toolState === 'running');
     const errors = item.filter(message => message.toolState === 'error');
-    const web = item.some(message => /^(web_search|read_webpage|fetch_webpage|fetch_documentation|github_repo_inspector|download_to_disk|browser)/.test(message.toolName ?? ''));
+    const activity = item.filter(message => message.toolName !== 'discover_tools');
+    const web = activity.length > 0 && activity.every(message => /^(web_search|read_webpage|fetch_webpage|fetch_documentation|github_repo_inspector|download_to_disk|browser)/.test(message.toolName ?? ''));
     const title = web ? 'Web search' : 'Tool activity';
     const header = `${running ? '●' : open ? '▼' : '›'} ${title} · ${operationCount(item.length)}${errors.length ? ` · errors: ${errors.length}` : ''}`;
     wrapAnsi(header, width, { hard: true }).split('\n').forEach((text, i) => lines.push({ text, bold: true, ...(i === 0 ? { toolCallId: id } : {}) }));

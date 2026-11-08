@@ -122,7 +122,16 @@ class LocalWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('# Chapter 5', result['content'])
         self.assertTrue(result['truncated'])
         self.assertTrue(result['other_headings'])
-        self.assertEqual(result['selection'], 'BM25; maksymalnie trzy sekcje')
+        self.assertEqual(result['selection'], 'BM25; up to three relevant sections')
+        long_section = '# Release history\n' + ('Unrelated release details. ' * 300) + '\nAdded in version 3.7.'
+        original_limit = web.READ_BYTES
+        web.READ_BYTES = 180
+        try:
+            focused = web.focus_content(long_section, 'Added in version 3.7')
+        finally:
+            web.READ_BYTES = original_limit
+        self.assertIn('Added in version 3.7.', focused['content'])
+        self.assertLessEqual(len(focused['content'].encode('utf-8')), 180)
         huge_headers = '\n'.join('# ' + str(i) + 'x' * 3000 + '\n' + 'description ' * 80 for i in range(10))
         bounded = web.focus_content(huge_headers, 'description')
         self.assertLessEqual(sum(len(title.encode()) for title in bounded['other_headings']), 600)

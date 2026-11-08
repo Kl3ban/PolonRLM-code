@@ -111,7 +111,7 @@ test('local skill installation audits code, defaults disabled, updates and never
   await assert.rejects(manager.load('diagnostic-helper'), /disabled/);
   await manager.enable('diagnostic-helper');
   await writeFile(join(source, 'SKILL.md'), '---\nname: diagnostic-helper\ndescription: Diagnose regression failures.\nlicense: MIT\n---\n\nUpdated instructions.\n');
-  assert.match(await manager.update('diagnostic-helper'), /Zaktualizowano/);
+  assert.match(await manager.update('diagnostic-helper'), /Updated/);
   assert.match(await manager.load('diagnostic-helper'), /Updated instructions/);
   assert.equal((await manager.list()).find(skill => skill.name === 'diagnostic-helper')?.source, await realpath(source));
   await manager.remove('diagnostic-helper');
@@ -144,7 +144,7 @@ test('MCP stdio performs real handshake, validates input, calls tools, cancels a
   assert.ok(tools.some(tool => tool.name === 'mcp_local_sum'));
   assert.deepEqual(await manager.connect('local'), tools);
   assert.match(await manager.call('mcp_local_sum', { a: 20, b: 22 }), /42/);
-  await assert.rejects(manager.call('mcp_local_sum', { a: '20', b: 22 }), /argumenty/);
+  await assert.rejects(manager.call('mcp_local_sum', { a: '20', b: 22 }), /Invalid MCP arguments/);
   assert.equal(JSON.parse(await manager.call('mcp_local_failure', {})).isError, true);
   await assert.rejects(manager.call('mcp_local_slow', { milliseconds: 5_000 }, AbortSignal.timeout(30)), /abort|cancel|timeout/i);
   await manager.disconnect('local');

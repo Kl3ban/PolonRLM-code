@@ -69,7 +69,7 @@ export class ComputerSession {
     let target: Window, request: Record<string, unknown>;
     if (args.action === 'observe') {
       const window = args.windowId && this.windows.get(args.windowId);
-      if (!window) throw new Error('Najpierw list, potem windowId z otrzymanej listy.');
+      if (!window) throw new Error('Call list first, then use a windowId from the returned list.');
       target = window;
       this.snapshot = undefined;
       request = { action: 'observe', windowId: target.id, pid: target.pid, captureImage: true };

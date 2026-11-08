@@ -133,7 +133,7 @@ test('configuration persists validated settings and rejects malformed data', asy
   const home = await mkdtemp(path.join(os.tmpdir(), 'janusz-config-')); const config = new ConfigManager(home);
   await config.load(); config.settings.maxAgents = 2; await config.save(); const reloaded = new ConfigManager(home); await reloaded.load();
   assert.equal(reloaded.settings.maxAgents, 2);
-  await writeFile(path.join(home, 'config.json'), '{"maxAgents":500}'); await assert.rejects(reloaded.load(), /konfiguracja/);
+  await writeFile(path.join(home, 'config.json'), '{"maxAgents":500}'); await assert.rejects(reloaded.load(), /Invalid configuration/);
 });
 
 test('Windows vault roundtrips through DPAPI without plaintext credentials on disk', { skip: process.platform !== 'win32' }, async () => {

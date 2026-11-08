@@ -42,7 +42,7 @@ PolonRLM
 
 The setup wizard helps choose a provider and model. API keys are entered locally and are not stored in the repository. On Windows, keys are encrypted with DPAPI. On other systems, use the environment variable shown for your provider.
 
-Local web search uses a small Python helper. Set it up once with `PolonRLM setup web`. It needs Python 3.11 or newer. Browser engines are installed only when the chosen engine needs them.
+Local web search uses a small Python helper and needs Python 3.11 or newer. Its dependencies are installed automatically on first use. You can also prepare them with `PolonRLM setup web`. Browser engines are installed only when the chosen engine needs them.
 
 ## A few commands
 

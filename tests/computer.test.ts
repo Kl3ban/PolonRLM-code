@@ -25,7 +25,7 @@ const context = () => ({ mode: 'BUILD' as const, signal: new AbortController().s
 
 test('computer targets only enumerated windows, attaches images, scales coordinates and consumes snapshots', async () => {
   const f = fixture(); const images: unknown[] = []; const ctx = { ...context(), onImage: (image: unknown) => images.push(image) };
-  await assert.rejects(f.session.execute({ action: 'observe', windowId: '123' }, ctx), /Najpierw list/);
+  await assert.rejects(f.session.execute({ action: 'observe', windowId: '123' }, ctx), /Call list first/);
   const list = await f.session.execute({ action: 'list' }, ctx) as any;
   assert.equal(list.windows.length, 1);
   const observation = await f.session.execute({ action: 'observe', windowId: '123' }, ctx) as any;
@@ -33,7 +33,7 @@ test('computer targets only enumerated windows, attaches images, scales coordina
   await f.session.execute({ action: 'click', snapshotId: observation.snapshotId, element: 0 }, ctx);
   assert.deepEqual(f.calls.at(-1)?.bounds, window.bounds);
   assert.equal(f.calls.at(-1)?.x, 150); assert.equal(f.calls.at(-1)?.y, 100);
-  await assert.rejects(f.session.execute({ action: 'click', snapshotId: observation.snapshotId, x: 10, y: 10 }, ctx), /Snapshot expired/);
+  await assert.rejects(f.session.execute({ action: 'click', snapshotId: observation.snapshotId, x: 10, y: 10 }, ctx), /Invalid snapshotId/);
 });
 
 test('computer rejects expired snapshots, unsupported keys and replays after native failure', async () => {
@@ -45,9 +45,9 @@ test('computer rejects expired snapshots, unsupported keys and replays after nat
   const second = await f.session.execute({ action: 'observe', windowId: '123' }, ctx) as any;
   f.fail();
   await assert.rejects(f.session.execute({ action: 'key', snapshotId: second.snapshotId, keys: ['ENTER'] }, ctx), /native capture/);
-  await assert.rejects(f.session.execute({ action: 'key', snapshotId: second.snapshotId, keys: ['ENTER'] }, ctx), /Snapshot expired/);
+  await assert.rejects(f.session.execute({ action: 'key', snapshotId: second.snapshotId, keys: ['ENTER'] }, ctx), /No active snapshotId/);
   assert.deepEqual(desktopKeyCodes(['CTRL', 'A']), [17, 65]);
-  assert.throws(() => desktopKeyCodes(['WIN', 'R']), /Nieobsługiwany/);
+  assert.throws(() => desktopKeyCodes(['WIN', 'R']), /Unsupported key/);
 });
 
 test('invisible 10x10 grid maps cell centers to window pixels without an overlay request', async () => {

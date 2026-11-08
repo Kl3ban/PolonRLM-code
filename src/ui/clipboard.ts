@@ -52,8 +52,8 @@ try {
 }
 
 /** Read a Windows clipboard bitmap as PNG for an explicit user initiated attach action. */
-export async function readClipboardImage(): Promise<string> {
-  if (process.platform !== 'win32') throw new Error('Pasting an image from the clipboard is supported on Windows.');
+export async function readClipboardImage(optional = false): Promise<string> {
+  if (process.platform !== 'win32') { if (optional) return ''; throw new Error('Pasting an image from the clipboard is supported on Windows.'); }
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -78,6 +78,7 @@ finally { $stream.Dispose(); $image.Dispose() }
     child.once('close', code => {
       clearTimeout(timer);
       if (oversized) { reject(new Error('Clipboard image is too large or took too long to read.')); return; }
+      if (code === 2 && optional) { resolve(''); return; }
       if (code !== 0) { reject(new Error('Clipboard has no image or Windows denied access.')); return; }
       const data = Buffer.concat(chunks).toString('ascii').trim();
       if (!data) { reject(new Error('The clipboard does not contain an image.')); return; }

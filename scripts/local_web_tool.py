@@ -318,6 +318,44 @@ def compact_headings(headings) -> list[str]:
     return result
 
 
+def relevant_passage(text: str, query: str, maximum: int) -> str:
+    encoded = text.encode('utf-8')
+    if len(encoded) <= maximum:
+        return text
+    paragraphs = [part.strip() for part in re.split(r'\n\s*\n', text) if part.strip()]
+    terms = [term for term in re.findall(r'\w+', query.casefold()) if len(term) > 1]
+    if not paragraphs or not terms:
+        return byte_clip(text, maximum)
+
+    def score(paragraph: str) -> int:
+        value = paragraph.casefold()
+        return sum(min(value.count(term), 8) * (2 if len(term) > 3 else 1) for term in terms)
+
+    ranked = sorted(range(len(paragraphs)), key=lambda index: (score(paragraphs[index]), -index), reverse=True)
+    best = ranked[0]
+    if score(paragraphs[best]) == 0:
+        return byte_clip(text, maximum)
+    chosen = [best]
+    used = len(paragraphs[best].encode('utf-8'))
+    for index in sorted((best - 1, best + 1), key=lambda item: abs(item - best)):
+        if 0 <= index < len(paragraphs):
+            size = len(paragraphs[index].encode('utf-8')) + 2
+            if used + size <= maximum:
+                chosen.append(index)
+                used += size
+    excerpt = '\n\n'.join(paragraphs[index] for index in sorted(chosen))
+    excerpt_bytes = excerpt.encode('utf-8')
+    if len(excerpt_bytes) <= maximum:
+        return excerpt
+    folded = excerpt.casefold()
+    anchors = [folded.rfind(term) for term in terms if len(term) > 3 and folded.rfind(term) >= 0]
+    if not anchors:
+        return byte_clip(excerpt, maximum)
+    anchor = len(folded[:max(anchors)].encode('utf-8'))
+    start = max(0, anchor - maximum * 2 // 3)
+    return excerpt_bytes[start:start + maximum].decode('utf-8', errors='ignore')
+
+
 def focus_content(text: str, query: str | None) -> dict:
     if len(text.encode('utf-8')) <= READ_BYTES:
         return {'content': text, 'truncated': False, 'other_headings': []}
@@ -334,7 +372,7 @@ def focus_content(text: str, query: str | None) -> dict:
         sections.append((heading, '\n'.join(body)))
     # Long documents without headings (including source files) are bounded line chunks.
     if len(sections) < 2:
-        lines = text.splitlines(); sections = [(f'Wiersze {i + 1}–{min(i + 80, len(lines))}', '\n'.join(lines[i:i + 80])) for i in range(0, len(lines), 80)]
+        lines = text.splitlines(); sections = [(f'Lines {i + 1}-{min(i + 80, len(lines))}', '\n'.join(lines[i:i + 80])) for i in range(0, len(lines), 80)]
     if query and sections:
         from rank_bm25 import BM25Okapi
         tokenize = lambda value: re.findall(r'\w+', value.casefold())
@@ -342,9 +380,9 @@ def focus_content(text: str, query: str | None) -> dict:
         scores = BM25Okapi(corpus).get_scores(tokenize(query))
         chosen = sorted(sorted(range(len(sections)), key=lambda i: (float(scores[i]), -i), reverse=True)[:3])
         allowance = max(200, (READ_BYTES - 400) // max(1, len(chosen)))
-        content = '\n\n'.join(title + '\n' + byte_clip(body, allowance) for i, (title, body) in enumerate(sections) if i in chosen)
+        content = '\n\n'.join(title + '\n' + relevant_passage(body, query, allowance) for i, (title, body) in enumerate(sections) if i in chosen)
         toc = compact_headings(title for i, (title, _) in enumerate(sections) if i not in chosen)
-        return {'content': byte_clip(content, READ_BYTES), 'truncated': True, 'other_headings': toc, 'selection': 'BM25; maksymalnie trzy sekcje'}
+        return {'content': byte_clip(content, READ_BYTES), 'truncated': True, 'other_headings': toc, 'selection': 'BM25; up to three relevant sections'}
     return {'content': byte_clip(text, READ_BYTES), 'truncated': True, 'other_headings': compact_headings(title for title, _ in sections), 'hint': 'Provide focus_query to select relevant sections.'}
 
 

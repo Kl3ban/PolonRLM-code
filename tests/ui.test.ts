@@ -17,7 +17,7 @@ async function until(predicate: () => boolean, description: string): Promise<voi
   }
 }
 
-function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEmitter; readClipboard?: () => Promise<string>; writeClipboard?: (text: string) => Promise<void> } = {}) {
+function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEmitter; readClipboard?: () => Promise<string>; readImageClipboard?: () => Promise<string>; writeClipboard?: (text: string) => Promise<void> } = {}) {
   let state: UIState = {
     workspace: 'C:\\Projects\\demo', sessionId: 'session-test', provider: 'custom', model: 'test-model', mode: 'BUILD', cortex: 2,
     busy: false, status: 'Ready', messages: [],
@@ -31,6 +31,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
   const modelsChosen: { id: string; persist?: boolean }[] = [];
   const providersChosen: string[] = [];
   const keysSaved: string[] = [];
+  const imagesAdded: string[] = [];
   const endpointsSaved: unknown[] = [];
   const services = { failModels: false };
   let approver: Approve | undefined;
@@ -45,6 +46,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     snapshot: () => ({ ...state, messages: [...state.messages] }),
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async submit(text) { submissions.push(text); },
+    addImageData(data, name) { imagesAdded.push(data); update({ attachments: [...state.attachments, { name: name ?? 'Screenshot.png', mediaType: 'image/png', bytes: 100 }] }); },
     cancel() { cancelled++; },
     cycleMode() { modeChanges++; update({ mode: state.mode === 'BUILD' ? 'PLAN' : 'BUILD' }); },
     async close() { closed++; },
@@ -56,9 +58,9 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     async selectProvider(id) { providersChosen.push(id); update({ provider: id }); },
     async setApiKey(key) { keysSaved.push(key); services.failModels = false; },
   };
-  const app = render(React.createElement(TerminalApp, { controller, ...inputs }));
+  const app = render(React.createElement(TerminalApp, { controller, readImageClipboard: async () => '', ...inputs }));
   return {
-    app, submissions, listeners, update, modelsChosen, providersChosen, keysSaved, endpointsSaved, services,
+    app, submissions, listeners, update, modelsChosen, providersChosen, keysSaved, imagesAdded, endpointsSaved, services,
     get cancelled() { return cancelled; },
     get closed() { return closed; },
     get modeChanges() { return modeChanges; },
@@ -72,6 +74,25 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     dispose() { app.unmount(); app.cleanup(); },
   };
 }
+
+test('Ctrl+V attaches a screenshot, shows its name and permits an image-only submission', async t => {
+  let textReads = 0;
+  const view = fixture({}, { readImageClipboard: async () => 'test-image-data', readClipboard: async () => { textReads++; return 'stale clipboard text'; } });
+  t.after(view.dispose); await view.ready();
+  view.app.stdin.write('\u0016');
+  await until(() => /Screenshot.png/.test(view.app.lastFrame() ?? ''), 'show attached screenshot');
+  assert.deepEqual(view.imagesAdded, ['test-image-data']);
+  assert.equal(textReads, 0);
+  view.app.stdin.write('\r');
+  await until(() => view.submissions.length === 1, 'submit image without text');
+});
+
+test('Ctrl+V keeps text paste working when no screenshot is available', async t => {
+  const view = fixture({}, { readImageClipboard: async () => '', readClipboard: async () => 'Text from clipboard' });
+  t.after(view.dispose); await view.ready(); view.app.stdin.write('\u0016');
+  await until(() => /Text from clipboard/.test(view.app.lastFrame() ?? ''), 'paste clipboard text');
+  assert.deepEqual(view.imagesAdded, []);
+});
 
 test('TUI renders provider, mode, usage and live model output', { timeout: 5000 }, async t => {
   const view = fixture();
@@ -206,12 +227,12 @@ test('tool results expand per operation and show duration, errors and file diffs
     mouseEvents.emit('mouse', { action: 'up', button: 0, x: 20, y });
   };
   clickTool('Tool activity');
-  await until(() => /Zapis pliku.*0\.3s/.test(view.app.lastFrame() || ''), 'expand operations');
+  await until(() => /Write file.*0\.3s/.test(view.app.lastFrame() || ''), 'expand operations');
   assert.match(view.app.lastFrame()!, /Terminal command.*error.*0\.0s/);
-  clickTool('Zapis pliku');
+  clickTool('Write file');
   await until(() => /new line/.test(view.app.lastFrame() || ''), 'expand file diff');
   assert.match(view.app.lastFrame()!, /old line/);
-  clickTool('Polecenie terminala');
+  clickTool('Terminal command');
   await until(() => /Approval denied for the command/.test(view.app.lastFrame() || ''), 'expand tool error');
   assert.match(view.app.lastFrame()!, /old line/);
 });
@@ -256,7 +277,7 @@ test('aborting a pending approval removes it from the UI and its waiting queue',
   assert.doesNotMatch(view.app.lastFrame()!, /Queued approval/);
   activeAbort.abort();
   assert.equal(await active, false);
-  await until(() => !/ZATWIERDZENIE/.test(view.app.lastFrame() || ''), 'clear cancelled approval');
+  await until(() => !/APPROVAL:/.test(view.app.lastFrame() || ''), 'clear cancelled approval');
 });
 
 test('Tab changes mode, Ctrl+P opens commands; Ctrl+C cancels work and closes idle UI', { timeout: 5000 }, async t => {
@@ -266,7 +287,7 @@ test('Tab changes mode, Ctrl+P opens commands; Ctrl+C cancels work and closes id
   view.app.stdin.write('\t');
   await until(() => view.modeChanges === 1 && /Plan/.test(view.app.lastFrame() || ''), 'change mode');
   view.app.stdin.write('\u0010');
-  await until(() => /Komendy/.test(view.app.lastFrame() || ''), 'show command palette');
+  await until(() => /Commands/.test(view.app.lastFrame() || ''), 'show command palette');
   view.app.stdin.write('\u001b');
   await until(() => !/Select a model.*ctrl\+k/.test(view.app.lastFrame() || ''), 'close command palette');
   view.update({ busy: true, status: 'Working', messages: [{ role: 'user', text: 'Zadanie w toku' }] });
@@ -368,7 +389,7 @@ test('model picker filters live catalog and persists chosen model; provider pick
   await until(() => view.modelsChosen.length === 1 && /acme\/deep/.test(view.app.lastFrame() || '') && !/Models \/ ENGINE/.test(view.app.lastFrame() || ''), 'select model');
   assert.deepEqual(view.modelsChosen, [{ id: 'acme/deep', persist: true }]);
   view.app.stdin.write('\u0010');
-  await until(() => /Komendy/.test(view.app.lastFrame() || ''), 'open commands');
+  await until(() => /Commands/.test(view.app.lastFrame() || ''), 'open commands');
   await view.type('/connect'); view.app.stdin.write('\r');
   await until(() => /API providers/.test(view.app.lastFrame() || ''), 'open providers');
   await view.type('google'); view.app.stdin.write('\r');
@@ -520,5 +541,5 @@ test('Alt shortcuts navigate menus without Ctrl combinations', async t => {
   view.app.stdin.write('\u001bl');
   await until(() => /Models \/ ENGINE/.test(view.app.lastFrame() || ''), 'open models with Alt+L');
   view.app.stdin.write('\u001bm');
-  await until(() => /Komendy \/ polonRLM/.test(view.app.lastFrame() || ''), 'open menu with Alt+M');
+  await until(() => /Commands \/ PolonRLM/.test(view.app.lastFrame() || ''), 'open menu with Alt+M');
 });

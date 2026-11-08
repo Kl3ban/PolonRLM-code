@@ -179,7 +179,7 @@ export function AttachmentPanel(props: Props): React.JSX.Element {
     }
   });
   return <Frame {...props} title="ATTACHMENTS" hint={addingPath ? 'Paste or type a full path · Enter add · Esc back' : 'A add file · Ctrl+V / P paste clipboard image · X remove · C clear'}>
-    {addingPath ? <Box marginY={1}><Text color={THEMES[state.theme].accent}>Plik: </Text><Text color={THEMES[state.theme].text}>{filename}<Text inverse> </Text></Text></Box> : <Box flexDirection="column" marginY={1}>
+    {addingPath ? <Box marginY={1}><Text color={THEMES[state.theme].accent}>File: </Text><Text color={THEMES[state.theme].text}>{filename}<Text inverse> </Text></Text></Box> : <Box flexDirection="column" marginY={1}>
       {state.attachments.map((attachment, index) => <Text key={`${attachment.name}-${index}`} color={index === selected ? THEMES[state.theme].accent : THEMES[state.theme].text}>{index === selected ? '› ' : '  '}{attachment.name} · {attachment.mediaType.replace('image/', '').toUpperCase()} · {(attachment.bytes / 1024).toFixed(0)} KB</Text>)}
       {!state.attachments.length && <Text color={THEMES[state.theme].muted}>No images attached. Choose a file or paste an image from the clipboard.</Text>}
     </Box>}

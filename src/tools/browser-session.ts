@@ -43,7 +43,7 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
   }), false, async (args, context) => {
     const action = args.action;
     context.signal.throwIfAborted();
-    const description = action === 'fill' || action === 'type' ? `Browser: type text into field ${args.selector ?? ''}.` : action === 'screenshot' ? `Browser: capture ${args.sessionId ?? args.url ?? ''} and send it to the model.` : `Browser: ${action}${args.url ? ` ${args.url}` : ''}${args.selector ? ` ${args.selector}` : ''}.`;
+    const description = action === 'fill' || action === 'type' ? `Browser: type text into field ${args.selector ?? ''}.` : action === 'screenshot' ? `Browser: capture ${args.sessionId ?? args.url ?? ''} and send it to the model.` : `Browser: ${action}${args.url ? ` ${args.url}` : ''}${args.selector ? ` ${args.selector}` : ''}.${action === 'launch' ? ' If the Playwright engine is missing, it will be downloaded to the local cache.' : ''}`;
     await workspace.permissions.check('browser', 'external', description, action === 'fill' || action === 'type' ? '[field input hidden]' : undefined, context.mode, context.signal, ["click", "fill", "type", "press", "select", "check", "uncheck"].includes(action));
     if (action === 'launch') {
       if (!args.url) throw new Error('Provide a public URL.');

@@ -57,7 +57,8 @@ function SelectableRow({ line, row, selection }: { line: MarkdownLine; row: numb
     return <Text color={line.color} bold={line.bold} wrap={"truncate-end"}>{chars.slice(0, start).join('')}<Text color={"#101010"} backgroundColor={"#d7d7d7"}>{chars.slice(start, end).join('')}</Text>{chars.slice(end).join('')}</Text>;
 }
 /** UI exported separately so automated tests can drive a fake controller. */
-export function TerminalApp({ controller, mouseEvents, readClipboard = readClipboardText, writeClipboard = copyToClipboard }: { controller: UIController; mouseEvents?: EventEmitter; readClipboard?: () => Promise<string>; writeClipboard?: (text: string) => Promise<void> }) {
+const readOptionalClipboardImage = () => readClipboardImage(true);
+export function TerminalApp({ controller, mouseEvents, readClipboard = readClipboardText, readImageClipboard = readOptionalClipboardImage, writeClipboard = copyToClipboard }: { controller: UIController; mouseEvents?: EventEmitter; readClipboard?: () => Promise<string>; readImageClipboard?: () => Promise<string>; writeClipboard?: (text: string) => Promise<void> }) {
     const { exit } = useApp();
     const { columns: terminalColumns, rows: terminalRows } = useWindowSize();
     const columns = Math.max(12, terminalColumns || 80);
@@ -203,6 +204,25 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
         setError('');
     }, []);
     usePaste(pasteIntoComposer, { isActive: !menu && !pending && !state.question });
+    const clipboardPending = useRef(false);
+    const pasteFromClipboard = useCallback(async () => {
+        if (clipboardPending.current) return;
+        clipboardPending.current = true;
+        try {
+            const image = await readImageClipboard();
+            if (menuRef.current || pendingRef.current || !composerFocusRef.current) return;
+            if (image) {
+                if (!controller.addImageData) throw new Error('Image attachments are unavailable.');
+                controller.addImageData(image, 'Screenshot.png');
+                setError('');
+                setCopyStatus('Screenshot attached');
+            } else {
+                pasteIntoComposer(await readClipboard());
+            }
+        } catch (cause) {
+            setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause)));
+        } finally { clipboardPending.current = false; }
+    }, [controller, readClipboard, readImageClipboard, pasteIntoComposer]);
     const editorWidth = Math.max(1, width - 7);
     const secret = /^\s*\/key(?:\s|$)/i.test(draft);
     const shownDraft = secret ? draft.replace(/^(\s*\/key\s*)([\s\S]*)$/i, (_, prefix, value) => prefix + '•'.repeat(Array.from(value).length)) : draft;
@@ -303,7 +323,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
                 const bounds = measureElement(composerRef.current);
                 if (event.x >= bounds.x && event.x < bounds.x + bounds.width && event.y >= bounds.y && event.y < bounds.y + bounds.height) {
                     focusComposer(true);
-                    void readClipboard().then(pasteIntoComposer).catch(cause => setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause))));
+                    void pasteFromClipboard();
                 }
                 return;
             }
@@ -350,7 +370,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
         };
         mouseEvents.on('mouse', onMouse);
         return () => { mouseEvents.off('mouse', onMouse); };
-    }, [mouseEvents, draft, menu, state.question, lastStart, rows, editorLines, editorWidth, focusComposer, readClipboard, pasteIntoComposer, allLines, scrollStart, visible.length]);
+    }, [mouseEvents, draft, menu, state.question, lastStart, rows, editorLines, editorWidth, focusComposer, readClipboard, pasteIntoComposer, pasteFromClipboard, allLines, scrollStart, visible.length]);
     useInput((input, key) => {
         if (state.question)
             return;
@@ -438,7 +458,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
                 setError('Click the task field to paste.');
                 return;
             }
-            void readClipboard().then(pasteIntoComposer).catch(cause => setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause))));
+            void pasteFromClipboard();
             return;
         }
         if (key.ctrl && key.shift && input.toLowerCase() === 'v') {
@@ -525,7 +545,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
             return;
         }
         if (key.return) {
-            if (!draft.trim() || (state.busy && !/^\/(cancel|status|cost|context|agents|steer|sessions|copy|budget|image|help|clear|exit)\b/.test(draft.trim())))
+            if ((!draft.trim() && !state.attachments.length) || (state.busy && !/^\/(cancel|status|cost|context|agents|steer|sessions|copy|budget|image|help|clear|exit)\b/.test(draft.trim())))
                 return;
             const text = draft;
             if (!secret)

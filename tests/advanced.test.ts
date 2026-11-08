@@ -72,7 +72,7 @@ test('AST edits require fresh hashes and exact nodes and reject broken syntax', 
   await assert.rejects(f.run('ast_edit', { path: 'a.ts', hash: found.hash, start: range.start, end: range.end, replacement: '(' }), /syntax error/);
   await f.run('ast_edit', { path: 'a.ts', hash: found.hash, start: range.start, end: range.end, replacement: '40 + 2' });
   assert.equal(await readFile(path.join(f.root, 'a.ts'), 'utf8'), 'const answer = 40 + 2;');
-  await assert.rejects(f.run('ast_edit', { path: 'a.ts', hash: found.hash, start: range.start, end: range.end, replacement: '0' }), /hash/);
+  await assert.rejects(f.run('ast_edit', { path: 'a.ts', hash: found.hash, start: range.start, end: range.end, replacement: '0' }), /Hash is stale/);
 });
 
 test('semantic rename preserves shorthand object keys and rejects reserved names', async t => {

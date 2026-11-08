@@ -9,6 +9,7 @@ import type { Settings } from '../core/types.js';
 import { redact, subprocessEnvironment } from '../core/secrets.js';
 import type { ToolRegistry, ToolContext } from './registry.js';
 import type { Workspace } from './workspace.js';
+import { resolvePythonCommand } from './python-runtime.js';
 
 const worker = fileURLToPath(new URL('../../scripts/local_web_tool.py', import.meta.url));
 export function networkPython(): string {
@@ -17,6 +18,7 @@ export function networkPython(): string {
 export async function setupNetworkRuntime(): Promise<string> {
   const setup = fileURLToPath(new URL('../../scripts/setup_local_web.py', import.meta.url));
   const candidates: [string, string[]][] = [...(process.env.POLONRLM_WEB_PYTHON ? [[process.env.POLONRLM_WEB_PYTHON, []] as [string, string[]]] : []), ['py', ['-3.11']], ['py', ['-3.12']], ['python3.11', []], ['python3', []], ['python', []]];
+  try { const found = await resolvePythonCommand(); candidates.unshift([found.command, found.prefixArgs]); } catch { /* Try the versioned candidates below. */ }
   for (const [command, prefix] of candidates) {
     try { await execa(command, [...prefix, '-c', 'import sys; assert sys.version_info >= (3,11)'], { timeout: 5000, windowsHide: true }); }
     catch { continue; }
@@ -26,6 +28,15 @@ export async function setupNetworkRuntime(): Promise<string> {
   throw new Error('Install Python 3.11+ and run PolonRLM setup web.');
 }
 
+let runtimeSetup: Promise<string> | undefined;
+export async function ensureNetworkRuntime(): Promise<string> {
+  const python = networkPython();
+  try { await access(python); return python; } catch { /* Install only on first use. */ }
+  if (process.env.POLONRLM_WEB_PYTHON) throw new Error('POLONRLM_WEB_PYTHON points to a missing interpreter. Fix its path or unset it for automatic setup.');
+  runtimeSetup ??= setupNetworkRuntime().finally(() => { runtimeSetup = undefined; });
+  return runtimeSetup;
+}
+
 export class NetworkWorker {
   private cache = new Map<string, { expires: number; value: unknown }>();
   constructor(private workspace: Workspace, private settings: Settings) {}
@@ -33,8 +44,8 @@ export class NetworkWorker {
     context.signal.throwIfAborted();
     const key = tool + JSON.stringify(args), cached = this.cache.get(key);
     if (tool === 'web_search' && cached && cached.expires > Date.now()) return structuredClone(cached.value);
-    const python = networkPython();
-    try { await access(python); } catch { throw new Error('Local web runtime is missing. Run PolonRLM setup web once (Python 3.11+).'); }
+    const python = await ensureNetworkRuntime();
+    context.signal.throwIfAborted();
     const requestId = randomUUID().replace(/-/g, '');
     const downloads = path.join('agent_workspace', 'downloads');
     if (tool === 'download_to_disk') await this.workspace.resolve(downloads);

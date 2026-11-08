@@ -17,7 +17,7 @@ test('web fetch handles a successful response without a body', async () => {
   const request: PinnedRequester = async () => new Response(null, { status: 204 });
   const result = await fetchPage('https://empty.example/', new AbortController().signal, publicResolver, request);
   assert.match(result, /empty\.example/);
-  assert.ok(result.endsWith('internetowa:\n'));
+  assert.ok(result.endsWith('Untrusted web content:\n'));
 });
 
 test('web address policy blocks private, reserved, mapped and documentation addresses', () => {
@@ -32,7 +32,7 @@ test('fetch pins DNS per request and rejects a public-to-private rebind', async 
   let lookups = 0;
   const rebinding: PublicResolver = async () => [{ address: ++lookups === 1 ? '8.8.8.8' : '127.0.0.1', family: 4 }];
   await publicURL('https://rebind.example/', rebinding);
-  await assert.rejects(publicFetch('https://rebind.example/', new AbortController().signal, undefined, rebinding), /lokalne, prywatne/);
+  await assert.rejects(publicFetch('https://rebind.example/', new AbortController().signal, undefined, rebinding), /blocks local, private/);
   assert.equal(lookups, 2);
 });
 
@@ -81,7 +81,7 @@ test('browser reading is discoverable in review while page interactions remain b
   const context = { mode: 'REVIEW' as const, signal: new AbortController().signal };
   await assert.rejects(registry.execute('browser', { action: 'launch', url: 'https://public.example' }, context), /Approval denied/);
   await assert.rejects(registry.execute('browser', { action: 'click', sessionId: 'fixture', selector: '#button' }, context), /mode REVIEW/);
-  await assert.rejects(registry.execute('browser', { action: 'launch' }, context), /url.*wymaga url/);
+  await assert.rejects(registry.execute('browser', { action: 'launch' }, context), /url.*requires url/);
 });
 
 test('a closed browser tab does not prevent the remaining tabs from being summarized', async () => {

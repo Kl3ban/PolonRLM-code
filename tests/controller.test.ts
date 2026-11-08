@@ -84,8 +84,13 @@ test('/image attaches a local photo to the next prompt without persisting binary
     await controller.submit('/image "' + filename + '"');
     assert.match(controller.snapshot().messages.at(-1)!.text, /Attached image/);
     await controller.submit('Describe this photo.');
+    assert.match(controller.snapshot().messages.find(message => message.role === 'user')!.text, /Attached: photo with spaces.png/);
     assert.ok(JSON.stringify(request.messages).includes('data:image/png;base64,' + data));
     assert.equal(controller.snapshot().status, 'Ready');
+    controller.addImageData(data);
+    await controller.submit('');
+    assert.ok(JSON.stringify(request.messages).includes('data:image/png;base64,' + data));
+    assert.ok(controller.snapshot().messages.some(message => message.role === 'user' && /Describe the attached image.*\n\[Attached: Screenshot.png\]/.test(message.text)));
     const store = new SessionStore(f.home);
     try { assert.equal(JSON.stringify(store.messages(store.list(controller.snapshot().workspace)[0]!.id)).includes(data), false); } finally { store.close(); }
   } finally { await controller.close(); await f.dispose(); }

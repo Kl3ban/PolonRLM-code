@@ -13,10 +13,10 @@ test('agent team delivers only to the selected live peer and bounds messages', (
   assert.match(team.send(researcher.id, reviewer.id, 'Check the parser boundary.'), /queued/);
   assert.deepEqual(team.take(reviewer.id), [{ from: researcher.id, role: researcher.role, content: 'Check the parser boundary.' }]);
   assert.deepEqual(team.take(researcher.id), []);
-  assert.throws(() => team.send(researcher.id, researcher.id, 'Self message.'), /innego agenta/);
-  assert.match(team.send(researcher.id, finished.id, 'Late message.'), /do wyników dla koordynatora/);
+  assert.throws(() => team.send(researcher.id, researcher.id, 'Self message.'), /another agent/);
+  assert.match(team.send(researcher.id, finished.id, 'Late message.'), /results for the coordinator/);
   assert.deepEqual(team.pending(finished.id), [{ from: researcher.id, role: researcher.role, content: 'Late message.' }]);
-  assert.throws(() => team.send(researcher.id, reviewer.id, '\u001b[2J\u001b[0m'), /pusta/);
+  assert.throws(() => team.send(researcher.id, reviewer.id, '\u001b[2J\u001b[0m'), /Message is empty/);
   for (let index = 0; index < 2; index++) team.send(researcher.id, reviewer.id, `Note ${index}.`);
-  assert.throws(() => team.send(researcher.id, reviewer.id, 'One too many.'), /najwyżej 4/);
+  assert.throws(() => team.send(researcher.id, reviewer.id, 'One too many.'), /at most 4 messages/);
 });
