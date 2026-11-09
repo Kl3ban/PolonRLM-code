@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -28,6 +28,7 @@ const minimumRequestIntervalMs = integerEnv('POLONRLM_LIVE_MIN_REQUEST_INTERVAL_
 
 const projectRoot = process.cwd();
 const reportPath = path.resolve('docs/tool-review-live.json');
+const historyPath = path.resolve('docs/tool-review-live-history.jsonl');
 const resume = process.env.POLONRLM_LIVE_TOOL_REVIEW_RESUME === '1';
 const requestedCase = process.env.POLONRLM_LIVE_TOOL_REVIEW_CASE;
 const liveCaseNames = [
@@ -321,6 +322,10 @@ try {
   const missing = finalReport.untested;
   const targetNames = new Set([...inventory, ...mcpNames]); const targetCovered = [...targetNames].filter(name => finalReport.tested.includes(name)).length;
   console.log(`Live review finished. ${targetCovered}/${targetNames.size} registered tools exercised; ${missing.length} untested; token usage ${finalReport.usage.input} in / ${finalReport.usage.output} out.`);
+  await writeHistory();
+} catch (error) {
+  await writeHistory(error).catch(historyError => console.warn(`Could not append live benchmark history: ${safe(historyError)}`));
+  throw error;
 } finally {
   await registry.close().catch(() => {}); await mcp.close().catch(() => {}); store.close();
   await rm(isolated, { recursive: true, force: true, maxRetries: 0 }).catch(async () => {
@@ -343,6 +348,19 @@ async function unlinkReparsePoints(directory: string): Promise<void> {
 }
 
 function safe(value: unknown): string { return redact(value instanceof Error ? value.message : String(value)); }
+
+async function writeHistory(error?: unknown): Promise<void> {
+  const expectedErrors = new Set(['mcp_fixture_failure']);
+  const failed = !!error || checks.some(entry => entry.fatal || entry.missing?.length || entry.unsubstantiatedClaim || entry.errors?.some(item => !expectedErrors.has(item.name)));
+  const record = {
+    date: new Date().toISOString(), status: failed ? 'failed' : 'complete', provider: providerId, model: liveProviderConfig.model,
+    ...(error ? { error: safe(error) } : {}),
+    requests: requests.map(({ id, case: caseName, model: modelId, startedAt, status, firstTokenMs, durationMs, error: requestError }) => ({ id, case: caseName, model: modelId, startedAt, status, firstTokenMs, durationMs, ...(requestError ? { error: safe(requestError) } : {}) })),
+    cases: checks.map(entry => ({ name: entry.name, durationMs: entry.durationMs, called: entry.called, missing: entry.missing, fatal: entry.fatal, errors: entry.errors?.map(item => ({ name: item.name, error: safe(item.error) })) })),
+    usage: { input: checks.reduce((sum, item) => sum + item.usage.input, 0), output: checks.reduce((sum, item) => sum + item.usage.output, 0) },
+  };
+  await appendFile(historyPath, JSON.stringify(record) + '\n', 'utf8');
+}
 
 async function seedWorkspace(): Promise<void> {
   await writeFile(path.join(project, 'README.md'), 'Review baseline.\nSecond line.\n', 'utf8');
