@@ -2,7 +2,7 @@
 
 `npm run bench` runs a local synthetic check for prompt-size estimates and context compaction. Its byte-based token estimate is a comparison signal, not provider billing data.
 
-`npm run bench:live` runs tool-review cases through the selected model against a disposable workspace. It records each model request's first-token and total latency, and checkpoints progress to a redacted, local-only report at `docs/tool-review-live.json`. It also appends a compact per-run history to `docs/tool-review-live-history.jsonl`; the history has no prompts or credentials. Reports and credentials are ignored by Git. File and shell tools only touch the disposable workspace. Desktop control is excluded. Fallback models are disabled so the results measure only the selected provider and model.
+`npm run bench:live` runs tool-review cases through the selected model against a disposable workspace. It records each model request's first-text-token and total latency, and checkpoints progress to a redacted, local-only report at `docs/tool-review-live.json`. It also appends a compact per-run history to `docs/tool-review-live-history.jsonl`, including request latency percentiles and tool names, states, and durations. The history has no prompts, tool arguments, results, or credentials. Reports and credentials are ignored by Git. File and shell tools only touch the disposable workspace. Desktop control is excluded. Fallback models are disabled so the results measure only the selected provider and model.
 
 Live benchmark runs use real provider requests. Configure the provider key in the local vault or its environment variable, then set these process environment variables:
 

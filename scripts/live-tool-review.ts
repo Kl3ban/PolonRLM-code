@@ -352,14 +352,24 @@ function safe(value: unknown): string { return redact(value instanceof Error ? v
 async function writeHistory(error?: unknown): Promise<void> {
   const expectedErrors = new Set(['mcp_fixture_failure']);
   const failed = !!error || checks.some(entry => entry.fatal || entry.missing?.length || entry.unsubstantiatedClaim || entry.errors?.some(item => !expectedErrors.has(item.name)));
+  const durations = requests.flatMap(request => request.durationMs === null ? [] : [request.durationMs]);
+  const firstTextTokens = requests.flatMap(request => request.firstTokenMs === null ? [] : [request.firstTokenMs]);
   const record = {
     date: new Date().toISOString(), status: failed ? 'failed' : 'complete', provider: providerId, model: liveProviderConfig.model,
     ...(error ? { error: safe(error) } : {}),
     requests: requests.map(({ id, case: caseName, model: modelId, startedAt, status, firstTokenMs, durationMs, error: requestError }) => ({ id, case: caseName, model: modelId, startedAt, status, firstTokenMs, durationMs, ...(requestError ? { error: safe(requestError) } : {}) })),
-    cases: checks.map(entry => ({ name: entry.name, durationMs: entry.durationMs, called: entry.called, missing: entry.missing, fatal: entry.fatal, errors: entry.errors?.map(item => ({ name: item.name, error: safe(item.error) })) })),
+    latency: { requestCount: requests.length, completed: requests.filter(request => request.status === 'complete').length, failed: requests.filter(request => request.status === 'error' || request.status === 'aborted').length, meanRequestMs: mean(durations), p50RequestMs: percentile(durations, 0.5), p95RequestMs: percentile(durations, 0.95), medianFirstTextTokenMs: percentile(firstTextTokens, 0.5) },
+    cases: checks.map(entry => ({ name: entry.name, durationMs: entry.durationMs, called: entry.called, missing: entry.missing, fatal: entry.fatal, operations: entry.operations?.map(operation => ({ name: operation.name, state: operation.state, durationMs: operation.ms, ...(operation.error ? { error: safe(operation.error) } : {}) })), errors: entry.errors?.map(item => ({ name: item.name, error: safe(item.error) })) })),
     usage: { input: checks.reduce((sum, item) => sum + item.usage.input, 0), output: checks.reduce((sum, item) => sum + item.usage.output, 0) },
   };
   await appendFile(historyPath, JSON.stringify(record) + '\n', 'utf8');
+}
+
+function mean(values: number[]): number | null { return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null; }
+function percentile(values: number[], fraction: number): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.ceil(fraction * sorted.length) - 1]!;
 }
 
 async function seedWorkspace(): Promise<void> {
