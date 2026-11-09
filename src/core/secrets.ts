@@ -61,13 +61,13 @@ export class SecretVault {
   private async unprotect(id: string): Promise<string | undefined> {
     let encrypted: string;
     try { encrypted = await readFile(this.file(id), 'utf8'); } catch (error: any) { if (error.code === 'ENOENT') return undefined; throw error; }
-    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop";$s=ConvertTo-SecureString ([Console]::In.ReadToEnd()); $p=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); try {[Console]::Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p))} finally {[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p)}'], { input: encrypted, timeout: 15000, windowsHide: true });
+    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop"; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=ConvertTo-SecureString ([Console]::In.ReadToEnd()); $p=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); try {[Console]::Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p))} finally {[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p)}'], { input: encrypted, timeout: 15000, windowsHide: true });
     registerSecret(stdout); return stdout;
   }
   async set(id: string, value: string): Promise<void> {
     registerSecret(value);
     if (process.platform !== 'win32') throw new Error('On this system, use an API environment variable. The DPAPI vault requires Windows.');
-    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop";$s=ConvertTo-SecureString ([Console]::In.ReadToEnd()) -AsPlainText -Force; [Console]::Write((ConvertFrom-SecureString $s))'], { input: value, timeout: 15000, windowsHide: true });
+    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop"; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=ConvertTo-SecureString ([Console]::In.ReadToEnd()) -AsPlainText -Force; [Console]::Write((ConvertFrom-SecureString $s))'], { input: value, timeout: 15000, windowsHide: true });
     const target = this.file(id), temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
     await mkdir(path.dirname(target), { recursive: true });
     try {

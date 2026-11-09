@@ -16,23 +16,30 @@ const registry = new ToolRegistry(workspace.permissions, 15000);
 registerNetworkTools(registry, workspace, settings);
 const checks: Record<string, unknown>[] = [];
 const context = { mode: 'BUILD' as const, signal: AbortSignal.timeout(90000) };
+let initialSearch: unknown;
 try {
   for (const [tool, args] of [
-    ['web_search', { query: 'JanuszGPT', max_results: 6 }],
-    ['web_search', { query: 'JanuszGPT', max_results: 6 }],
+    ['web_search', { query: 'site:docs.python.org asyncio.run', max_results: 6 }],
+    ['web_search', { query: 'site:docs.python.org asyncio.run', max_results: 6 }],
     ['read_webpage', { url: 'https://github.com/python/cpython/blob/main/README.rst', focus_query: 'Python programming language' }],
+    ['fetch_webpage', { url: 'https://github.com/python/cpython/blob/main/README.rst', focus_query: 'Python programming language' }],
+    ['fetch_documentation', { url: 'https://github.com/python/cpython/blob/main/README.rst', focus_query: 'Python programming language' }],
     ['github_repo_inspector', { repo_url: 'https://github.com/python/cpython', subpath: 'Include' }],
     ['download_to_disk', { url: 'https://raw.githubusercontent.com/python/cpython/main/LICENSE', save_filename: 'python-license.txt' }],
   ] as const) {
     const start = Date.now(), output = await registry.execute(tool, args, context), value = JSON.parse(output);
-    if (tool === 'web_search') { assert.ok(Array.isArray(value) && value.length > 0); assert.ok(value.every(item => /^https?:\/\//.test(item.url))); }
-    if (tool === 'read_webpage') { assert.match(value.url, /raw\.githubusercontent\.com/); assert.ok(value.content.length > 20); }
+    if (tool === 'web_search') {
+      assert.ok(Array.isArray(value) && value.length > 0); assert.ok(value.every(item => /^https?:\/\//.test(item.url)));
+      assert.ok(value.some(item => new URL(item.url).hostname === 'docs.python.org'), 'Search should include the official Python documentation.');
+      if (initialSearch === undefined) initialSearch = value; else assert.deepEqual(value, initialSearch, 'Repeated queries should return the cached results.');
+    }
+    if (['read_webpage', 'fetch_webpage', 'fetch_documentation'].includes(tool)) { assert.match(value.url, /raw\.githubusercontent\.com/); assert.ok(value.content.length > 20); assert.equal(value.readable, true); }
     if (tool === 'github_repo_inspector') assert.ok(value.entries.length > 0);
     if (tool === 'download_to_disk') {
       assert.ok((await realpath(value.saved_path)).startsWith(path.join(workspace.root, 'agent_workspace', 'downloads') + path.sep));
       assert.equal(createHash('sha256').update(await readFile(value.saved_path)).digest('hex'), value.sha256);
     }
-    checks.push({ tool, ms: Date.now() - start, bytesReturned: Buffer.byteLength(output), ...(tool === 'web_search' ? { results: value.length } : {}), ...(tool === 'download_to_disk' ? { size: value.size_bytes, sha256: value.sha256 } : {}) });
+    checks.push({ tool, ms: Date.now() - start, bytesReturned: Buffer.byteLength(output), ...(tool === 'web_search' ? { results: value.length, officialResults: value.filter((item: { url: string }) => new URL(item.url).hostname === 'docs.python.org').length } : {}), ...(tool === 'download_to_disk' ? { size: value.size_bytes, sha256: value.sha256 } : {}) });
   }
   await assert.rejects(registry.execute('read_webpage', { url: 'http://127.0.0.1/private' }, context), /SSRF|lokaln|prywatn/);
   checks.push({ tool: 'read_webpage', case: 'loopback rejected', passed: true });

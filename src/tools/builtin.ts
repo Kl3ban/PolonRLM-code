@@ -1,4 +1,5 @@
 import { execa } from 'execa';
+import { rgPath } from '@vscode/ripgrep';
 import path from 'node:path';
 import { applyPatch } from 'diff';
 import { z } from 'zod';
@@ -29,12 +30,12 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
     const target = await workspace.resolve(args.path);
     try {
       const parameters = files ? ['--files', '--glob', args.pattern] : ['--line-number', '--fixed-strings', '--max-count', '5'];
-      const result = await execa('rg', [...parameters, '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.polonrlm', '--glob', '!.januszgpt', ...(files ? ['--', target] : ['--', args.pattern, target])], { cwd: workspace.root, reject: false, timeout: 15000, cancelSignal: context.signal, maxBuffer: 2_000_000, windowsHide: true });
+      const result = await execa(rgPath, [...parameters, '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.polonrlm', '--glob', '!.januszgpt', ...(files ? ['--', target] : ['--', args.pattern, target])], { cwd: workspace.root, reject: false, timeout: 15000, cancelSignal: context.signal, maxBuffer: 2_000_000, windowsHide: true });
       context.signal.throwIfAborted();
       if (result.timedOut || result.isMaxBuffer || (result.exitCode !== undefined && result.exitCode > 1)) throw new Error(`Search failed: ${result.stderr || result.shortMessage || result.exitCode}`);
       const { stdout } = result;
       return stdout.split('\n').slice(0, args.limit).join('\n') || 'No results.';
-    } catch (error: any) { if (error.code !== 'ENOENT') throw error; throw new Error('Install ripgrep (winget install BurntSushi.ripgrep.MSVC) to use search.'); }
+    } catch (error: any) { if (error.code !== 'ENOENT') throw error; throw new Error('The bundled ripgrep executable is missing for this platform. Reinstall PolonRLM.'); }
   }
   registry.add('search_files', 'Find paths using glob with ripgrep.', searchSchema, true, (args, context) => rg(args, true, context));
   registry.add('search_content', 'Find literal text using ripgrep; bounded results.', searchSchema, true, (args, context) => rg(args, false, context));

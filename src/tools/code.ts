@@ -2,6 +2,7 @@ import ts from 'typescript-api';
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
 import { execa } from 'execa';
+import { rgPath } from '@vscode/ripgrep';
 import { z } from 'zod';
 import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
@@ -11,8 +12,8 @@ export function registerCodeTools(registry: ToolRegistry, workspace: Workspace):
   const position = z.object({ path: z.string(), line: z.number().int().positive(), column: z.number().int().positive() });
   async function project(filename: string) {
     const target = await workspace.resolve(filename);
-    const listed = await execa('rg', ['--files', '--glob', '*.{ts,tsx,js,jsx,mts,cts,json}', '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.polonrlm', '--glob', '!.januszgpt'], { cwd: workspace.root, windowsHide: true, timeout: 10000, maxBuffer: 1000000, reject: false });
-    if (listed.exitCode !== 0 && listed.exitCode !== 1) throw new Error('Code indexing requires ripgrep (rg).');
+    const listed = await execa(rgPath, ['--files', '--glob', '*.{ts,tsx,js,jsx,mts,cts,json}', '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.polonrlm', '--glob', '!.januszgpt'], { cwd: workspace.root, windowsHide: true, timeout: 10000, maxBuffer: 1000000, reject: false });
+    if (listed.exitCode !== 0 && listed.exitCode !== 1) throw new Error(`Code indexing failed (ripgrep exit ${listed.exitCode ?? 'unknown'}): ${listed.stderr || listed.shortMessage}`);
     const paths = [...new Set([filename, ...listed.stdout.split(/\r?\n/).filter(Boolean)])];
     if (paths.length > 500) throw new Error('Project exceeds the 500-file index limit. Narrow the workspace.');
     const files = new Map<string, string>(); let size = 0;

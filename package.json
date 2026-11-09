@@ -37,6 +37,8 @@
     "start": "node bin/polonrlm.cjs",
     "bench": "node scripts/benchmark.mjs",
     "test:live": "node scripts/live-smoke.mjs",
+    "test:web:local": "tsx scripts/check-local-web.ts",
+    "test:web:browser": "tsx scripts/check-browser-tools.ts",
     "test:web:live": "tsx scripts/live-web-smoke.ts"
   },
   "dependencies": {
@@ -46,6 +48,7 @@
     "@ai-sdk/openai-compatible": "^3.0.86",
     "@inquirer/prompts": "^8.7.5",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@vscode/ripgrep": "^1.18.0",
     "ai": "^7.0.164",
     "cli-highlight": "^2.1.11",
     "diff": "^9.0.0",
