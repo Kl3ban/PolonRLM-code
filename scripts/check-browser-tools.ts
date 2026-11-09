@@ -60,6 +60,24 @@ try {
   assert.match(JSON.parse(await call('browser', 'forward', { action: 'forward', sessionId })).url, /example\.org/);
   assert.match(JSON.parse(await call('browser', 'reload', { action: 'reload', sessionId })).title, /Example Domain/);
   await call('browser', 'close_tab', { action: 'close_tab', sessionId, tabId: secondTab.tabId });
+
+  const formTab = JSON.parse(await call('browser', 'new_tab', { action: 'new_tab', sessionId, url: 'https://httpbin.org/forms/post' }));
+  const formFields = JSON.parse(await call('browser', 'forms', { action: 'forms', sessionId }));
+  assert.ok(formFields.some((field: { name: string }) => field.name === 'custname'));
+  assert.ok(formFields.some((field: { type: string }) => field.type === 'checkbox'));
+  assert.match(await call('browser', 'fill', { action: 'fill', sessionId, selector: 'input[name="custname"]', text: 'PolonRLM smoke test' }), /Form field updated/);
+  assert.match(await call('browser', 'type', { action: 'type', sessionId, selector: 'input[name="custtel"]', text: '5550100' }), /Text entered/);
+  assert.match(await call('browser', 'press', { action: 'press', sessionId, selector: 'input[name="custname"]', key: 'End' }), /Key sent/);
+  assert.equal(await call('browser', 'check', { action: 'check', sessionId, selector: 'input[name="topping"][value="cheese"]' }), 'Checkbox selected.');
+  assert.equal(await call('browser', 'uncheck', { action: 'uncheck', sessionId, selector: 'input[name="topping"][value="cheese"]' }), 'Checkbox cleared.');
+  assert.match(await call('browser', 'scroll', { action: 'scroll', sessionId, direction: 'down', amount: 250 }), /Scrolled down/);
+  assert.match(await call('browser', 'click', { action: 'click', sessionId, selector: 'fieldset:first-of-type legend' }), /Clicked element/);
+  await call('browser', 'close_tab', { action: 'close_tab', sessionId, tabId: formTab.tabId });
+
+  const selectTab = JSON.parse(await call('browser', 'new_tab', { action: 'new_tab', sessionId, url: 'https://www.selenium.dev/selenium/web/selectPage.html' }));
+  assert.match(selectTab.title, /Selection test page/);
+  assert.match(await call('browser', 'select', { action: 'select', sessionId, selector: '#selectWithoutMultiple', text: 'two' }), /Option selected/);
+  await call('browser', 'close_tab', { action: 'close_tab', sessionId, tabId: selectTab.tabId });
   await call('browser', 'close', { action: 'close', sessionId });
   assert.deepEqual(JSON.parse(await call('browser_sessions', 'list', {})), []);
 
