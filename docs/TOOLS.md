@@ -50,7 +50,7 @@ Transactions group file-tool changes in the current process. `transaction_rollba
 
 ## Requirements and limits
 
-- Search and semantic indexing require `rg` on PATH. Git and Python require their own executables. Choose a browser in `/settings`. Auto checks available installs and downloads Chromium or Firefox only if needed. Chrome and Edge use Playwright channels; Brave uses a detected executable. If installation fails, the error includes the manual command `npx playwright install chromium` or `npx playwright install firefox`.
+- Search and semantic indexing use the ripgrep binary bundled for the current platform; no system `rg` install is needed. Git and Python require their own executables. Choose a browser in `/settings`. Auto checks available installs and downloads Chromium or Firefox only if needed. Chrome and Edge use Playwright channels; Brave uses a detected executable. If installation fails, the error includes the manual command `npx playwright install chromium` or `npx playwright install firefox`.
 - Built-in semantic and AST tools support TS/JS. The index is limited to 500 files and 20 MB and skips dependencies in `node_modules`. It reads local `compilerOptions`, without loading plugins or extending `tsconfig`. Missing dependency types can cause unknown-module diagnostics.
 - `lsp_request` runs the selected, already-installed stdio server for the operation. It supports hover, definitions, references, symbols, and diagnostics. Starting the program requires approval. It does not install language servers. Missing diagnostics are reported explicitly.
 - PDF.js, Mammoth, and ExcelJS are included for supported documents. OCR requires a separate Tesseract install and its `pol`/`eng` language data.

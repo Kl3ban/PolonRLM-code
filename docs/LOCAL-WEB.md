@@ -43,6 +43,8 @@ Rate limits (429), CAPTCHA pages, certificate errors, and changes to search page
 
 `npm test` also runs Python tests when the web runtime is set up. Tests cover DNS pinning, redirects to loopback, stream limits, parsers, BM25 ranking, traversal, SHA-256, filename collisions, and cleanup.
 
-For a live network check, run `npx tsx scripts/check-local-web.ts`. The report is written to `docs/network-integration-check.json`.
+Run `npm run test:web:local` for the direct local check. It verifies official-site search results and caching, the reader aliases, GitHub metadata, a real download's SHA-256, and rejection of loopback URLs. The report is written to `docs/network-integration-check.json`.
 
-The live model test uses tokens and requires the explicit `POLONRLM_LIVE_WEB=1` flag: `npm run test:web:live`. It reads the Google key from local storage, uses a temporary project, and allows read-only tools. It reports argument errors separately from source failures. Its report is `docs/web-live-check.json`.
+Run `npm run test:web:browser` to check the persistent browser, tabs, page actions, screenshots, and one-shot browser automation. It requires a working Playwright Chromium already in the local cache. The preflight does not start the app's installer or download a browser.
+
+The live model test uses tokens and requires the explicit `POLONRLM_LIVE_WEB=1` flag: `npm run test:web:live`. It reads the Google key from the local vault or environment and uses a temporary project. It exercises search, page reading and aliases, GitHub metadata, a bounded download, persistent browser sessions, and one-shot automation. Chromium is checked before any model call and the test does not install it. The test grants narrowly scoped approval only for the URLs and actions in its cases. It reports tool-call errors separately from upstream failures. Its local report is `docs/web-live-check.json`.
