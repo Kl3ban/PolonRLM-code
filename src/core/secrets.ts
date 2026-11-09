@@ -42,6 +42,10 @@ export class StreamRedactor {
   }
   flush(): string { const output = redact(this.pending); this.pending = ''; return output; }
 }
+// PowerShell's SecureString cmdlets autoload inconsistently in CI. Direct DPAPI
+// retains the same hex blob format, so credentials already saved by older builds still decrypt.
+const dpapiUnprotect = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $hex=[Console]::In.ReadToEnd().Trim(); if ($hex.Length -eq 0 -or ($hex.Length % 2) -ne 0 -or $hex -notmatch '^[0-9A-Fa-f]+$') { throw 'Invalid DPAPI ciphertext.' }; $cipher=New-Object byte[] ($hex.Length / 2); for ($i=0; $i -lt $hex.Length; $i+=2) { $cipher[$i/2]=[Convert]::ToByte($hex.Substring($i,2),16) }; $plain=$null; try { $plain=[Security.Cryptography.ProtectedData]::Unprotect($cipher,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Write([Text.Encoding]::Unicode.GetString($plain)) } finally { [Array]::Clear($cipher,0,$cipher.Length); if ($plain) { [Array]::Clear($plain,0,$plain.Length) } }";
+const dpapiProtect = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $plain=[Text.Encoding]::Unicode.GetBytes([Console]::In.ReadToEnd()); $cipher=$null; try { $cipher=[Security.Cryptography.ProtectedData]::Protect($plain,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Write([BitConverter]::ToString($cipher).Replace('-','')) } finally { [Array]::Clear($plain,0,$plain.Length); if ($cipher) { [Array]::Clear($cipher,0,$cipher.Length) } }";
 export class SecretVault {
   private cached = new Map<string, Promise<string | undefined>>();
   constructor(private home: string) {}
@@ -61,13 +65,13 @@ export class SecretVault {
   private async unprotect(id: string): Promise<string | undefined> {
     let encrypted: string;
     try { encrypted = await readFile(this.file(id), 'utf8'); } catch (error: any) { if (error.code === 'ENOENT') return undefined; throw error; }
-    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop"; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=ConvertTo-SecureString ([Console]::In.ReadToEnd()); $p=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); try {[Console]::Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($p))} finally {[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($p)}'], { input: encrypted, timeout: 15000, windowsHide: true });
+    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', dpapiUnprotect], { input: encrypted, timeout: 15000, windowsHide: true });
     registerSecret(stdout); return stdout;
   }
   async set(id: string, value: string): Promise<void> {
     registerSecret(value);
     if (process.platform !== 'win32') throw new Error('On this system, use an API environment variable. The DPAPI vault requires Windows.');
-    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop"; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=ConvertTo-SecureString ([Console]::In.ReadToEnd()) -AsPlainText -Force; [Console]::Write((ConvertFrom-SecureString $s))'], { input: value, timeout: 15000, windowsHide: true });
+    const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', dpapiProtect], { input: value, timeout: 15000, windowsHide: true });
     const target = this.file(id), temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
     await mkdir(path.dirname(target), { recursive: true });
     try {
