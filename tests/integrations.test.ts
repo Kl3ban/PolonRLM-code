@@ -68,9 +68,9 @@ test('corrupt skill registry degrades safely, keeps installed skills disabled, a
 
   const listed = await manager.list();
   assert.equal(listed.find(skill => skill.name === 'orphaned-helper')?.enabled, false);
-  assert.match(manager.warnings().join('\n'), /Rejestr/);
+  assert.match(manager.warnings().join('\n'), /Registry/);
   assert.equal((await manager.match('diagnose regression failures')).includes('orphaned-helper'), false);
-  await assert.rejects(manager.remove('orphaned-helper'), /registry|rejestr/i);
+  await assert.rejects(manager.remove('orphaned-helper'), /registry/i);
   assert.match(await readFile(join(directory, 'SKILL.md'), 'utf8'), /orphaned-helper/);
   await assert.rejects(manager.enable('orphaned-helper'), /repair/);
 

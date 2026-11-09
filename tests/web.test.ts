@@ -9,7 +9,7 @@ import { defaultSettings } from '../src/core/config.js';
 import { Permissions } from '../src/core/permissions.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { Workspace } from '../src/tools/workspace.js';
-import { registerBrowserSessionTools, summarizeBrowserTab } from '../src/tools/browser-session.js';
+import { checkboxStatus, registerBrowserSessionTools, summarizeBrowserTab } from '../src/tools/browser-session.js';
 
 const publicResolver: PublicResolver = async () => [{ address: '8.8.8.8', family: 4 }];
 
@@ -89,4 +89,9 @@ test('a closed browser tab does not prevent the remaining tabs from being summar
   assert.deepEqual(closed, { id: 'closed', url: 'https://example.test/path', title: '', active: true });
   const broken = await summarizeBrowserTab('broken', { url: () => { throw new Error('unavailable'); }, isClosed: () => false, title: async () => 'unused' }, false);
   assert.deepEqual(broken, { id: 'broken', url: '', title: '', active: false });
+});
+
+test('browser checkbox actions report status in English', () => {
+  assert.equal(checkboxStatus('check'), 'Checkbox selected.');
+  assert.equal(checkboxStatus('uncheck'), 'Checkbox cleared.');
 });

@@ -42,7 +42,7 @@ export class SkillsManager {
   async list(): Promise<SkillInfo[]> {
     const registry = await this.registry();
     const skills = new Map<string, SkillInfo>();
-    const problems: string[] = this.registryProblem ? [`Rejestr: ${this.registryProblem}`] : [];
+    const problems: string[] = this.registryProblem ? [`Registry: ${this.registryProblem}`] : [];
     for (const root of this.roots) {
       let entries;
       try { entries = await readdir(root, { withFileTypes: true }); }

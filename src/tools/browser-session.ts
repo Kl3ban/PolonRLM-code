@@ -16,6 +16,10 @@ export async function summarizeBrowserTab(id: string, tab: Pick<Page, 'url' | 'i
   catch { return { id, url: '', title: '', active }; }
 }
 
+export function checkboxStatus(action: 'check' | 'uncheck'): string {
+  return action === 'check' ? 'Checkbox selected.' : 'Checkbox cleared.';
+}
+
 export function registerBrowserSessionTools(registry: ToolRegistry, workspace: Workspace, engine: () => BrowserEngine = () => 'auto'): void {
   const sessions = new Map<string, Session>();
   const close = async (id: string) => { const session = sessions.get(id); if (!session) return; sessions.delete(id); session.pages.clear(); try { await session.browser.close(); } finally { await session.proxy.close(); } };
@@ -109,8 +113,8 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
     if (action === 'fill') { if (args.text === undefined) throw new Error('Provide text.'); await locator.fill(args.text); return 'Form field updated.'; }
     if (action === 'type') { if (args.text === undefined) throw new Error('Provide text.'); await locator.pressSequentially(args.text, { delay: 20 }); return 'Text entered.'; }
     if (action === 'select') { if (args.text === undefined) throw new Error('Provide text with an option value.'); await locator.selectOption(args.text); return 'Option selected.'; }
-    if (action === 'check') { await locator.check(); return 'Checkbox selected.'; }
-    if (action === 'uncheck') { await locator.uncheck(); return 'Pole odznaczone.'; }
+    if (action === 'check') { await locator.check(); return checkboxStatus(action); }
+    if (action === 'uncheck') { await locator.uncheck(); return checkboxStatus(action); }
     throw new Error('Unsupported browser action.');
   }, args => ['click', 'fill', 'type', 'press', 'select', 'check', 'uncheck'].includes(args.action));
 
