@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { AgentRuntime } from '../src/core/runtime.js';
+import { OPTIONAL_TOOLS_GUIDANCE } from '../src/core/tool-guidance.js';
 import { compactMessages, estimateTokens } from '../src/core/context.js';
 import { defaultSettings } from '../src/core/config.js';
 import { SessionStore } from '../src/core/store.js';
@@ -226,6 +227,35 @@ test('runtime exposes local web research tools without unrelated browser control
     return reply('Code inspected.');
   });
   await coding.runtime.run(coding.session, 'Sprawdź funkcję src/index.ts.', new AbortController().signal);
+});
+
+test('compact optional-tool guidance retains discovery cues and loads an exact schema on demand', async t => {
+  const requiredGuidance = [
+    'browser/browser_sessions', 'read_files/search_batch', 'code_diagnostics', 'symbol_*', 'rename_symbol',
+    'ast_search/ast_edit/code_outline', 'lsp_request', 'process_*', 'transaction_*', 'checkpoint_*',
+    'git_log/git_show/git_blame', 'plan_update/plan_status', 'Load only needed schemas.',
+    'After code changes, check diagnostics.', 'Restore checkpoints only with current hashes;',
+    'plan status is not proof of completion.',
+  ];
+  for (const cue of requiredGuidance) assert.ok(OPTIONAL_TOOLS_GUIDANCE.includes(cue), `missing prompt cue: ${cue}`);
+  assert.ok(Buffer.byteLength(OPTIONAL_TOOLS_GUIDANCE, 'utf8') < 450, 'the optional-tool index should stay compact');
+
+  let calls = 0;
+  const h = await harness(t, async (messages, specs) => {
+    calls++;
+    assert.ok(messages.some(message => message.role === 'system' && message.content.includes(OPTIONAL_TOOLS_GUIDANCE)));
+    if (calls === 1) {
+      assert.ok(specs.some(spec => spec.name === 'discover_tools'));
+      return reply('', [{ id: 'discover-checkpoint-restore', name: 'discover_tools', arguments: { query: 'checkpoint_restore' } }]);
+    }
+    const restore = specs.find(spec => spec.name === 'checkpoint_restore');
+    assert.ok(restore, 'discovery should load the exact optional schema');
+    assert.deepEqual(Object.keys(restore.parameters.properties as Record<string, unknown>).sort(), ['expected', 'id']);
+    assert.match(messages.at(-1)?.content ?? '', /checkpoint_restore/);
+    return reply('The checkpoint restore schema is available.');
+  });
+  assert.equal(await h.runtime.run(h.session, 'Inspect checkpoint_restore without changing files.', new AbortController().signal), 'The checkpoint restore schema is available.');
+  assert.equal(calls, 2);
 });
 
 test('explicit browser_automation request stays available while reading a URL', async t => {
