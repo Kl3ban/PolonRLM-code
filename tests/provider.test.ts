@@ -184,6 +184,25 @@ test('authentication errors do not retry or leak API key', async () => {
   } finally { await local.close(); }
 });
 
+test('overloaded model errors recommend retrying the selected model without suggesting a switch', async () => {
+  const models: string[] = [];
+  const local = await server(async (request, response) => {
+    let body = ''; for await (const part of request) body += part;
+    models.push(JSON.parse(body).model);
+    response.writeHead(429, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'deepseek-v4-flash-free is experiencing high demand right now. Please try again later, or switch the model identifier to deepseek-v4-flash to continue.' } }));
+  });
+  try {
+    await assert.rejects(createProvider(config(local.baseURL), undefined, 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, 'The selected provider is temporarily busy. Wait briefly, then retry the selected model.');
+      assert.ok(!error.message.includes('deepseek-v4-flash'));
+      return true;
+    });
+    assert.ok(models.length >= 1 && models.every(model => model === 'test-model'));
+  } finally { await local.close(); }
+});
+
 test('abort interrupts an active stream without retrying', async () => {
   let count = 0;
   const local = await server((_request, response) => {

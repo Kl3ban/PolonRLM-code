@@ -124,7 +124,11 @@ function modelInfo(value: unknown, google: boolean): ModelInfo | undefined {
 function cleanError(error: unknown, secret: string | undefined): Error {
   const text = error instanceof Error ? error.message : String(error);
   const cleaned = secret ? text.split(secret).join('[REDACTED]') : text;
-  const result = new Error(cleaned.replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]'));
+  const safeMessage = cleaned.replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]');
+  const message = /\bhigh demand\b|rate.?limit|too many requests|overloaded|HTTP\s*429/i.test(safeMessage)
+    ? 'The selected provider is temporarily busy. Wait briefly, then retry the selected model.'
+    : safeMessage;
+  const result = new Error(message);
   if (error instanceof Error) result.name = error.name;
   return result;
 }
