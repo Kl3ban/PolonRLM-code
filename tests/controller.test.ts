@@ -331,3 +331,15 @@ test('CLI --model reaches endpoint and invalid --session fails without starting 
     assert.equal(failed.exitCode, 1); assert.match(failed.stderr, /No session was found/); assert.equal(requests.length, 1);
   } finally { await local.dispose(); }
 });
+
+test('CLI doctor finds bundled ripgrep when PATH has no rg', { timeout: 15000 }, async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'polonrlm-doctor-'));
+  const workspace = path.join(folder, 'workspace'); const home = path.join(folder, 'home'); await mkdir(workspace);
+  try {
+    const result = await execa(process.execPath, ['--import', 'tsx', path.resolve('src/cli.ts'), 'doctor', '--workspace', workspace], {
+      cwd: process.cwd(), env: { ...process.env, POLONRLM_HOME: home, PATH: '' }, timeout: 10000, reject: false, windowsHide: true,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /rg: ripgrep \d/);
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});
