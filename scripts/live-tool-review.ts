@@ -17,6 +17,7 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { registerBuiltins } from '../src/tools/builtin.js';
 import { createProvider } from '../src/providers/provider.js';
 import type { RuntimeEvent } from '../src/core/types.js';
+import { isProviderFailure, liveReviewFindings } from './live-review-report.js';
 
 if (process.env.POLONRLM_LIVE_TOOL_REVIEW !== '1') throw new Error("This benchmark uses real model tokens. Set POLONRLM_LIVE_TOOL_REVIEW=1 after the user's explicit authorization.");
 
@@ -181,17 +182,20 @@ async function runCase(name: string, prompt: string, required: string[], options
   const called = [...new Set(operations.map(event => event.name!).filter(Boolean))];
   const errors = operations.filter(event => event.state === 'error').map(event => ({ name: event.name, detail: event.toolDetail ? safe(event.toolDetail) : undefined, error: safe(event.text) }));
   const toolResults = store.messages(session).filter(message => message.role === 'tool').map(message => ({ name: message.name, isError: !!message.isError, result: message.name === 'inspect_process' ? '[Host process details omitted from report.]' : redact(message.content).slice(0, 1200) }));
+  const providerFailure = isProviderFailure(fatal);
   const unsubstantiatedClaim = called.length === 0 && /urucham\w*|wykon\w*|sprawdz\w*|zadzia\w*|exit code|wynik:/i.test(answer);
   const evidence = options.verify ? await options.verify().catch(error => `verification failed: ${safe(error)}`) : undefined;
-  const entry = { name, durationMs: Date.now() - start, required, called, missing: required.filter(tool => !called.includes(tool)),
-    errors, fatal, unsubstantiatedClaim, evidence, answer: name === 'shell-and-system-commands' ? '[Summary omitted to avoid storing host process details.]' : redact(answer), operations: operations.map(event => ({ name: event.name, detail: event.toolDetail ? safe(event.toolDetail) : undefined, state: event.state, ms: event.durationMs, ...(event.state === 'error' ? { error: safe(event.text) } : {}) })), toolResults, usage: store.usage(session) };
+  const entry = { name, durationMs: Date.now() - start, required, called, missing: providerFailure ? [] : required.filter(tool => !called.includes(tool)),
+    errors, fatal, providerFailure, unsubstantiatedClaim, evidence, answer: name === 'shell-and-system-commands' ? '[Summary omitted to avoid storing host process details.]' : redact(answer), operations: operations.map(event => ({ name: event.name, detail: event.toolDetail ? safe(event.toolDetail) : undefined, state: event.state, ms: event.durationMs, ...(event.state === 'error' ? { error: safe(event.text) } : {}) })), toolResults, usage: store.usage(session) };
   const old = checks.findIndex(check => check.name === name); if (old >= 0) checks.splice(old, 1);
   checks.push(entry);
   const current = store.usage(session); usage.input += current.input; usage.output += current.output; usage.cost += current.cost;
   activeCase = undefined;
   await writeReport();
-  console.log(`${name}: ${required.length - entry.missing.length}/${required.length} expected tools; ${errors.length} tool errors; ${entry.durationMs}ms`);
-  if (fatal && /timeout|timed out|aborted|fetch failed|ECONN|ENOTFOUND|forbidden|high demand|rate.?limit|too many requests|quota|overloaded|HTTP\s+[45]\d\d/i.test(fatal)) {
+  console.log(providerFailure
+    ? `${name}: provider unavailable before tool review completed; ${called.length} tool calls; ${entry.durationMs}ms`
+    : `${name}: ${required.length - entry.missing.length}/${required.length} expected tools; ${errors.length} tool errors; ${entry.durationMs}ms`);
+  if (providerFailure) {
     throw new Error(`Provider request failed during ${name}; the redacted report is saved at ${reportPath}. Stopped to avoid repeating a failing API call.`);
   }
 }
@@ -201,12 +205,7 @@ function writeReport(): Promise<void> {
   const pending = reportWriteQueue.then(async () => {
   const tested = new Set(checks.flatMap(entry => entry.called));
   const expectedErrors = new Set(['mcp_fixture_failure']);
-  const findings = checks.flatMap(entry => [
-    ...entry.missing.map(name => ({ severity: 'medium', area: entry.name, status: 'required tool not called', evidence: name })),
-    ...entry.errors.filter(error => !expectedErrors.has(error.name)).map(error => ({ severity: 'medium', area: `${entry.name}/${error.name}`, status: 'tool returned an error', evidence: error.error })),
-    ...(entry.fatal ? [{ severity: 'high', area: entry.name, status: 'case failed', evidence: entry.fatal }] : []),
-    ...(entry.unsubstantiatedClaim ? [{ severity: 'medium', area: entry.name, status: 'action claim without a tool call', evidence: entry.answer }] : []),
-  ]);
+  const findings = checks.flatMap(entry => liveReviewFindings(entry, expectedErrors));
   const report = { date: new Date().toISOString(), status: activeCase ? 'running' : checks.some(entry => entry.fatal) ? 'failed' : checks.length ? 'checkpoint' : 'ready', activeCase, provider: providerId, model: liveProviderConfig.model, requestTimeoutMs, caseTimeoutMs, requests, permissions: 'file operations confined to disposable workspace; inspect_process read host metadata; no process was terminated', computerUse: 'excluded and not registered', inventory,
     runtimeTools: ['discover_tools','request_tool','ask_question','finish_interview','load_skill','remember','search_history','get_goal','update_goal','delegate','agent_message','agent_changes','agent_apply'],
     findings,
@@ -359,7 +358,7 @@ async function writeHistory(error?: unknown): Promise<void> {
     ...(error ? { error: safe(error) } : {}),
     requests: requests.map(({ id, case: caseName, model: modelId, startedAt, status, firstTokenMs, durationMs, error: requestError }) => ({ id, case: caseName, model: modelId, startedAt, status, firstTokenMs, durationMs, ...(requestError ? { error: safe(requestError) } : {}) })),
     latency: { requestCount: requests.length, completed: requests.filter(request => request.status === 'complete').length, failed: requests.filter(request => request.status === 'error' || request.status === 'aborted').length, meanRequestMs: mean(durations), p50RequestMs: percentile(durations, 0.5), p95RequestMs: percentile(durations, 0.95), medianFirstTextTokenMs: percentile(firstTextTokens, 0.5) },
-    cases: checks.map(entry => ({ name: entry.name, durationMs: entry.durationMs, called: entry.called, missing: entry.missing, fatal: entry.fatal, operations: entry.operations?.map(operation => ({ name: operation.name, state: operation.state, durationMs: operation.ms, ...(operation.error ? { error: safe(operation.error) } : {}) })), errors: entry.errors?.map(item => ({ name: item.name, error: safe(item.error) })) })),
+    cases: checks.map(entry => ({ name: entry.name, durationMs: entry.durationMs, called: entry.called, missing: entry.missing, fatal: entry.fatal, providerFailure: entry.providerFailure, operations: entry.operations?.map(operation => ({ name: operation.name, state: operation.state, durationMs: operation.ms, ...(operation.error ? { error: safe(operation.error) } : {}) })), errors: entry.errors?.map(item => ({ name: item.name, error: safe(item.error) })) })),
     usage: { input: checks.reduce((sum, item) => sum + item.usage.input, 0), output: checks.reduce((sum, item) => sum + item.usage.output, 0) },
   };
   await appendFile(historyPath, JSON.stringify(record) + '\n', 'utf8');
