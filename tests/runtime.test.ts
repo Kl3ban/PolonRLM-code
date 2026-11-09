@@ -922,8 +922,11 @@ test('compaction bounds a long single turn without orphan tool replies or lost c
 test('automatic compaction persists structured context and can retrieve exact older details on demand', async t => {
   const needle = 'immutable-ancient-constraint-token';
   let calls = 0;
-  const h = await harness(t, async (messages, tools) => {
+  let h!: Awaited<ReturnType<typeof harness>>;
+  h = await harness(t, async (messages, tools) => {
     calls++;
+    const requestTokens = estimateTokens([messages, tools]);
+    assert.ok(requestTokens <= h.settings.maxInputTokens, `complete request estimate ${requestTokens} exceeds ${h.settings.maxInputTokens}`);
     if (calls === 1) {
       assert.ok(messages.some(message => message.name === 'polonrlm_context'));
       assert.equal(tools.some(tool => tool.name === 'search_history'), false, 'history search appears on the next step after compaction');

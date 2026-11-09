@@ -328,13 +328,27 @@ ${skills.join('\n')}`;
       const outputLimits = candidates.map(candidate => Math.min(this.settings.maxOutputTokens, candidate.maxOutputTokens ?? this.settings.maxOutputTokens));
       const maximum = Math.min(this.settings.maxInputTokens, ...candidates.map((candidate, index) => (candidate.contextWindow ?? Infinity) - outputLimits[index]!));
       const overhead = estimateTokens([system, estimateSpecs]);
-      const compacted = compactMessages(messages, Math.max(500, maximum - overhead));
+      let compactionBudget = Math.max(500, maximum - overhead);
+      let compacted = compactMessages(messages, compactionBudget);
+      let estimated = estimateTokens([[system, ...compacted.messages], estimateSpecs]);
+      // The complete request has a different JSON envelope than the separately estimated prompt and history.
+      // If rounding crosses the boundary, tighten only the compacted history before rejecting the request.
+      for (let attempt = 0; estimated > maximum && attempt < 3 && compactionBudget > 500; attempt++) {
+        const nextBudget = Math.max(500, compactionBudget - (estimated - maximum + 2));
+        if (nextBudget === compactionBudget) break;
+        const tighter = compactMessages(messages, nextBudget);
+        const tighterEstimate = estimateTokens([[system, ...tighter.messages], estimateSpecs]);
+        if (tighterEstimate >= estimated) break;
+        compacted = tighter;
+        compactionBudget = nextBudget;
+        estimated = tighterEstimate;
+      }
       if (compacted.removed || compacted.shortened) {
         messages.splice(0, messages.length, ...compacted.messages);
         if (!depth) this.store.archiveContext(session, compacted.messages);
       }
       const input = [system, ...messages];
-      const estimated = estimateTokens([input, estimateSpecs]);
+      estimated = estimateTokens([input, estimateSpecs]);
       if (estimated > maximum) throw new Error('Context exceeds the limit. Use /compact, a smaller task, or increase maxInputTokens.');
       const reserve = Math.ceil(estimated * 1.25) + Math.max(...outputLimits);
       if (budget.calls >= this.settings.maxSteps) throw new Error(`Shared limit of ${this.settings.maxSteps} model calls reached.`);
