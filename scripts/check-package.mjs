@@ -10,7 +10,7 @@ assert.ok(pack?.files?.length, 'npm pack returned no file list.');
 
 const unexpected = pack.files
   .map(file => file.path)
-  .filter(file => /(?:^|\/)__pycache__(?:\/|$)|\.py[co]$|^docs\/(?:tool-review-live|web-live-check|audit-progress|STATUS)(?:\.|\/|$)|\.log$/i.test(file));
+  .filter(file => /(?:^|\/)__pycache__(?:\/|$)|\.py[co]$|^docs\/(?:tool-review-live|web-live-check|audit-progress|STATUS)(?:\.|\/|$)|\.log$|(?:^|\/)\.env(?:\.|\/|$)|(?:^|\/)credentials(?:\/|$)|\.(?:sqlite(?:-[^/]+)?|db(?:-[^/]+)?|pem|p12|key|dpapi)$/i.test(file));
 
-assert.deepEqual(unexpected, [], `Unexpected local artifacts in npm package:\n${unexpected.join('\n')}`);
-console.log(`Package contents OK (${pack.files.length} files; no local reports or Python bytecode).`);
+assert.deepEqual(unexpected, [], `Unexpected local or secret-bearing files in npm package:\n${unexpected.join('\n')}`);
+console.log(`Package contents OK (${pack.files.length} files; no local reports, secrets, or Python bytecode).`);
