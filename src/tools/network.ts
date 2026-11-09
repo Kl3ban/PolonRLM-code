@@ -1,4 +1,4 @@
-import { access, readdir, rm } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -29,11 +29,34 @@ export async function setupNetworkRuntime(): Promise<string> {
 }
 
 let runtimeSetup: Promise<string> | undefined;
+let verifiedRuntime: string | undefined;
+
+async function hasNetworkDependencies(python: string): Promise<boolean> {
+  try {
+    const result = await execa(python, ['-I', '-c', 'import sys; assert sys.version_info >= (3, 11); import curl_cffi, lxml, pydantic, rank_bm25, trafilatura'], { reject: false, timeout: 5000, windowsHide: true });
+    return result.exitCode === 0;
+  } catch { return false; }
+}
+
+export async function resolveNetworkRuntime(
+  current: string,
+  overridden: boolean,
+  probe: (python: string) => Promise<boolean>,
+  setup: () => Promise<string>,
+): Promise<string> {
+  if (await probe(current)) return current;
+  if (overridden) throw new Error('POLONRLM_WEB_PYTHON is not a working Python 3.11+ interpreter with the required web dependencies. Fix the path and install the local-web requirements, or unset it for automatic setup.');
+  const installed = await setup();
+  if (!await probe(installed)) throw new Error('Web runtime setup finished, but its required dependencies are still missing. Run PolonRLM setup web and check the pip output.');
+  return installed;
+}
+
 export async function ensureNetworkRuntime(): Promise<string> {
   const python = networkPython();
-  try { await access(python); return python; } catch { /* Install only on first use. */ }
-  if (process.env.POLONRLM_WEB_PYTHON) throw new Error('POLONRLM_WEB_PYTHON points to a missing interpreter. Fix its path or unset it for automatic setup.');
-  runtimeSetup ??= setupNetworkRuntime().finally(() => { runtimeSetup = undefined; });
+  if (verifiedRuntime === python) return python;
+  runtimeSetup ??= resolveNetworkRuntime(python, !!process.env.POLONRLM_WEB_PYTHON, hasNetworkDependencies, setupNetworkRuntime)
+    .then(value => { verifiedRuntime = value; return value; })
+    .finally(() => { runtimeSetup = undefined; });
   return runtimeSetup;
 }
 

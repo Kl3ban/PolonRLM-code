@@ -4,7 +4,7 @@ Each operation starts a separate Python process over stdio, reads compact JSON, 
 
 ## Setup and direct use
 
-Python 3.11 or newer is required. Set up the helper once with `PolonRLM setup web` or `py -3.11 scripts/setup_local_web.py`. Dependencies from `scripts/local-web-requirements.lock.txt` are installed in the private `%LOCALAPPDATA%/PolonRLM/web-runtime` directory, without changing global packages. Set `POLONRLM_WEB_PYTHON` to select a specific interpreter.
+Python 3.11 or newer is required. Set up the helper once with `PolonRLM setup web` or `py -3.11 scripts/setup_local_web.py`. Dependencies from `scripts/local-web-requirements.lock.txt` are installed in the private `%LOCALAPPDATA%/PolonRLM/web-runtime` directory, without changing global packages. The first web request checks that this runtime has all required dependencies and retries setup if an earlier install was interrupted. Set `POLONRLM_WEB_PYTHON` to select a specific interpreter; it must already have the web dependencies installed, and PolonRLM will not modify it.
 
 `scripts/local_web_tool.py` accepts JSON on stdin or as an argument, for example:
 
