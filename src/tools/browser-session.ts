@@ -6,7 +6,7 @@ import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
 import { createSafeEgressProxy, publicURL, type SafeEgressProxy } from './web.js';
 
-type Session = { id: string; browser: Browser; proxy: SafeEgressProxy; context: BrowserContext; pages: Map<string, Page>; active: string; created: number; touched: number };
+type Session = { id: string; engine: Exclude<BrowserEngine, 'auto'>; browser: Browser; proxy: SafeEgressProxy; context: BrowserContext; pages: Map<string, Page>; active: string; created: number; touched: number };
 const maxSessions = 3;
 const maxTabs = 8;
 const maxAge = 30 * 60_000;
@@ -29,7 +29,7 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
 
   registry.add('browser_sessions', 'List open browser sessions and their tabs.', z.object({}), true, async () => {
     for (const session of sessions.values()) if (Date.now() - session.touched > maxAge) await close(session.id);
-    return Promise.all([...sessions.values()].map(async session => ({ id: session.id, activeTab: session.active, tabs: await Promise.all([...session.pages].map(([id, p]) => summarizeBrowserTab(id, p, id === session.active))) })));
+    return Promise.all([...sessions.values()].map(async session => ({ id: session.id, engine: session.engine, activeTab: session.active, tabs: await Promise.all([...session.pages].map(([id, p]) => summarizeBrowserTab(id, p, id === session.active))) })));
   });
   registry.add('browser', 'Persistent headless browser. Read-only navigation and inspection work in PLAN/REVIEW. Clicks and form interactions require BUILD. Public HTTP(S) sites only; screenshots are sent to the vision model. Each action follows the configured permission policy.', z.object({
     action: z.enum(['launch', 'navigate', 'back', 'forward', 'reload', 'new_tab', 'activate_tab', 'close_tab', 'tabs', 'forms', 'links', 'click', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'scroll', 'wait', 'text', 'screenshot', 'close']),
@@ -54,8 +54,8 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
       await publicURL(args.url);
       if (sessions.size >= maxSessions) throw new Error(`Browser session limit reached (${maxSessions}).`);
        const proxy = await createSafeEgressProxy();
-       let browser: Browser;
-       try { ({ browser } = await launchBrowser(engine(), proxy.url, context.signal)); }
+       let browser: Browser; let selectedEngine: Exclude<BrowserEngine, 'auto'>;
+       try { ({ browser, engine: selectedEngine } = await launchBrowser(engine(), proxy.url, context.signal)); }
        catch (error) { await proxy.close(); throw error; }
       try {
         const browserContext = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block', viewport: { width: 1365, height: 900 } });
@@ -70,9 +70,9 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
         const first = await browserContext.newPage(); first.setDefaultTimeout(10000);
         await first.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
         const tabId = randomUUID().slice(0, 8), id = randomUUID().slice(0, 10);
-         const session = { id, browser, proxy, context: browserContext, pages: new Map([[tabId, first]]), active: tabId, created: Date.now(), touched: Date.now() };
+         const session = { id, engine: selectedEngine, browser, proxy, context: browserContext, pages: new Map([[tabId, first]]), active: tabId, created: Date.now(), touched: Date.now() };
         sessions.set(id, session);
-        return JSON.stringify({ sessionId: id, tabId, url: visibleUrl(first.url()), title: await first.title() });
+        return JSON.stringify({ sessionId: id, tabId, engine: selectedEngine, url: visibleUrl(first.url()), title: await first.title() });
        } catch (error) { try { await browser.close(); } finally { await proxy.close(); } throw error; }
     }
     if (!args.sessionId) throw new Error('Provide sessionId.');

@@ -16,7 +16,7 @@ const probe = await chromium.launch({ headless: true });
 await probe.close();
 
 const root = await mkdtemp(path.join(tmpdir(), 'polon-browser-tools-'));
-const settings = { ...defaultSettings(), browserEngine: 'chromium' as const, mode: 'BUILD' as const, permissions: 'workspace' as const, toolPermissions: { browser: 'auto' as const, browser_automation: 'auto' as const } };
+const settings = { ...defaultSettings(), browserEngine: 'auto' as const, mode: 'BUILD' as const, permissions: 'workspace' as const, toolPermissions: { browser: 'auto' as const, browser_automation: 'auto' as const } };
 const permissions = new Permissions(settings);
 const workspace = await Workspace.open(root, permissions);
 const registry = new ToolRegistry(permissions, settings.toolOutputLimit);
@@ -33,6 +33,7 @@ async function call(tool: string, action: string, args: Record<string, unknown>)
 
 try {
   const opened = JSON.parse(await call('browser', 'launch', { action: 'launch', url: 'https://example.com' }));
+  assert.ok(['chromium', 'chrome', 'edge', 'brave', 'firefox'].includes(opened.engine));
   assert.match(opened.url, /^https:\/\/example\.com\/?$/);
   assert.match(opened.title, /Example Domain/);
   const sessionId = opened.sessionId as string;
@@ -41,6 +42,7 @@ try {
   const listed = JSON.parse(await call('browser_sessions', 'list', {}));
   assert.equal(listed.length, 1);
   assert.equal(listed[0].id, sessionId);
+  assert.equal(listed[0].engine, opened.engine);
   const tabs = JSON.parse(await call('browser', 'tabs', { action: 'tabs', sessionId }));
   assert.equal(tabs.length, 1);
   assert.equal(tabs[0].id, firstTab);
