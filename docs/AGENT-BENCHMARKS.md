@@ -11,7 +11,7 @@ $env:POLONRLM_LIVE_TOOL_REVIEW = '1'
 $env:POLONRLM_LIVE_PROVIDER = 'custom'
 $env:POLONRLM_LIVE_BASE_URL = 'https://api.teamorouter.com/v1'
 $env:POLONRLM_LIVE_API_KEY = '<your TeamRouter key>'
-$env:POLONRLM_LIVE_MODEL = 'deepseek-flash-free'
+$env:POLONRLM_LIVE_MODEL = 'deepseek-v4-flash-free'
 $env:POLONRLM_LIVE_REQUEST_TIMEOUT_MS = '120000'
 $env:POLONRLM_LIVE_CASE_TIMEOUT_MS = '600000'
 npm run bench:live
@@ -25,7 +25,7 @@ For a one-off OpenAI-compatible endpoint, use the `custom` provider and pass its
 $env:POLONRLM_LIVE_PROVIDER = 'custom'
 $env:POLONRLM_LIVE_BASE_URL = 'https://api.teamorouter.com/v1'
 $env:POLONRLM_LIVE_API_KEY = '<your key>'
-$env:POLONRLM_LIVE_MODEL = 'deepseek-flash-free'
+$env:POLONRLM_LIVE_MODEL = 'deepseek-v4-flash-free'
 ~~~
 
 When a model ID is supplied explicitly, the benchmark can proceed if the endpoint does not implement `/models`; the actual completion/tool-call request still verifies support.
