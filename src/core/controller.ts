@@ -60,6 +60,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /clear                            Clear the view
 /exit                             Exit`;
 const MODEL_METADATA = ['contextWindow', 'maxOutputTokens', 'reasoningSupported', 'toolCalling', 'vision', 'inputPrice', 'outputPrice'] as const;
+const MAX_IMAGES_PER_TASK = 5;
 function updateModel(provider: ProviderConfig, id: string, metadata?: ModelInfo): void {
   for (const key of MODEL_METADATA) {
     delete provider[key];
@@ -249,12 +250,12 @@ export class Controller implements UIController {
     this.sync();
   }
   async addImagePath(filename: string): Promise<void> {
-    if (this.state.busy || this.pendingImages.length >= 4) throw new Error(this.state.busy ? 'Add attachments before submitting the task.' : 'Up to 4 images per message.');
+    if (this.state.busy || this.pendingImages.length >= MAX_IMAGES_PER_TASK) throw new Error(this.state.busy ? 'Add attachments before submitting the task.' : `Up to ${MAX_IMAGES_PER_TASK} images per message.`);
     const resolved = path.resolve(this.workspace.root, filename);
     this.pendingImages.push(await loadUserImage(resolved)); this.notify();
   }
   addImageData(data: string, name = 'Screenshot.png'): void {
-    if (this.state.busy || this.pendingImages.length >= 4) throw new Error(this.state.busy ? 'Add attachments before submitting the task.' : 'Up to 4 images per message.');
+    if (this.state.busy || this.pendingImages.length >= MAX_IMAGES_PER_TASK) throw new Error(this.state.busy ? 'Add attachments before submitting the task.' : `Up to ${MAX_IMAGES_PER_TASK} images per message.`);
     if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new Error('The clipboard does not contain a valid image.');
     this.pendingImages.push(imageFromBuffer(Buffer.from(data, 'base64'), name)); this.notify();
   }
@@ -416,12 +417,12 @@ export class Controller implements UIController {
         this.note(`${visible.length} tools available in ${settings.mode}:\n` + visible.map(tool => `${tool.name} — ${tool.description}`).join('\n')); break;
       }
       case '/image': {
-        if (!tail) { this.note(`Attached images: ${this.pendingImages.length}/4. /image "C:\\folder\\image.png" adds a file. Ctrl+V pastes a screenshot or text from the clipboard. /image clear removes attachments. Model: ${settings.providers[settings.provider]?.vision === true ? 'supports images' : settings.providers[settings.provider]?.vision === false ? 'does not support images' : 'image support unknown'}.`); break; }
+        if (!tail) { this.note(`Attached images: ${this.pendingImages.length}/${MAX_IMAGES_PER_TASK}. /image "C:\\folder\\image.png" adds a file. Ctrl+V pastes a screenshot or text from the clipboard. /image clear removes attachments. Model: ${settings.providers[settings.provider]?.vision === true ? 'supports images' : settings.providers[settings.provider]?.vision === false ? 'does not support images' : 'image support unknown'}.`); break; }
         if (tail === 'clear') { this.clearImages(); this.note('Removed pending images.'); break; }
-        if (this.pendingImages.length >= 4) throw new Error('Up to 4 images per message.');
+        if (this.pendingImages.length >= MAX_IMAGES_PER_TASK) throw new Error(`Up to ${MAX_IMAGES_PER_TASK} images per message.`);
         const filename = tail.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1');
         await this.addImagePath(filename);
-        this.note(`Attached image ${this.pendingImages.length}/4: ${path.basename(filename)}. Now send a message describing the task.`); break;
+        this.note(`Attached image ${this.pendingImages.length}/${MAX_IMAGES_PER_TASK}: ${path.basename(filename)}. Now send a message describing the task.`); break;
       }
       case '/help': this.note(HELP); break;
       case '/cancel': this.cancel(); break;

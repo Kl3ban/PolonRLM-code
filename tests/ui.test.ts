@@ -32,6 +32,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
   const providersChosen: string[] = [];
   const keysSaved: string[] = [];
   const imagesAdded: string[] = [];
+  const imagesRemoved: number[] = [];
   const endpointsSaved: unknown[] = [];
   const services = { failModels: false };
   let approver: Approve | undefined;
@@ -47,6 +48,8 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async submit(text) { submissions.push(text); },
     addImageData(data, name) { imagesAdded.push(data); update({ attachments: [...state.attachments, { name: name ?? 'Screenshot.png', mediaType: 'image/png', bytes: 100 }] }); },
+    removeImage(index) { imagesRemoved.push(index); update({ attachments: state.attachments.filter((_, item) => item !== index) }); },
+    clearImages() { update({ attachments: [] }); },
     cancel() { cancelled++; },
     cycleMode() { modeChanges++; update({ mode: state.mode === 'BUILD' ? 'PLAN' : 'BUILD' }); },
     async close() { closed++; },
@@ -60,7 +63,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
   };
   const app = render(React.createElement(TerminalApp, { controller, readImageClipboard: async () => '', ...inputs }));
   return {
-    app, submissions, listeners, update, modelsChosen, providersChosen, keysSaved, imagesAdded, endpointsSaved, services,
+    app, submissions, listeners, update, modelsChosen, providersChosen, keysSaved, imagesAdded, imagesRemoved, endpointsSaved, services,
     get cancelled() { return cancelled; },
     get closed() { return closed; },
     get modeChanges() { return modeChanges; },
@@ -75,12 +78,12 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
   };
 }
 
-test('Ctrl+V attaches a screenshot, shows its name and permits an image-only submission', async t => {
+test('Ctrl+V attaches a screenshot, shows the attachment count and permits an image-only submission', async t => {
   let textReads = 0;
   const view = fixture({}, { readImageClipboard: async () => 'test-image-data', readClipboard: async () => { textReads++; return 'stale clipboard text'; } });
   t.after(view.dispose); await view.ready();
   view.app.stdin.write('\u0016');
-  await until(() => /Screenshot.png/.test(view.app.lastFrame() ?? ''), 'show attached screenshot');
+  await until(() => /1 image/.test(view.app.lastFrame() ?? ''), 'show attached image count');
   assert.deepEqual(view.imagesAdded, ['test-image-data']);
   assert.equal(textReads, 0);
   view.app.stdin.write('\r');
@@ -92,6 +95,70 @@ test('Ctrl+V keeps text paste working when no screenshot is available', async t 
   t.after(view.dispose); await view.ready(); view.app.stdin.write('\u0016');
   await until(() => /Text from clipboard/.test(view.app.lastFrame() ?? ''), 'paste clipboard text');
   assert.deepEqual(view.imagesAdded, []);
+});
+
+test('start composer keeps five attached images compact and opens the image picker', async t => {
+  const attachments = Array.from({ length: 5 }, (_, index) => ({ name: `screen-${index + 1}.png`, mediaType: 'image/png', bytes: 1024 }));
+  const mouseEvents = new EventEmitter();
+  const view = fixture({ attachments }, { mouseEvents });
+  t.after(view.dispose); await view.ready();
+  assert.match(view.app.lastFrame()!, /5 images/);
+  assert.doesNotMatch(view.app.lastFrame()!, /screen-[1-5]\.png/);
+  const lines = view.app.lastFrame()!.split('\n');
+  const row = lines.findIndex(line => line.includes('5 images'));
+  const column = lines[row]!.indexOf('5 images');
+  mouseEvents.emit('mouse', { action: 'down', button: 0, x: column, y: row });
+  mouseEvents.emit('mouse', { action: 'up', button: 0, x: column, y: row });
+  await until(() => /ATTACHMENTS/.test(view.app.lastFrame() ?? ''), 'open attachment picker by clicking the image summary');
+  assert.match(view.app.lastFrame()!, /5 images attached/);
+  for (const attachment of attachments) assert.match(view.app.lastFrame()!, new RegExp(attachment.name));
+});
+
+test('start composer selects and copies typed text with Ctrl+A and Ctrl+C', async t => {
+  const copied: string[] = [];
+  const view = fixture({}, { writeClipboard: async text => { copied.push(text); } });
+  t.after(view.dispose); await view.ready();
+  view.app.stdin.write('draft text');
+  await until(() => /draft text/.test(view.app.lastFrame() ?? ''), 'show start composer text');
+  view.app.stdin.write('\x01');
+  view.app.stdin.write('\x03');
+  await until(() => copied.length === 1, 'copy selected start composer text');
+  assert.equal(copied[0], 'draft text');
+  assert.equal(view.closed, 0);
+});
+
+test('start composer selects and copies a mouse-dragged text range', async t => {
+  const mouseEvents = new EventEmitter();
+  const copied: string[] = [];
+  const view = fixture({}, { mouseEvents, writeClipboard: async text => { copied.push(text); } });
+  t.after(view.dispose); await view.ready();
+  view.app.stdin.write('Alpha beta');
+  await until(() => /Alpha beta/.test(view.app.lastFrame() ?? ''), 'show text to select in start composer');
+  const lines = view.app.lastFrame()!.split('\n');
+  const y = lines.findIndex(line => line.includes('Alpha beta'));
+  const x = lines[y]!.indexOf('Alpha beta') + 'Alpha '.length;
+  mouseEvents.emit('mouse', { action: 'down', button: 0, x, y });
+  mouseEvents.emit('mouse', { action: 'move', button: 0, x: x + 4, y });
+  mouseEvents.emit('mouse', { action: 'up', button: 0, x: x + 4, y });
+  view.app.stdin.write('\x03');
+  await until(() => copied.length === 1, 'copy mouse-selected start composer text');
+  assert.equal(copied[0], 'beta');
+  assert.equal(view.closed, 0);
+});
+
+test('start composer can remove the last image while draft text is present', async t => {
+  const view = fixture({ attachments: [
+    { name: 'first.png', mediaType: 'image/png', bytes: 100 },
+    { name: 'second.png', mediaType: 'image/png', bytes: 100 },
+  ] });
+  t.after(view.dispose); await view.ready();
+  view.app.stdin.write('keep this task');
+  await until(() => /keep this task/.test(view.app.lastFrame() ?? ''), 'show task beside attached images');
+  view.app.stdin.write('\x1b\x7f');
+  await until(() => view.imagesRemoved.length === 1, 'remove last image without deleting draft');
+  assert.deepEqual(view.imagesRemoved, [1]);
+  assert.match(view.app.lastFrame()!, /keep this task/);
+  assert.match(view.app.lastFrame()!, /1 image/);
 });
 
 test('TUI renders provider, mode, usage and live model output', { timeout: 5000 }, async t => {

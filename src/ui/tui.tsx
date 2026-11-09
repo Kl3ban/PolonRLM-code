@@ -9,7 +9,6 @@ import type { TextSelection } from './selection.js';
 import { transcriptLines, toolExpansionIds, latestToolExpansionId } from './transcript.js';
 import { formatTokenBudget } from '../core/budget.js';
 import { Scrollbar, scrollbarMetrics } from './scrollbar.js';
-interface PendingApproval { request: ApprovalRequest; resolve: (allow: boolean) => void; signal?: AbortSignal }
 import { QuestionPanel } from './question.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useInput, usePaste, useWindowSize, measureElement } from 'ink';
@@ -22,6 +21,11 @@ import { TerminalInputRouter } from './input-router.js';
 import { copyToClipboard, readClipboardImage, readClipboardText } from './clipboard.js';
 import { disableQuickEdit } from './windows-console.js';
 import { columnAtCell, plainLine, selectedText, selectionRange } from './selection.js';
+interface PendingApproval { request: ApprovalRequest; resolve: (allow: boolean) => void; signal?: AbortSignal }
+interface DraftSelection { anchor: number; focus: number }
+function orderedDraftRange(selection: DraftSelection): [number, number] {
+    return selection.anchor <= selection.focus ? [selection.anchor, selection.focus] : [selection.focus, selection.anchor];
+}
 const COMMANDS = ['/goal', '/grill-me', '/plan', '/build', '/review', '/retry', '/copy', '/help', '/connect', '/models', '/model', '/key', '/image', '/budget', '/settings', '/agents', '/steer', '/skills', '/mcp', '/mode', '/cortex', '/sessions', '/new', '/resume', '/export', '/context', '/compact', '/cost', '/status', '/permissions', '/cancel', '/undo', '/memory', '/forget', '/clear', '/exit'];
 const SPINNER = ['·  ', '·· ', '···', ' ··', '  ·', '   '];
 function cursorAtCell(text: string, targetRow: number, targetColumn: number, width: number) {
@@ -67,6 +71,9 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
     const [state, setState] = useState(() => controller.snapshot());
     const [draft, setDraft] = useState('');
     const [cursor, setCursor] = useState(0);
+    const [draftSelection, setDraftSelectionState] = useState<DraftSelection>();
+    const draftSelectionRef = useRef<DraftSelection | undefined>(undefined);
+    const composerDragging = useRef(false);
     const [history, setHistory] = useState<string[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
     const savedDraft = useRef('');
@@ -96,6 +103,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
     draftRef.current = draft;
     const cursorRef = useRef(cursor);
     cursorRef.current = cursor;
+    const selectDraft = useCallback((value: DraftSelection | undefined) => { draftSelectionRef.current = value; setDraftSelectionState(value); }, []);
     const menuButtonRefs = useRef(new Map<MenuKind, DOMElement>());
     const composerFocusRef = useRef(true);
     const closing = useRef(false);
@@ -194,15 +202,18 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
             return;
         const parts = Array.from(draftRef.current);
         const pasted = Array.from(safe);
-        const at = Math.max(0, Math.min(parts.length, cursorRef.current));
-        parts.splice(at, 0, ...pasted);
+        const selection = draftSelectionRef.current;
+        const [start, end] = selection ? orderedDraftRange(selection) : [cursorRef.current, cursorRef.current];
+        const at = Math.max(0, Math.min(parts.length, start));
+        parts.splice(at, Math.max(0, Math.min(parts.length, end) - at), ...pasted);
         const next = parts.join(''), nextCursor = at + pasted.length;
         draftRef.current = next;
         cursorRef.current = nextCursor;
         setDraft(next);
         setCursor(nextCursor);
+        selectDraft(undefined);
         setError('');
-    }, []);
+    }, [selectDraft]);
     usePaste(pasteIntoComposer, { isActive: !menu && !pending && !state.question });
     const clipboardPending = useRef(false);
     const pasteFromClipboard = useCallback(async () => {
@@ -237,6 +248,17 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
     const lastStart = Math.max(0, allLines.length - available);
     const scrollStart = Math.max(0, lastStart - scroll);
     const visible = allLines.slice(scrollStart, scrollStart + available);
+    const copyDraftSelection = () => {
+        const current = draftSelectionRef.current;
+        if (!current)
+            return false;
+        const [start, end] = orderedDraftRange(current);
+        if (start === end)
+            return false;
+        const text = Array.from(shownDraft).slice(start, end).join('');
+        void writeClipboard(text).then(() => setCopyStatus('Selection copied')).catch(cause => setError(String(cause)));
+        return true;
+    };
     const copySelection = () => {
         if (!selectionRef.current)
             return;
@@ -254,6 +276,24 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
         const onMouse = (event: TerminalMouseEvent) => {
             if (menu || pendingRef.current || state.question)
                 return;
+            const composerElement = composerRef.current;
+            const composerBounds = composerElement ? measureElement(composerElement) : undefined;
+            if (composerDragging.current && composerBounds && (event.action === 'move' || event.action === 'up')) {
+                const paddingY = rows >= 16 ? 1 : 0;
+                const visibleRow = Math.max(0, Math.min(editorLines - 1, event.y - composerBounds.y - paddingY));
+                const firstVisibleRow = Math.max(0, cursorLine - editorLines + 1);
+                const focus = Math.max(0, Math.min(Array.from(draft).length, cursorAtCell(draft, firstVisibleRow + visibleRow, Math.max(0, event.x - composerBounds.x - 4), editorWidth)));
+                const current = draftSelectionRef.current;
+                if (current)
+                    selectDraft({ anchor: current.anchor, focus });
+                setCursor(focus);
+                if (event.action === 'up') {
+                    composerDragging.current = false;
+                    if (draftSelectionRef.current?.anchor === focus)
+                        selectDraft(undefined);
+                }
+                return;
+            }
             if (scrollbarRef.current && lastStart > 0) {
                 const bounds = measureElement(scrollbarRef.current);
                 const metrics = scrollbarMetrics(allLines.length, available, scrollStart);
@@ -279,6 +319,8 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
                     const point = { row, column: columnAtCell(allLines[row]?.text ?? '', Math.max(0, event.x - bounds.x)) };
                     if (event.action === 'down') {
                         dragging.current = true;
+                        composerDragging.current = false;
+                        selectDraft(undefined);
                         selectText({ anchor: point, focus: point });
                         focusComposer(false);
                     }
@@ -323,7 +365,11 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
                 const bounds = measureElement(composerRef.current);
                 if (event.x >= bounds.x && event.x < bounds.x + bounds.width && event.y >= bounds.y && event.y < bounds.y + bounds.height) {
                     focusComposer(true);
-                    void pasteFromClipboard();
+                    const attachmentRow = bounds.y + (rows >= 16 ? 1 : 0) + editorLines;
+                    if (state.attachments.length && event.y === attachmentRow)
+                        setMenu('attachments');
+                    else
+                        void pasteFromClipboard();
                 }
                 return;
             }
@@ -359,18 +405,32 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
             if (event.x >= bounds.x && event.x < bounds.x + bounds.width && event.y >= bounds.y && event.y < bounds.y + bounds.height) {
                 selectText(undefined);
                 focusComposer(true);
-                const editorRow = event.y - bounds.y - (rows >= 16 ? 1 : 0);
-                if (editorRow >= 0 && editorRow < editorLines)
-                    setCursor(cursorAtCell(draft, editorRow, Math.max(0, event.x - bounds.x - 4), editorWidth));
-                else
+                const paddingY = rows >= 16 ? 1 : 0;
+                const editorRow = event.y - bounds.y - paddingY;
+                if (state.attachments.length && editorRow === editorLines) {
+                    composerDragging.current = false;
+                    selectDraft(undefined);
+                    setMenu('attachments');
+                }
+                else if (editorRow >= 0 && editorRow < editorLines) {
+                    const firstVisibleRow = Math.max(0, cursorLine - editorLines + 1);
+                    const index = Math.max(0, Math.min(Array.from(draft).length, cursorAtCell(draft, firstVisibleRow + editorRow, Math.max(0, event.x - bounds.x - 4), editorWidth)));
+                    composerDragging.current = true;
+                    selectDraft({ anchor: index, focus: index });
+                    setCursor(index);
+                }
+                else {
+                    composerDragging.current = false;
+                    selectDraft(undefined);
                     setCursor(Array.from(draft).length);
+                }
             }
             else
                 focusComposer(false);
         };
         mouseEvents.on('mouse', onMouse);
         return () => { mouseEvents.off('mouse', onMouse); };
-    }, [mouseEvents, draft, menu, state.question, lastStart, rows, editorLines, editorWidth, focusComposer, readClipboard, pasteIntoComposer, pasteFromClipboard, allLines, scrollStart, visible.length]);
+    }, [mouseEvents, draft, cursorLine, menu, state.question, state.attachments.length, lastStart, rows, editorLines, editorWidth, focusComposer, selectDraft, pasteIntoComposer, pasteFromClipboard, allLines, scrollStart, visible.length]);
     useInput((input, key) => {
         if (state.question)
             return;
@@ -378,9 +438,31 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
             return;
         if (menu)
             return;
-        if (selectionRef.current && key.ctrl && input.toLowerCase() === 'c') {
-            copySelection();
-            return;
+        if (key.ctrl && input.toLowerCase() === 'c') {
+            if (composerFocused && !selectionRef.current && copyDraftSelection())
+                return;
+            if (selectionRef.current) {
+                copySelection();
+                return;
+            }
+        }
+        if (!pendingRef.current && composerFocused && !selectionRef.current && (key.leftArrow || key.rightArrow)) {
+            const current = draftSelectionRef.current;
+            const range = current ? orderedDraftRange(current) : undefined;
+            if (key.shift) {
+                const anchor = current?.anchor ?? cursor;
+                const from = current?.focus ?? cursor;
+                const focus = Math.max(0, Math.min(Array.from(draft).length, from + (key.leftArrow ? -1 : 1)));
+                selectDraft(anchor === focus ? undefined : { anchor, focus });
+                setCursor(focus);
+                return;
+            }
+            if (current && range && range[0] !== range[1]) {
+                const focus = key.leftArrow ? range[0] : range[1];
+                selectDraft(undefined);
+                setCursor(focus);
+                return;
+            }
         }
         if (!pendingRef.current && (selectionRef.current || !composerFocused || !draft) && (key.leftArrow || key.rightArrow || key.upArrow || key.downArrow) && (key.shift || !composerFocused)) {
             const previous = selectionRef.current ?? { anchor: { row: Math.max(0, scrollStart), column: 0 }, focus: { row: Math.max(0, scrollStart), column: 0 } };
@@ -534,14 +616,18 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
             else {
                 setDraft('');
                 setCursor(0);
+                selectDraft(undefined);
             }
             return;
         }
         if ((key.return && (key.meta || key.shift)) || (key.ctrl && input === 'j')) {
             const parts = Array.from(draft);
-            parts.splice(cursor, 0, '\n');
+            const current = draftSelectionRef.current;
+            const [start, end] = current ? orderedDraftRange(current) : [cursor, cursor];
+            parts.splice(start, end - start, '\n');
             setDraft(parts.join(''));
-            setCursor(value => value + 1);
+            setCursor(start + 1);
+            selectDraft(undefined);
             return;
         }
         if (key.return) {
@@ -552,6 +638,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
                 setHistory(value => [...value, text].slice(-100));
             setDraft('');
             setCursor(0);
+            selectDraft(undefined);
             setHistoryIndex(-1);
             setScroll(0);
             setError('');
@@ -608,6 +695,7 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
                 if (matches[0]) {
                     setDraft(matches[0] + (matches.length === 1 ? ' ' : ''));
                     setCursor(matches[0].length + (matches.length === 1 ? 1 : 0));
+                    selectDraft(undefined);
                 }
             }
             else if (!draft)
@@ -624,37 +712,68 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
             setHistoryIndex(next);
             setDraft(text);
             setCursor(Array.from(text).length);
+            selectDraft(undefined);
             return;
         }
         if (key.leftArrow) {
             setCursor(value => Math.max(0, value - 1));
+            selectDraft(undefined);
             return;
         }
         if (key.rightArrow) {
             setCursor(value => Math.min(Array.from(draft).length, value + 1));
+            selectDraft(undefined);
             return;
         }
-        if (key.home || (key.ctrl && input === 'a')) {
+        if (key.ctrl && input === 'a') {
+            const length = Array.from(draft).length;
+            selectDraft(length ? { anchor: 0, focus: length } : undefined);
+            setCursor(length);
+            return;
+        }
+        if (key.home) {
             setCursor(0);
+            selectDraft(undefined);
             return;
         }
         if (key.end || (key.ctrl && input === 'e')) {
             setCursor(Array.from(draft).length);
+            selectDraft(undefined);
             return;
         }
         if (key.ctrl && input === 'u') {
             setDraft('');
             setCursor(0);
+            selectDraft(undefined);
+            return;
+        }
+        if (key.meta && (key.backspace || key.delete) && state.attachments.length && controller.removeImage) {
+            controller.removeImage(state.attachments.length - 1);
+            setCopyStatus('Last image removed');
             return;
         }
         if (key.backspace || key.delete) {
             const parts = Array.from(draft);
-            const index = key.backspace ? cursor - 1 : cursor;
-            if (index >= 0 && index < parts.length) {
-                parts.splice(index, 1);
+            const current = draftSelectionRef.current;
+            if (current && orderedDraftRange(current)[0] !== orderedDraftRange(current)[1]) {
+                const [start, end] = orderedDraftRange(current);
+                parts.splice(start, end - start);
                 setDraft(parts.join(''));
-                if (key.backspace)
-                    setCursor(value => value - 1);
+                setCursor(start);
+                selectDraft(undefined);
+            }
+            else if (!parts.length && state.attachments.length && controller.removeImage) {
+                controller.removeImage(state.attachments.length - 1);
+                setCopyStatus('Last image removed');
+            }
+            else {
+                const index = key.backspace ? cursor - 1 : cursor;
+                if (index >= 0 && index < parts.length) {
+                    parts.splice(index, 1);
+                    setDraft(parts.join(''));
+                    if (key.backspace)
+                        setCursor(value => value - 1);
+                }
             }
             return;
         }
@@ -663,9 +782,13 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
         const safe = sanitizeTerminalText(input).replace(/\r\n?/g, '\n');
         if (safe) {
             const parts = Array.from(draft);
-            parts.splice(cursor, 0, ...Array.from(safe));
+            const current = draftSelectionRef.current;
+            const [start, end] = current ? orderedDraftRange(current) : [cursor, cursor];
+            const characters = Array.from(safe);
+            parts.splice(start, end - start, ...characters);
             setDraft(parts.join(''));
-            setCursor(value => value + Array.from(safe).length);
+            setCursor(start + characters.length);
+            selectDraft(undefined);
         }
     });
     const colors = THEMES[state.theme];
@@ -675,7 +798,11 @@ export function TerminalApp({ controller, mouseEvents, readClipboard = readClipb
     const promptLines = useMemo(() => prompt ? markdownLines(`${prompt.description}\n\n${prompt.preview ? '```diff\n' + prompt.preview + '\n```' : ''}`, Math.max(1, width - 4)) : [], [prompt, width]);
     const folder = sanitizeTerminalText(state.workspace.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? state.workspace);
     const totals = state.usage.input + state.usage.output;
-    const composer = <Box ref={composerRef} width={width} height={editorLines + (rows >= 16 ? 3 : 1) + (state.attachments.length ? 1 : 0)} flexShrink={0} flexDirection={"column"} backgroundColor={colors.panel} paddingLeft={2} paddingRight={2} paddingY={rows >= 16 ? 1 : 0}><Box height={editorLines} overflow={"hidden"} flexShrink={0}><Text color={pending ? colors.warm : composerFocused ? colors.accent : colors.faint}>{"\u203A "}</Text><Box width={editorWidth} flexDirection={"column"} contentOffsetY={Math.max(0, cursorLine - editorLines + 1)} flexShrink={0}><Text color={colors.text} wrap={"hard"}>{beforeCursor}{draft && <Text inverse={true}>{atCursor}</Text>}{afterCursor}{!draft && <Text color={colors.muted}>{state.busy ? 'Next message…' : 'Describe the task or paste an error…'}</Text>}</Text></Box></Box>{!!state.attachments.length && <Box height={1}><Text color={colors.accent} wrap={"truncate-end"}>{"+ "}{state.attachments.map(image => image.name).join(' · ')}{" "}<Text color={state.vision === false ? colors.error : colors.muted}>{state.vision === true ? '· image support enabled' : state.vision === false ? '· model has no image support' : '· image support unknown'}</Text></Text></Box>}<Box justifyContent={"space-between"} height={1}><Text wrap={"truncate-end"}><Text color={colors.accent} bold={true}>{MODE_LABELS[state.mode]}</Text><Text color={colors.faint}>{"  \u00B7  "}</Text><Text color={colors.text}>{sanitizeTerminalText(state.model || 'Select a model')}</Text><Text color={colors.muted}>{"  "}{sanitizeTerminalText(state.provider)}</Text></Text>{width >= 60 && <Text color={colors.faint}>{"Cortex "}{state.cortex}</Text>}</Box></Box>;
+    const selectionRange = draftSelection ? orderedDraftRange(draftSelection) : undefined;
+    const selectedDraftText = selectionRange && selectionRange[0] !== selectionRange[1]
+        ? <>{Array.from(shownDraft).slice(0, selectionRange[0]).join('')}<Text color={"#101010"} backgroundColor={"#d7d7d7"}>{Array.from(shownDraft).slice(selectionRange[0], selectionRange[1]).join('')}</Text>{Array.from(shownDraft).slice(selectionRange[1]).join('')}</>
+        : <>{beforeCursor}{draft && <Text inverse={true}>{atCursor}</Text>}{afterCursor}</>;
+    const composer = <Box ref={composerRef} width={width} height={editorLines + (rows >= 16 ? 3 : 1) + (state.attachments.length ? 1 : 0)} flexShrink={0} flexDirection={"column"} backgroundColor={colors.panel} paddingLeft={2} paddingRight={2} paddingY={rows >= 16 ? 1 : 0}><Box height={editorLines} overflow={"hidden"} flexShrink={0}><Text color={pending ? colors.warm : composerFocused ? colors.accent : colors.faint}>{"\u203A "}</Text><Box width={editorWidth} flexDirection={"column"} contentOffsetY={Math.max(0, cursorLine - editorLines + 1)} flexShrink={0}><Text color={colors.text} wrap={"hard"}>{selectedDraftText}{!draft && <Text color={colors.muted}>{state.busy ? 'Next message…' : 'Describe the task or paste an error…'}</Text>}</Text></Box></Box>{!!state.attachments.length && <Box height={1}><Text color={colors.accent} wrap={"truncate-end"}>{"+ "}{state.attachments.length}{state.attachments.length === 1 ? ' image' : ' images'}{" "}<Text color={state.vision === false ? colors.error : colors.muted}>{state.vision === true ? '· image support enabled' : state.vision === false ? '· model has no image support' : '· image support unknown'}</Text><Text color={colors.faint}> · click / Alt+I manage</Text></Text></Box>}<Box justifyContent={"space-between"} height={1}><Text wrap={"truncate-end"}><Text color={colors.accent} bold={true}>{MODE_LABELS[state.mode]}</Text><Text color={colors.faint}>{"  \u00B7  "}</Text><Text color={colors.text}>{sanitizeTerminalText(state.model || 'Select a model')}</Text><Text color={colors.muted}>{"  "}{sanitizeTerminalText(state.provider)}</Text></Text>{width >= 60 && <Text color={colors.faint}>{"Cortex "}{state.cortex}</Text>}</Box></Box>;
     const shortcuts = <Box width={width} marginTop={1} gap={2}>{[['commands', 'Menu', 'Alt+M'], ['providers', 'Provider', 'Alt+D'], ['models', 'Models', 'Alt+L']].map(([target, name, shortcut]) => <Box ref={node => {
         if (node)
             menuButtonRefs.current.set(target as MenuKind, node);

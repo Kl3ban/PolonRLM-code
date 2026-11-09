@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { EventEmitter } from 'node:events';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import type { UIController, UIState } from '../src/core/types.js';
@@ -176,15 +177,36 @@ test('budget panel edits per-task token and dollar limits before work starts', {
 
 test('attachment panel lists model vision status and adds file and clipboard images', { timeout: 5000 }, async t => {
   const files: string[] = [], clipboard: string[] = [];
+  const removed: number[] = [];
+  const mouseEvents = new EventEmitter();
   const view = show(AttachmentPanel, {
     async addImagePath(filename: string) { files.push(filename); },
     addImageData(data: string) { clipboard.push(data); },
-  }, state({ attachments: [{ name: 'reference.png', mediaType: 'image/png', bytes: 1024 }] }), {
-    readClipboardImage: async () => 'clipboard-png',
+    removeImage(index: number) { removed.push(index); },
+  }, state({ attachments: [
+    { name: 'reference.png', mediaType: 'image/png', bytes: 1024 },
+    { name: 'other-screen.png', mediaType: 'image/png', bytes: 2048 },
+  ] }), {
+    mouseEvents, readClipboardImage: async () => 'clipboard-png',
   });
   t.after(view.cleanup);
   await until(() => /reference\.png/.test(view.app.lastFrame() ?? ''), 'show queued image');
+  assert.match(view.app.lastFrame() ?? '', /2 images attached/);
   assert.match(view.app.lastFrame() ?? '', /supports images/);
+  const lines = view.app.lastFrame()!.split('\n');
+  const secondRow = lines.findIndex(line => line.includes('other-screen.png'));
+  assert.ok(secondRow >= 0, 'second attachment should be visible');
+  const secondColumn = lines[secondRow]!.indexOf('other-screen.png');
+  mouseEvents.emit('mouse', { action: 'down', button: 0, x: secondColumn, y: secondRow });
+  mouseEvents.emit('mouse', { action: 'up', button: 0, x: secondColumn, y: secondRow });
+  await until(() => /› 02  other-screen\.png/.test(view.app.lastFrame() ?? ''), 'select the second image by clicking it');
+  const selectedLines = view.app.lastFrame()!.split('\n');
+  const selectedRow = selectedLines.findIndex(line => line.includes('other-screen.png'));
+  const removeColumn = selectedLines[selectedRow]!.indexOf('[x]');
+  mouseEvents.emit('mouse', { action: 'down', button: 0, x: removeColumn, y: selectedRow });
+  mouseEvents.emit('mouse', { action: 'up', button: 0, x: removeColumn, y: selectedRow });
+  await until(() => removed.length === 1, 'remove the clicked image', () => view.app.lastFrame() ?? '');
+  assert.deepEqual(removed, [1]);
   view.app.stdin.write('\u0018\u0001\u0003');
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.match(view.app.lastFrame() ?? '', /reference\.png/);

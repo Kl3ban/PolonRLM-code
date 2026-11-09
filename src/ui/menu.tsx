@@ -382,7 +382,7 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
   if (kind === 'messages') return <MessageCopyPanel controller={controller} state={state} width={width} rows={rows} close={close} />;
   if (kind === 'agents') return <AgentPanel controller={controller} state={state} width={width} rows={rows} close={close} />;
   if (kind === 'budget') return <BudgetPanel controller={controller} state={state} width={width} rows={rows} close={close} />;
-  if (kind === 'attachments') return <AttachmentPanel controller={controller} state={state} width={width} rows={rows} close={close} />;
+  if (kind === 'attachments') return <AttachmentPanel controller={controller} state={state} width={width} rows={rows} close={close} mouseEvents={mouseEvents} />;
   if (kind === 'key' || kind === 'manual') return <Box width={width} flexDirection="column" padding={2} backgroundColor={colors.panel} borderStyle="round" borderColor={colors.border}>
     <Text color={colors.accent} bold>{kind === 'key' ? 'CONNECT / API KEY' : 'MODEL / CUSTOM ID'}</Text>
     <Text color={colors.muted}>{sanitizeTerminalText(state.provider)} · {kind === 'key' ? 'Paste the key. It will be encrypted locally.' : 'Enter a model ID from the provider documentation.'}</Text>

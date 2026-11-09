@@ -93,6 +93,11 @@ test('/image attaches a local photo to the next prompt without persisting binary
     assert.ok(controller.snapshot().messages.some(message => message.role === 'user' && /Describe the attached image.*\n\[Attached: Screenshot.png\]/.test(message.text)));
     const store = new SessionStore(f.home);
     try { assert.equal(JSON.stringify(store.messages(store.list(controller.snapshot().workspace)[0]!.id)).includes(data), false); } finally { store.close(); }
+    for (let index = 0; index < 5; index++) controller.addImageData(data, `screen-${index + 1}.png`);
+    assert.equal(controller.snapshot().attachments.length, 5);
+    assert.throws(() => controller.addImageData(data), /Up to 5 images per message/);
+    controller.removeImage(2);
+    assert.equal(controller.snapshot().attachments.length, 4);
   } finally { await controller.close(); await f.dispose(); }
 });
 

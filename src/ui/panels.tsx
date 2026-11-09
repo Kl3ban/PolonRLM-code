@@ -1,13 +1,15 @@
-import React, { useMemo, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Box, Text, measureElement, useInput, type DOMElement } from 'ink';
+import type { EventEmitter } from 'node:events';
 import type { UIController, UIState } from '../core/types.js';
 import { THEMES } from './design.js';
 import { sanitizeTerminalText } from './markdown.js';
 import { readClipboardImage as readWindowsClipboardImage } from './clipboard.js';
 import { parseTokenBudget } from '../core/budget.js';
 import { copyToClipboard } from './clipboard.js';
+import type { TerminalMouseEvent } from './input-router.js';
 
-type Props = { controller: UIController; state: UIState; width: number; rows: number; close: () => void; readClipboardImage?: () => Promise<string> };
+type Props = { controller: UIController; state: UIState; width: number; rows: number; close: () => void; readClipboardImage?: () => Promise<string>; mouseEvents?: EventEmitter };
 
 function Frame({ title, hint, children, state, width }: Props & { title: string; hint: string; children: React.ReactNode }): React.JSX.Element {
   const colors = THEMES[state.theme];
@@ -152,8 +154,30 @@ export function BudgetPanel(props: Props): React.JSX.Element {
 }
 
 export function AttachmentPanel(props: Props): React.JSX.Element {
-  const { controller, state, close, readClipboardImage = readWindowsClipboardImage } = props;
+  const { controller, state, close, readClipboardImage = readWindowsClipboardImage, mouseEvents, width } = props;
   const [selected, setSelected] = useState(0), [addingPath, setAddingPath] = useState(false), [filename, setFilename] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const rowRefs = useRef(new Map<number, DOMElement>());
+  const removeAttachment = (index: number) => {
+    if (!controller.removeImage) { setError('Removing image attachments is unavailable.'); return; }
+    controller.removeImage(index);
+    setSelected(current => Math.max(0, Math.min(current > index ? current - 1 : current, state.attachments.length - 2)));
+  };
+  useEffect(() => {
+    if (!mouseEvents) return;
+    const onMouse = (event: TerminalMouseEvent) => {
+      if (event.action !== 'down' || event.button !== 0 || addingPath) return;
+      for (const [index, element] of rowRefs.current) {
+        const bounds = measureElement(element);
+        if (event.x >= bounds.x && event.x < bounds.x + bounds.width && event.y >= bounds.y && event.y < bounds.y + bounds.height) {
+          if (event.x >= bounds.x + bounds.width - 5) removeAttachment(index);
+          else setSelected(index);
+          return;
+        }
+      }
+    };
+    mouseEvents.on('mouse', onMouse);
+    return () => { mouseEvents.off('mouse', onMouse); };
+  }, [mouseEvents, addingPath, state.attachments.length]);
   useInput((input, key) => {
     if (key.eventType === 'release' || busy) return;
     if (key.escape) { if (addingPath) setAddingPath(false); else close(); return; }
@@ -169,18 +193,23 @@ export function AttachmentPanel(props: Props): React.JSX.Element {
     }
     if (key.upArrow || key.downArrow) { setSelected(value => Math.max(0, Math.min(state.attachments.length - 1, value + (key.upArrow ? -1 : 1)))); return; }
     if (key.delete || (!key.ctrl && !key.meta && input.toLowerCase() === 'x')) {
-      controller.removeImage?.(selected);
-      setSelected(value => Math.max(0, Math.min(value, state.attachments.length - 2)));
+      if (state.attachments.length) removeAttachment(Math.min(selected, state.attachments.length - 1));
     }
     else if (!key.ctrl && !key.meta && input.toLowerCase() === 'a') { setAddingPath(true); setFilename(''); setError(''); }
-    else if (!key.ctrl && !key.meta && input.toLowerCase() === 'c') controller.clearImages?.();
+    else if (!key.ctrl && !key.meta && input.toLowerCase() === 'c') { controller.clearImages?.(); setSelected(0); }
     else if ((key.ctrl && input.toLowerCase() === 'v') || (!key.ctrl && !key.meta && input.toLowerCase() === 'p')) {
       setBusy(true); setError(''); void readClipboardImage().then(data => Promise.resolve(controller.addImageData?.(data))).catch(cause => setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause)))).finally(() => setBusy(false));
     }
   });
-  return <Frame {...props} title="ATTACHMENTS" hint={addingPath ? 'Paste or type a full path · Enter add · Esc back' : 'A add file · Ctrl+V / P paste clipboard image · X remove · C clear'}>
+  return <Frame {...props} title="ATTACHMENTS" hint={addingPath ? 'Paste or type a full path · Enter add · Esc back' : '↑/↓ or click to select · X/Delete remove · click [x] to remove · C clear · A add file · P paste'}>
+    <Box marginTop={1}>
+      <Text color={THEMES[state.theme].muted}>{state.attachments.length} {state.attachments.length === 1 ? 'image' : 'images'} attached</Text>
+    </Box>
     {addingPath ? <Box marginY={1}><Text color={THEMES[state.theme].accent}>File: </Text><Text color={THEMES[state.theme].text}>{filename}<Text inverse> </Text></Text></Box> : <Box flexDirection="column" marginY={1}>
-      {state.attachments.map((attachment, index) => <Text key={`${attachment.name}-${index}`} color={index === selected ? THEMES[state.theme].accent : THEMES[state.theme].text}>{index === selected ? '› ' : '  '}{attachment.name} · {attachment.mediaType.replace('image/', '').toUpperCase()} · {(attachment.bytes / 1024).toFixed(0)} KB</Text>)}
+      {state.attachments.map((attachment, index) => <Box key={`${attachment.name}-${index}`} ref={node => { if (node) rowRefs.current.set(index, node); else rowRefs.current.delete(index); }} width={Math.max(1, width - 14)} height={1} justifyContent="space-between" backgroundColor={index === selected ? THEMES[state.theme].selected : THEMES[state.theme].panel}>
+        <Text color={index === selected ? THEMES[state.theme].accent : THEMES[state.theme].text} wrap="truncate-end">{index === selected ? '› ' : '  '}{String(index + 1).padStart(2, '0')}  {sanitizeTerminalText(attachment.name)}  {attachment.mediaType.replace('image/', '').toUpperCase()} · {(attachment.bytes / 1024).toFixed(0)} KB</Text>
+        <Text color={THEMES[state.theme].warm}>[x]</Text>
+      </Box>)}
       {!state.attachments.length && <Text color={THEMES[state.theme].muted}>No images attached. Choose a file or paste an image from the clipboard.</Text>}
     </Box>}
     <Text color={state.vision === false ? THEMES[state.theme].error : state.vision === true ? THEMES[state.theme].accent : THEMES[state.theme].muted}>Model {sanitizeTerminalText(state.model || 'none selected')}: {state.vision === true ? 'supports images' : state.vision === false ? 'does not support images' : 'image support unknown'}</Text>
