@@ -4,6 +4,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { LLMProvider, Message, ModelInfo, ModelReply, ProviderConfig, ToolSpec } from '../core/types.js';
+export { isRetryableProviderError, PROVIDER_RETRY_DELAY_MS } from './retry.js';
 import catalog from './catalog.json' with { type: 'json' };
 export const PROVIDER_NAMES: Record<string, string> = Object.fromEntries(catalog.map(provider => [provider.id, provider.name]));
 
@@ -129,7 +130,14 @@ function cleanError(error: unknown, secret: string | undefined): Error {
     ? 'The selected provider is temporarily busy. Wait briefly, then retry the selected model.'
     : safeMessage;
   const result = new Error(message);
-  if (error instanceof Error) result.name = error.name;
+  if (error instanceof Error) {
+    result.name = error.name;
+    const metadata = object(error);
+    const response = object(metadata.response);
+    const statusCode = metadata.statusCode ?? metadata.status ?? response.status;
+    if (typeof statusCode === 'number' && Number.isInteger(statusCode)) Object.assign(result, { statusCode });
+    if (typeof metadata.code === 'string') Object.assign(result, { code: metadata.code });
+  }
   return result;
 }
 
@@ -184,7 +192,8 @@ export function createProvider(config: ProviderConfig, apiKey: string | undefine
           model: model(), instructions: messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n') || undefined,
           messages: sdkMessages(activeMessages.filter(message => message.role !== 'system')), tools: activeTools.length ? toolSet : undefined,
           maxOutputTokens: Math.min(maxOutputTokens, config.maxOutputTokens ?? maxOutputTokens), temperature: config.temperature, providerOptions: providerOptions(),
-          maxRetries: 2, streamRetries: 0, abortSignal: signal,
+          // Runtime retries are visible, cancelable, budgeted, and spaced at a fixed interval.
+          maxRetries: 0, streamRetries: 0, abortSignal: signal,
           onError: () => { /* The error is surfaced below without logging request bodies. */ },
         });
         let text = '';

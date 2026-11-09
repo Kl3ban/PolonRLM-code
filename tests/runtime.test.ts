@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { AgentRuntime } from '../src/core/runtime.js';
+import { PROVIDER_RETRY_DELAY_MS } from '../src/providers/retry.js';
 import { OPTIONAL_TOOLS_GUIDANCE } from '../src/core/tool-guidance.js';
 import { compactMessages, estimateTokens } from '../src/core/context.js';
 import { defaultSettings } from '../src/core/config.js';
@@ -85,7 +86,7 @@ function reply(text = 'Done.', toolCalls: ToolCall[] = [], usage?: Partial<Usage
 }
 function provider(complete: Complete): LLMProvider { return { complete, listModels: async () => [] }; }
 
-async function harness(t: test.TestContext, complete: Complete, overrides: Partial<Settings> = {}) {
+async function harness(t: test.TestContext, complete: Complete, overrides: Partial<Settings> = {}, retryDelayMs = PROVIDER_RETRY_DELAY_MS) {
   const root = await mkdtemp(path.join(tmpdir(), 'polonrlm-runtime-'));
   const home = path.join(root, 'home');
   const folder = path.join(root, 'workspace');
@@ -106,10 +107,73 @@ async function harness(t: test.TestContext, complete: Complete, overrides: Parti
   const events: RuntimeEvent[] = [];
   const fallback = new Map<string, LLMProvider>();
   const primary = provider(complete);
-  const runtime = new AgentRuntime(settings, store, tools, workspace, skills, mcp, async id => fallback.get(id ?? 'fake') ?? primary, event => events.push(event));
+  const runtime = new AgentRuntime(settings, store, tools, workspace, skills, mcp, async id => fallback.get(id ?? 'fake') ?? primary, event => events.push(event), retryDelayMs);
   t.after(async () => { await mcp.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   return { root, home, settings, workspace, store, tools, skills, mcp, session, events, fallback, runtime };
 }
+
+test('temporary provider errors retry the selected model and show the retry countdown', async t => {
+  const calls: number[] = [];
+  const h = await harness(t, async () => {
+    calls.push(Date.now());
+    if (calls.length === 1) throw new Error('The selected provider is temporarily busy.');
+    return reply('Recovered response.');
+  });
+  assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered response.');
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1]! - calls[0]! >= 9_500, 'the retry should wait approximately ten seconds');
+  assert.ok(h.events.some(event => event.type === 'status' && /fake did not respond\. Retrying in 10 seconds \(retry 1\)/.test(event.text ?? '')));
+  assert.equal(PROVIDER_RETRY_DELAY_MS, 10_000);
+});
+
+test('request timeout retries with a fresh timeout signal', async t => {
+  let calls = 0;
+  const h = await harness(t, async (_messages, _specs, _onDelta, signal) => {
+    if (++calls === 1) await setTimeout(40, undefined, { signal });
+    return reply('Recovered after request timeout.');
+  }, { timeoutMs: 10 }, 0);
+  assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered after request timeout.');
+  assert.equal(calls, 2);
+});
+
+test('partial provider responses are never replayed automatically', async t => {
+  let calls = 0;
+  const h = await harness(t, async (_messages, _specs, onDelta) => {
+    calls++;
+    onDelta('partial answer');
+    throw new Error('The selected provider is temporarily busy.');
+  }, {}, 0);
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /temporarily busy/);
+  assert.equal(calls, 1);
+  assert.ok(h.store.messages(h.session).some(message => message.role === 'assistant' && message.content.includes('Response interrupted')));
+});
+
+test('cancel interrupts the retry wait before another provider request', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => { calls++; throw new Error('The selected provider is temporarily busy.'); });
+  const controller = new AbortController();
+  const pending = h.runtime.run(h.session, 'Answer briefly.', controller.signal);
+  while (!h.events.some(event => event.type === 'status' && /Retrying in 10 seconds/.test(event.text ?? ''))) await setTimeout(1);
+  controller.abort();
+  await assert.rejects(pending, /aborted/i);
+  assert.equal(calls, 1);
+});
+
+test('empty model replies retry and their reported token usage is retained', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => ++calls === 1 ? reply('') : reply('Recovered from empty response.'), {}, 0);
+  assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered from empty response.');
+  assert.equal(calls, 2);
+  assert.equal(h.store.usage(h.session).input, 20);
+  assert.equal(h.store.usage(h.session).output, 10);
+});
+
+test('retry attempts consume the shared model-call limit', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => { calls++; throw new Error('The selected provider is temporarily busy.'); }, { maxSteps: 1 }, 0);
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /Shared limit of 1 model calls reached while retrying fake/);
+  assert.equal(calls, 1);
+});
 
 test('resumed desktop follow-ups keep the tool active and recover invalid calls without executing them', async t => {
   let calls = 0, executions = 0;

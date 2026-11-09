@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createProvider, PROVIDER_PRESETS } from '../src/providers/provider.js';
+import { createProvider, isRetryableProviderError, PROVIDER_PRESETS, PROVIDER_RETRY_DELAY_MS } from '../src/providers/provider.js';
 import type { ProviderConfig } from '../src/core/types.js';
 
 async function server(handler: (request: IncomingMessage, response: ServerResponse) => void) {
@@ -203,6 +203,15 @@ test('overloaded model errors recommend retrying the selected model without sugg
   } finally { await local.close(); }
 });
 
+test('provider retry policy waits ten seconds and retries only transient failures', () => {
+  assert.equal(PROVIDER_RETRY_DELAY_MS, 10_000);
+  assert.equal(isRetryableProviderError(Object.assign(new Error('Service unavailable'), { statusCode: 503 })), true);
+  assert.equal(isRetryableProviderError(new Error('The selected provider is temporarily busy.')), true);
+  assert.equal(isRetryableProviderError(Object.assign(new Error('Bad request'), { statusCode: 400 })), false);
+  assert.equal(isRetryableProviderError(Object.assign(new Error('Unauthorized'), { statusCode: 401 })), false);
+  assert.equal(isRetryableProviderError(new DOMException('Request cancelled.', 'AbortError')), false);
+});
+
 test('abort interrupts an active stream without retrying', async () => {
   let count = 0;
   const local = await server((_request, response) => {
@@ -347,7 +356,7 @@ test('catalog-known unsupported reasoning is rejected before sending a request',
   } finally { await local.close(); }
 });
 
-test('pre-stream rate limit retries while interrupted stream never retries', async () => {
+test('pre-stream rate limits return to the runtime retry loop; interrupted streams never retry', async () => {
   let count = 0;
   const local = await server((_request, response) => {
     count++;
@@ -360,8 +369,8 @@ test('pre-stream rate limit retries while interrupted stream never retries', asy
     }
   });
   try {
-    const reply = await createProvider(config(local.baseURL), undefined, 100).complete([{ role: 'user', content: 'Hello' }], [], () => {}, new AbortController().signal);
-    assert.equal(reply.text, 'OK'); assert.equal(count, 2);
+    await assert.rejects(createProvider(config(local.baseURL), undefined, 100).complete([{ role: 'user', content: 'Hello' }], [], () => {}, new AbortController().signal), /temporarily busy/);
+    assert.equal(count, 1);
   } finally { await local.close(); }
 
   let streamCount = 0, streamed = '';

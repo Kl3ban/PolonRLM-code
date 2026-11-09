@@ -1,8 +1,9 @@
 import { questionSchema, workflowInstructions, type AgentQuestion } from './workflows.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
-import type { AgentInfo, LLMProvider, Message, Mode, RuntimeEvent, Settings, ToolSpec, Usage, ImageAttachment } from './types.js';
+import type { AgentInfo, LLMProvider, Message, Mode, ModelReply, RuntimeEvent, Settings, ToolSpec, Usage, ImageAttachment } from './types.js';
 import type { SessionStore } from './store.js';
 import type { SkillsManager } from '../integrations/skills.js';
 import type { MCPManager } from '../integrations/mcp.js';
@@ -16,6 +17,7 @@ import { AgentTeam, type AgentTeamMessage } from './agent-team.js';
 import { OPTIONAL_TOOLS_GUIDANCE } from './tool-guidance.js';
 import { registerBuiltins } from '../tools/builtin.js';
 import { describeToolCall } from './tool-display.js';
+import { isRetryableProviderError, PROVIDER_RETRY_DELAY_MS } from '../providers/retry.js';
 
 const requestToolSchema = z.object({ tool: z.string().min(1).max(100), arguments: z.record(z.string(), z.unknown()), reason: z.string().min(4).max(1000) });
 const historySearchToolSpec: ToolSpec = { name: 'search_history', description: 'Search the full archived transcript for exact older details when the compact context note is insufficient. Returns a few short, source-labeled excerpts. Current session only.', parameters: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 300 }, limit: { type: 'integer', minimum: 1, maximum: 8, default: 5 } }, required: ['query'], additionalProperties: false } };
@@ -112,7 +114,8 @@ export class AgentRuntime {
   private agentTeams = new Map<string, AgentTeam>();
   private agentChanges = new Map<string, OverlayChange[]>();
   constructor(private settings: Settings, private store: SessionStore, private tools: ToolRegistry, private workspace: Workspace,
-    private skills: SkillsManager, private mcp: MCPManager, private provider: (id?: string) => Promise<LLMProvider>, private emit: (event: RuntimeEvent) => void) {}
+    private skills: SkillsManager, private mcp: MCPManager, private provider: (id?: string) => Promise<LLMProvider>, private emit: (event: RuntimeEvent) => void,
+    private readonly providerRetryDelayMs = PROVIDER_RETRY_DELAY_MS) {}
 
   private async timedQuestion(question: AgentQuestion, signal: AbortSignal): Promise<string> {
     const timer = new AbortController(); const timeout = setTimeout(() => timer.abort(new Error('Question timeout')), 300000);
@@ -361,12 +364,13 @@ ${skills.join('\n')}`;
       const reserveCost = Math.max(0, ...candidates.map(candidate => candidate.inputPrice !== undefined && candidate.outputPrice !== undefined ? (estimated * 1.25 * candidate.inputPrice + Math.min(this.settings.maxOutputTokens, candidate.maxOutputTokens ?? this.settings.maxOutputTokens) * candidate.outputPrice) / 1_000_000 : 0));
       if (budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error('Cost limit reached.');
       budget.reserved += reserve; budget.reservedCost += reserveCost; budget.calls++;
+      let reservationCount = 1;
       this.emit({ type: 'status', text: `${depth ? role : 'Agent'} · step ${step + 1}/${steps}`, contextTokens: estimated });
       if (depth && agentId) {
         const agent = this.agents.find(value => value.id === agentId);
         if (agent) { agent.progress = step + 1; agent.totalSteps = steps; agent.status = 'working'; this.emit({ type: 'agent', id: agent.id, name: agent.role, state: agent.status }); }
       }
-      let reply;
+      let reply: ModelReply | undefined;
       let respondingModel = providerConfig.model;
       let visiblePartial = '';
       // Do not stream a factual conclusion after known unreadable sources. Tool calls may still recover.
@@ -377,33 +381,70 @@ ${skills.join('\n')}`;
           this.emit({ type: 'status', text: `${skipped?.model ?? attempts[0]} does not support the required capabilities; using ${this.settings.providers[selectedAttempts[0]!]!.model}.` });
         }
         for (let index = 0; index < selectedAttempts.length; index++) {
-          let emittedThisAttempt = false;
-          try {
-            const candidate = this.settings.providers[selectedAttempts[index]!]!;
-            respondingModel = candidate.model;
-            const provider = await this.provider(selectedAttempts[index]);
-            const stream = new StreamRedactor();
-            const candidateInput = candidate.toolCalling === false && specs.length
-              ? [{ ...system, content: `${system.content}\n\nThis model does not support tool calls. You have no tool schemas or tool access for this turn. Answer the question normally. If the user requests an action involving files, the network, or the system, explain the limitation and do not claim it was done.` }, ...input.slice(1)]
-              : input;
-            reply = await provider.complete(candidateInput, candidate.toolCalling === false ? [] : specs, text => {
-              const safe = stream.push(text);
-              if (!depth && safe && !holdUnverified) { visiblePartial += safe; emittedThisAttempt = true; this.emit({ type: 'text', text: safe, model: respondingModel }); }
-            }, AbortSignal.any([signal, AbortSignal.timeout(candidate.requestTimeoutMs ?? this.settings.timeoutMs)]));
-            if (candidate.toolCalling === false && reply.toolCalls.length) throw new Error(`Model ${candidate.model} is marked as not supporting tools, but returned a tool call. No tool was executed.`);
-            const tail = stream.flush();
-            if (!depth && tail && !holdUnverified) { visiblePartial += tail; emittedThisAttempt = true; this.emit({ type: 'text', text: tail, model: respondingModel }); }
-            break;
-          } catch (error) {
-            if (emittedThisAttempt || signal.aborted || index === selectedAttempts.length - 1) throw error;
-            this.emit({ type: 'status', text: `Fallback: ${selectedAttempts[index + 1]}` });
+          const candidate = this.settings.providers[selectedAttempts[index]!]!;
+          respondingModel = candidate.model;
+          const candidateProvider = await this.provider(selectedAttempts[index]);
+          const candidateInput = candidate.toolCalling === false && specs.length
+            ? [{ ...system, content: `${system.content}\n\nThis model does not support tool calls. You have no tool schemas or tool access for this turn. Answer the question normally. If the user requests an action involving files, the network, or the system, explain the limitation and do not claim it was done.` }, ...input.slice(1)]
+            : input;
+          let retryNumber = 0;
+          while (true) {
+            let emittedThisAttempt = false;
+            let receivedTextThisAttempt = '';
+            const requestTimeout = AbortSignal.timeout(candidate.requestTimeoutMs ?? this.settings.timeoutMs);
+            const requestSignal = AbortSignal.any([signal, requestTimeout]);
+            reply = undefined;
+            try {
+              const stream = new StreamRedactor();
+              reply = await candidateProvider.complete(candidateInput, candidate.toolCalling === false ? [] : specs, text => {
+                receivedTextThisAttempt += text;
+                const safe = stream.push(text);
+                if (!depth && safe && !holdUnverified) { visiblePartial += safe; emittedThisAttempt = true; this.emit({ type: 'text', text: safe, model: respondingModel }); }
+              }, requestSignal);
+              if (candidate.toolCalling === false && reply.toolCalls.length) throw new Error(`Model ${candidate.model} is marked as not supporting tools, but returned a tool call. No tool was executed.`);
+              const tail = stream.flush();
+              if (!depth && tail && !holdUnverified) { visiblePartial += tail; emittedThisAttempt = true; this.emit({ type: 'text', text: tail, model: respondingModel }); }
+              if (!reply.text.trim() && !reply.toolCalls.length) {
+                const emptyReply = reply;
+                reply = undefined;
+                for (const key of ['input', 'output', 'cached', 'cost'] as const) budget.usage[key] += emptyReply.usage[key];
+                budget.usage.costKnown &&= emptyReply.usage.costKnown;
+                this.store.recordUsage(session, emptyReply.usage);
+                this.emit({ type: 'usage', usage: { ...budget.usage } });
+                budget.reserved -= reserve; budget.reservedCost -= reserveCost; reservationCount--;
+                const error = new Error('The provider returned an empty response.'); error.name = 'EmptyProviderResponseError';
+                throw error;
+              }
+              break;
+            } catch (error) {
+              if (signal.aborted) throw error;
+              const emptyResponse = error instanceof Error && error.name === 'EmptyProviderResponseError';
+              const transient = emptyResponse || requestTimeout.aborted || isRetryableProviderError(error);
+              const hasPartialAnswer = receivedTextThisAttempt.trim().length > 0;
+              if (transient && (!hasPartialAnswer || emptyResponse)) {
+                if (budget.calls >= this.settings.maxSteps) throw new Error(`Shared limit of ${this.settings.maxSteps} model calls reached while retrying ${candidate.model}.`);
+                if (this.settings.tokenBudget > 0 && budget.usage.input + budget.usage.output + budget.reserved + reserve > this.settings.tokenBudget) throw new Error(`Shared token limit reached before retrying ${candidate.model}.`);
+                if (budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error(`Cost limit reached before retrying ${candidate.model}.`);
+                retryNumber++;
+                const delaySeconds = Math.ceil(this.providerRetryDelayMs / 1000);
+                this.emit({ type: 'status', text: `${candidate.model} did not respond. Retrying in ${delaySeconds} seconds (retry ${retryNumber}).` });
+                await delay(this.providerRetryDelayMs, undefined, { signal });
+                signal.throwIfAborted();
+                budget.reserved += reserve; budget.reservedCost += reserveCost; reservationCount++; budget.calls++;
+                continue;
+              }
+              if (emittedThisAttempt || index === selectedAttempts.length - 1) throw error;
+              this.emit({ type: 'status', text: `Fallback: ${selectedAttempts[index + 1]}` });
+              break;
+            }
           }
+          if (reply) break;
         }
         if (!reply) throw new Error('No response from provider.');
       } catch (error: any) {
         if (visiblePartial && !depth) append({ role: 'assistant', content: `${visiblePartial}\n\n[Response interrupted by a provider error.]`, model: respondingModel });
         throw new Error(redact(error.message ?? String(error)));
-      } finally { budget.reserved -= reserve; budget.reservedCost -= reserveCost; }
+      } finally { budget.reserved -= reserve * reservationCount; budget.reservedCost -= reserveCost * reservationCount; }
       if (holdUnverified) {
         reply.text = reply.toolCalls.length ? '' : 'Could not verify the information from the available sources. Search and page reading returned no content to check. A working URL or a more precise name is needed; there is not enough evidence for a reliable description.';
         if (!depth && reply.text) this.emit({ type: 'text', text: reply.text, model: respondingModel });
