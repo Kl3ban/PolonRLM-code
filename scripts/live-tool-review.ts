@@ -114,11 +114,11 @@ async function runCase(name: string, prompt: string, required: string[], options
   const operations = events.filter((event): event is Extract<RuntimeEvent, { type: 'tool' }> => event.type === 'tool' && event.state !== 'running');
   const called = [...new Set(operations.map(event => event.name!).filter(Boolean))];
   const errors = operations.filter(event => event.state === 'error').map(event => ({ name: event.name, detail: event.toolDetail ? safe(event.toolDetail) : undefined, error: safe(event.text) }));
-  const toolResults = store.messages(session).filter(message => message.role === 'tool').map(message => ({ name: message.name, isError: !!message.isError, result: redact(message.content).slice(0, 1200) }));
+  const toolResults = store.messages(session).filter(message => message.role === 'tool').map(message => ({ name: message.name, isError: !!message.isError, result: message.name === 'inspect_process' ? '[Host process details omitted from report.]' : redact(message.content).slice(0, 1200) }));
   const unsubstantiatedClaim = called.length === 0 && /urucham\w*|wykon\w*|sprawdz\w*|zadzia\w*|exit code|wynik:/i.test(answer);
   const evidence = options.verify ? await options.verify().catch(error => `verification failed: ${safe(error)}`) : undefined;
   const entry = { name, durationMs: Date.now() - start, required, called, missing: required.filter(tool => !called.includes(tool)),
-    errors, fatal, unsubstantiatedClaim, evidence, answer: redact(answer), operations: operations.map(event => ({ name: event.name, detail: event.toolDetail ? safe(event.toolDetail) : undefined, state: event.state, ms: event.durationMs, ...(event.state === 'error' ? { error: safe(event.text) } : {}) })), toolResults, usage: store.usage(session) };
+    errors, fatal, unsubstantiatedClaim, evidence, answer: name === 'shell-and-system-commands' ? '[Summary omitted to avoid storing host process details.]' : redact(answer), operations: operations.map(event => ({ name: event.name, detail: event.toolDetail ? safe(event.toolDetail) : undefined, state: event.state, ms: event.durationMs, ...(event.state === 'error' ? { error: safe(event.text) } : {}) })), toolResults, usage: store.usage(session) };
   const old = checks.findIndex(check => check.name === name); if (old >= 0) checks.splice(old, 1);
   checks.push(entry);
   const current = store.usage(session); usage.input += current.input; usage.output += current.output; usage.cost += current.cost;
@@ -135,7 +135,7 @@ async function writeReport(): Promise<void> {
     ...(entry.fatal ? [{ severity: 'high', area: entry.name, status: 'case failed', evidence: entry.fatal }] : []),
     ...(entry.unsubstantiatedClaim ? [{ severity: 'medium', area: entry.name, status: 'action claim without a tool call', evidence: entry.answer }] : []),
   ]);
-  const report = { date: new Date().toISOString(), model: google.model, permissions: 'all in disposable workspace; user data untouched', computerUse: 'excluded and not registered', inventory,
+  const report = { date: new Date().toISOString(), model: google.model, permissions: 'file operations confined to disposable workspace; inspect_process read host metadata; no process was terminated', computerUse: 'excluded and not registered', inventory,
     runtimeTools: ['discover_tools','request_tool','ask_question','finish_interview','load_skill','remember','search_history','get_goal','update_goal','delegate','agent_message','agent_changes','agent_apply'],
     findings,
     mcpFixtureTools: mcpNames, tested: [...tested].sort(), untested: [...inventory.filter(name => !tested.has(name)), ...mcpNames.filter(name => !tested.has(name))].sort(),
