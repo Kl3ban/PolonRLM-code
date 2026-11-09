@@ -51,7 +51,7 @@ Add-Type -TypeDefinition $code -ReferencedAssemblies System.Windows.Forms,System
     const context = { mode: 'BUILD' as const, signal: AbortSignal.timeout(60000), onImage: (image: { data: string }) => images.push(image.data) };
     const listed = await session.execute({ action: 'list' }, context) as any;
     assert.ok(listed.windows.some((window: any) => window.id === windowId && window.pid === child.pid));
-    const taskbar = listed.windows.find((window: any) => window.title === 'Pasek zadań Windows');
+    const taskbar = listed.windows.find((window: any) => window.title === 'Windows taskbar');
     assert.ok(taskbar, 'Taskbar should be available as a separate click target');
     const taskbarScreen = await session.execute({ action: 'observe', windowId: taskbar.id }, context) as any;
     assert.equal(taskbarScreen.windowId, taskbar.id);
@@ -61,12 +61,19 @@ Add-Type -TypeDefinition $code -ReferencedAssemblies System.Windows.Forms,System
     let screen = await session.execute({ action: 'observe', windowId }, context) as any;
     assert.ok(images[1]!.length > 100);
     const editor = screen.elements.find((element: any) => element.name === 'Fixture editor') ?? screen.elements.find((element: any) => /ControlType\.(?:Edit|ComboBox)/.test(element.type)); assert.ok(editor, JSON.stringify(screen.elements));
-    screen = await session.execute({ action: 'fill', snapshotId: screen.snapshotId, element: editor.index, text: 'Zażółć 123' }, context) as any;
-    screen = await session.execute({ action: 'key', snapshotId: screen.snapshotId, keys: ['CTRL', 'A'], element: editor.index }, context) as any;
-    screen = await session.execute({ action: 'type', snapshotId: screen.snapshotId, text: 'Replaced' }, context) as any;
-    const button = screen.elements.find((element: any) => element.name === 'Save fixture'); assert.ok(button);
+    const unicode = 'Zażółć 123';
+    screen = await session.execute({ action: 'fill', snapshotId: screen.snapshotId, element: editor.index, text: unicode }, context) as any;
+    let button = screen.elements.find((element: any) => element.name === 'Save fixture'); assert.ok(button, JSON.stringify(screen.elements));
     screen = await session.execute({ action: 'click', snapshotId: screen.snapshotId, element: button.index }, context) as any;
-    assert.ok(screen.elements.some((element: any) => element.name === 'Saved: Replaced'), JSON.stringify(screen.elements));
+    assert.ok(screen.elements.some((element: any) => element.name === `Saved: ${unicode}`), JSON.stringify(screen.elements));
+    screen = await session.execute({ action: 'observe', windowId }, context) as any;
+    const updatedEditor = screen.elements.find((element: any) => element.name === 'Fixture editor') ?? screen.elements.find((element: any) => /ControlType\.(?:Edit|ComboBox)/.test(element.type)); assert.ok(updatedEditor, JSON.stringify(screen.elements));
+    screen = await session.execute({ action: 'key', snapshotId: screen.snapshotId, keys: ['CTRL', 'A'], element: updatedEditor.index }, context) as any;
+    const typed = 'Replaced 世界';
+    screen = await session.execute({ action: 'type', snapshotId: screen.snapshotId, text: typed }, context) as any;
+    button = screen.elements.find((element: any) => element.name === 'Save fixture'); assert.ok(button, JSON.stringify(screen.elements));
+    screen = await session.execute({ action: 'click', snapshotId: screen.snapshotId, element: button.index }, context) as any;
+    assert.ok(screen.elements.some((element: any) => element.name === `Saved: ${typed}`), JSON.stringify(screen.elements));
   } finally {
     await writeFile(stop, 'stop');
     await Promise.race([outcome, new Promise(resolve => setTimeout(resolve, 3000))]);
