@@ -18,7 +18,7 @@ It writes only JSON to stdout. Errors use `{"error":{"code":"...","message":"...
 
 | Tool | Behavior |
 | --- | --- |
-| `web_search(query, max_results=6, source="auto")` | Queries Bing, Brave, and Yahoo result pages in parallel. The process and parsing run locally. It uses no search API, key, or visible browser window. Results are merged, deduplicated, and ranked locally with BM25. A single search engine can be selected. The runtime allows at most two searches per task. |
+| `web_search(query, max_results=6, source="auto")` | Queries Bing, Brave, and Yahoo result pages in parallel. The process and parsing run locally. It uses no search API, key, or visible browser window. Results are merged, deduplicated, and ranked locally with BM25. Select `auto`, `bing`, `brave`, or `yahoo` as the source. The runtime allows at most two searches per task. |
 | `read_webpage(url, focus_query=null)` | Trafilatura returns Markdown without navigation. GitHub `/blob/` URLs are changed to raw URLs. BM25 selects up to three matching sections from long pages and includes titles for other sections. Short pages return metadata and visible text. Literal HTML or JavaScript redirects are read without executing JavaScript. |
 | `download_to_disk(url, save_filename=null)` | Streams data in 64 KB chunks to `agent_workspace/downloads`, up to 100 MB. It never overwrites, runs, or extracts files. The result includes path, size, SHA-256, and MIME type. Requires write approval. |
 | `github_repo_inspector(repo_url, subpath="")` | Returns up to 200 names, paths, types, and sizes from one public repository directory. It uses the public GitHub Contents API without a key and does not clone the repository. |

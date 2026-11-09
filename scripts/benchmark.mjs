@@ -6,4 +6,4 @@ for (let index = 0; index < 40; index++) {
 }
 const before = estimateTokens(messages);
 const result = compactMessages(messages, 6000);
-console.log(JSON.stringify({ workload: 'synthetic, not an OpenCode comparison', estimator: 'UTF-8 bytes / 3', beforeEstimatedTokens: before, afterEstimatedTokens: estimateTokens(result.messages), archivedMessages: result.removed, reductionPercent: Number((100 * (1 - estimateTokens(result.messages) / before)).toFixed(1)), extraLLMCalls: 0 }, null, 2));
+console.log(JSON.stringify({ workload: 'synthetic, not an OpenCode comparison', estimator: 'UTF-8 bytes / 3', beforeEstimatedTokens: before, afterEstimatedTokens: estimateTokens(result.messages), archivedMessages: result.removed, shortenedMessages: result.shortened, retainedMessages: result.messages.length, reductionPercent: Number((100 * (1 - estimateTokens(result.messages) / before)).toFixed(1)), extraLLMCalls: 0 }, null, 2));
