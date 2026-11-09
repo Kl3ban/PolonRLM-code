@@ -2,7 +2,7 @@ import { questionSchema, workflowInstructions, type AgentQuestion } from './work
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import type { AgentInfo, LLMProvider, Message, Mode, RuntimeEvent, Settings, Usage, ImageAttachment } from './types.js';
+import type { AgentInfo, LLMProvider, Message, Mode, RuntimeEvent, Settings, ToolSpec, Usage, ImageAttachment } from './types.js';
 import type { SessionStore } from './store.js';
 import type { SkillsManager } from '../integrations/skills.js';
 import type { MCPManager } from '../integrations/mcp.js';
@@ -18,6 +18,7 @@ import { registerBuiltins } from '../tools/builtin.js';
 import { describeToolCall } from './tool-display.js';
 
 const requestToolSchema = z.object({ tool: z.string().min(1).max(100), arguments: z.record(z.string(), z.unknown()), reason: z.string().min(4).max(1000) });
+const historySearchToolSpec: ToolSpec = { name: 'search_history', description: 'Search the full archived transcript for exact older details when the compact context note is insufficient. Returns a few short, source-labeled excerpts. Current session only.', parameters: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 300 }, limit: { type: 'integer', minimum: 1, maximum: 8, default: 5 } }, required: ['query'], additionalProperties: false } };
 export function isWebResearch(task: string): boolean {
   return /interne(?:t|c)|online|\bweb\b|źr[oó]d|sources|https?:\/\/|w sieci|look up|research|aktualn.{0,15}(?:informacj|wiadomoś)|wyszukaj czym/i.test(task)
     || (/wyszuk|poszuk|znajd[źz]|search/i.test(task) && !/\b(?:kod|kodu|plik\w*|repo\w*|projekt\w*|funkcj\w*|code|files?|class)\b/i.test(task));
@@ -291,7 +292,7 @@ ${skills.join('\n')}`;
       }
       if (!(wantsComputer && emptyDesktopDiscovery)) specs.push({ name: 'discover_tools', description: 'Find additional tools by keyword. For screen, mouse, window, taskbar or app tasks, computer_use is directly available; call it instead of searching.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
       if (unavailableTools.size) specs.push({ name: 'request_tool', description: 'Ask the user to approve exactly one invocation of a discovered disabled registered tool. Approval pauses the run, does not change settings, and authorizes only these arguments once.', parameters: { type: 'object', properties: { tool: { type: 'string', minLength: 1, maxLength: 100 }, arguments: { type: 'object', additionalProperties: true }, reason: { type: 'string', minLength: 4, maxLength: 1000 } }, required: ['tool', 'arguments', 'reason'], additionalProperties: false } });
-      if (!depth && messages.some(message => message.name === 'polonrlm_context')) specs.push({ name: 'search_history', description: 'Search the full archived transcript for exact older details when the compact context note is insufficient. Returns a few short, source-labeled excerpts. Current session only.', parameters: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 300 }, limit: { type: 'integer', minimum: 1, maximum: 8, default: 5 } }, required: ['query'], additionalProperties: false } });
+      if (!depth && messages.some(message => message.name === 'polonrlm_context')) specs.push(historySearchToolSpec);
       const canDelegate = !isolated && depth < this.settings.maxDepth && this.settings.cortex > 0 && budget.agents < CORTEX[this.settings.cortex]!.agents;
       if (canDelegate) specs.push({ name: 'delegate', description: 'Run focused subagents in parallel. Members of this batch may exchange bounded direct notes via agent_message; do not assume execution order. Share only each task and needed context. Global budget and permissions apply.', parameters: { type: 'object', properties: { tasks: { type: 'array', minItems: 1, maxItems: this.settings.maxAgents, items: { type: 'object', properties: { role: { type: 'string', enum: ['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] }, task: { type: 'string', minLength: 10, maxLength: 12000 } }, required: ['role', 'task'], additionalProperties: false } } }, required: ['tasks'], additionalProperties: false } });
       specs.push({ name: 'load_skill', description: 'Load one enabled skill by name only when required.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false } });
@@ -328,7 +329,11 @@ ${skills.join('\n')}`;
       const outputLimits = candidates.map(candidate => Math.min(this.settings.maxOutputTokens, candidate.maxOutputTokens ?? this.settings.maxOutputTokens));
       const maximum = Math.min(this.settings.maxInputTokens, ...candidates.map((candidate, index) => (candidate.contextWindow ?? Infinity) - outputLimits[index]!));
       const overhead = estimateTokens([system, estimateSpecs]);
-      let compactionBudget = Math.max(500, maximum - overhead);
+      const mayAddHistorySearch = !depth && estimateSpecs.length > 0 && !messages.some(message => message.name === 'polonrlm_context');
+      const historySearchReserve = mayAddHistorySearch
+        ? Math.max(0, estimateTokens([system, [...estimateSpecs, historySearchToolSpec]]) - overhead) + 2
+        : 0;
+      let compactionBudget = Math.max(500, maximum - overhead - historySearchReserve);
       let compacted = compactMessages(messages, compactionBudget);
       let estimated = estimateTokens([[system, ...compacted.messages], estimateSpecs]);
       // The complete request has a different JSON envelope than the separately estimated prompt and history.
