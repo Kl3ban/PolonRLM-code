@@ -20,7 +20,12 @@
     "src",
     "tests",
     "scripts",
-    "docs",
+    "docs/ARCHITECTURE.md",
+    "docs/COMMANDS.md",
+    "docs/COMPUTER-USE.md",
+    "docs/LOCAL-WEB.md",
+    "docs/PROVIDERS.md",
+    "docs/TOOLS.md",
     "tsconfig.json",
     "README.md",
     "LICENSE"
