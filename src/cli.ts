@@ -75,8 +75,9 @@ async function main(): Promise<void> {
   if (values.model) await controller.setModel(values.model);
   if (positionals[0] === 'doctor') {
     const { execa } = await import('execa');
+    const { rgPath } = await import('@vscode/ripgrep');
     const { networkPython } = await import('./tools/network.js');
-    const checks = await Promise.all([['git', 'git'], ['rg', 'rg'], ['python (web)', networkPython()]].map(async ([name, command]) => { try { const result = await execa(command!, ['--version'], { timeout: 5000, windowsHide: true }); return `${name}: ${result.stdout.split('\n')[0]}`; } catch { return `${name}: missing or unavailable${name === 'python (web)' ? ' · PolonRLM setup web' : ''}`; } }));
+    const checks = await Promise.all([['git', 'git'], ['rg', rgPath], ['python (web)', networkPython()]].map(async ([name, command]) => { try { const result = await execa(command!, ['--version'], { timeout: 5000, windowsHide: true }); return `${name}: ${result.stdout.split('\n')[0]}`; } catch { return `${name}: missing or unavailable${name === 'python (web)' ? ' · PolonRLM setup web' : ''}`; } }));
     let sqlite: string;
     try { sqlite = controller.integrityCheck(); } finally { await controller.close(); }
     console.log(`Node ${process.version} · ${process.platform}\n${checks.join('\n')}\nData: ${controller.config.home}\nSQLite: ${sqlite}\n${controller.snapshot().workspace}`); return;
