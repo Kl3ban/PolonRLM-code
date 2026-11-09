@@ -40,7 +40,8 @@ const providerSchema = z.object({
   baseURL: z.url().refine(value => /^https?:\/\//.test(value), 'HTTP or HTTPS is required'), model: z.string(),
   apiKeyEnv: z.string().optional(), reasoning: z.enum(['off', 'low', 'medium', 'high']).optional(),
   temperature: z.number().min(0).max(2).optional(), inputPrice: z.number().nonnegative().optional(), outputPrice: z.number().nonnegative().optional(),
-  contextWindow: z.number().int().positive().optional(), maxOutputTokens: z.number().int().positive().optional(), reasoningSupported: z.boolean().optional(), toolCalling: z.boolean().optional(), vision: z.boolean().optional()
+  contextWindow: z.number().int().positive().optional(), maxOutputTokens: z.number().int().positive().optional(), reasoningSupported: z.boolean().optional(), toolCalling: z.boolean().optional(), vision: z.boolean().optional(),
+  requestTimeoutMs: z.number().int().min(1000).max(600000).optional()
 });
 export const settingsSchema = z.object({
   provider: z.string(), providers: z.record(z.string(), providerSchema), fallback: z.array(z.string()),
@@ -60,6 +61,14 @@ export function defaultSettings(): Settings {
     maxAgents: 3, maxDepth: 1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 10000, timeoutMs: 120000, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function mergeProviderConfigs(saved: unknown): Record<string, unknown> {
+  const merged: Record<string, unknown> = structuredClone(PROVIDER_PRESETS);
+  if (!isRecord(saved)) return merged;
+  for (const [id, value] of Object.entries(saved)) {
+    merged[id] = isRecord(value) ? { ...(PROVIDER_PRESETS[id] ?? {}), ...value } : value;
+  }
+  return merged;
+}
 function sameValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((item, index) => sameValue(item, right[index]));
@@ -169,7 +178,7 @@ export class ConfigManager {
   async load(): Promise<void> {
     await this.migrateLegacy();
     await mkdir(this.home, { recursive: true });
-    try { const saved = JSON.parse(await readFile(path.join(this.home, 'config.json'), 'utf8')); this.settings = settingsSchema.parse({ ...defaultSettings(), ...saved, providers: { ...PROVIDER_PRESETS, ...saved.providers } }); }
+    try { const saved = JSON.parse(await readFile(path.join(this.home, 'config.json'), 'utf8')); this.settings = settingsSchema.parse({ ...defaultSettings(), ...saved, providers: mergeProviderConfigs(saved.providers) }); }
     catch (error: any) { if (error.code !== 'ENOENT') throw new Error(`Invalid configuration: ${error.message}`); }
     this.baseline = structuredClone(this.settings);
   }
@@ -207,7 +216,7 @@ export class ConfigManager {
   private async readCurrentSettings(target: string): Promise<Settings> {
     try {
       const saved = JSON.parse(await readFile(target, 'utf8'));
-      return settingsSchema.parse({ ...defaultSettings(), ...saved, providers: { ...PROVIDER_PRESETS, ...saved.providers } });
+      return settingsSchema.parse({ ...defaultSettings(), ...saved, providers: mergeProviderConfigs(saved.providers) });
     } catch (error: any) {
       if (error.code === 'ENOENT') return defaultSettings();
       throw new Error(`Invalid configuration while saving: ${error.message}`);

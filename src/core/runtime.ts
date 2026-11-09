@@ -389,7 +389,7 @@ ${skills.join('\n')}`;
             reply = await provider.complete(candidateInput, candidate.toolCalling === false ? [] : specs, text => {
               const safe = stream.push(text);
               if (!depth && safe && !holdUnverified) { visiblePartial += safe; emittedThisAttempt = true; this.emit({ type: 'text', text: safe, model: respondingModel }); }
-            }, AbortSignal.any([signal, AbortSignal.timeout(this.settings.timeoutMs)]));
+            }, AbortSignal.any([signal, AbortSignal.timeout(candidate.requestTimeoutMs ?? this.settings.timeoutMs)]));
             if (candidate.toolCalling === false && reply.toolCalls.length) throw new Error(`Model ${candidate.model} is marked as not supporting tools, but returned a tool call. No tool was executed.`);
             const tail = stream.flush();
             if (!depth && tail && !holdUnverified) { visiblePartial += tail; emittedThisAttempt = true; this.emit({ type: 'text', text: tail, model: respondingModel }); }

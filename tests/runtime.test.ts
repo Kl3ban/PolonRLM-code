@@ -48,6 +48,16 @@ test('question timeout continues without claiming user approval', async t => {
   t.mock.timers.reset();
 });
 
+test('provider-specific request timeout overrides the global timeout', async t => {
+  const h = await harness(t, async (_messages, _specs, _onDelta, signal) => {
+    await setTimeout(1200);
+    assert.equal(signal.aborted, false, 'the per-provider timeout should replace the shorter global timeout');
+    return reply('Request completed within the provider timeout.');
+  }, { timeoutMs: 1000 });
+  h.settings.providers.fake!.requestTimeoutMs = 2000;
+  assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Request completed within the provider timeout.');
+});
+
 test('goal state survives database reopen and only explicit update completes it', async t => {
   let calls = 0;
   const h = await harness(t, async () => ++calls === 1 ? reply('', [{ id: 'complete', name: 'update_goal', arguments: { status: 'complete', evidence: 'All requested outputs exist.' } }]) : reply('Done'));

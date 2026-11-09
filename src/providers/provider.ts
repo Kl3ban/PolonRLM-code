@@ -20,7 +20,7 @@ export const PROVIDER_PRESETS: Record<string, ProviderConfig> = {
   ollama: preset('ollama', 'compatible', 'http://127.0.0.1:11434/v1'),
   lmstudio: preset('lmstudio', 'compatible', 'http://127.0.0.1:1234/v1'),
   vllm: preset('vllm', 'compatible', 'http://127.0.0.1:8000/v1'),
-  nvidia: preset('nvidia', 'compatible', 'https://integrate.api.nvidia.com/v1', 'NVIDIA_API_KEY'),
+  nvidia: { ...preset('nvidia', 'compatible', 'https://integrate.api.nvidia.com/v1', 'NVIDIA_API_KEY'), requestTimeoutMs: 600_000 },
   groq: preset('groq', 'compatible', 'https://api.groq.com/openai/v1', 'GROQ_API_KEY'),
   deepseek: preset('deepseek', 'compatible', 'https://api.deepseek.com/v1', 'DEEPSEEK_API_KEY'),
   mistral: preset('mistral', 'compatible', 'https://api.mistral.ai/v1', 'MISTRAL_API_KEY'),

@@ -3,6 +3,7 @@ export type ProviderKind = 'openai' | 'compatible' | 'anthropic' | 'google';
 export interface ProviderConfig {
   id: string; kind: ProviderKind; baseURL: string; model: string;
   apiKeyEnv?: string; reasoning?: 'off' | 'low' | 'medium' | 'high';
+  requestTimeoutMs?: number;
   temperature?: number; inputPrice?: number; outputPrice?: number;
   contextWindow?: number; maxOutputTokens?: number; reasoningSupported?: boolean; toolCalling?: boolean; vision?: boolean;
 }

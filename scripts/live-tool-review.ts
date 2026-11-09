@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { deflateSync } from 'node:zlib';
 import ExcelJS from 'exceljs';
 import { ConfigManager } from '../src/core/config.js';
-import { SecretVault, redact } from '../src/core/secrets.js';
+import { SecretVault, isSecretEnvironmentName, redact } from '../src/core/secrets.js';
 import { SessionStore } from '../src/core/store.js';
 import { Permissions } from '../src/core/permissions.js';
 import { AgentRuntime } from '../src/core/runtime.js';
@@ -18,7 +18,13 @@ import { registerBuiltins } from '../src/tools/builtin.js';
 import { createProvider } from '../src/providers/provider.js';
 import type { RuntimeEvent } from '../src/core/types.js';
 
-if (process.env.POLONRLM_LIVE_TOOL_REVIEW !== '1') throw new Error("This spends Google API tokens. Set POLONRLM_LIVE_TOOL_REVIEW=1 after the user's explicit authorization.");
+if (process.env.POLONRLM_LIVE_TOOL_REVIEW !== '1') throw new Error("This benchmark uses real model tokens. Set POLONRLM_LIVE_TOOL_REVIEW=1 after the user's explicit authorization.");
+
+const providerId = process.env.POLONRLM_LIVE_PROVIDER ?? 'google';
+const requestedModelId = process.env.POLONRLM_LIVE_MODEL;
+const requestTimeoutMs = integerEnv('POLONRLM_LIVE_REQUEST_TIMEOUT_MS', providerId === 'google' ? 60_000 : 600_000, 1_000, 600_000);
+const caseTimeoutMs = integerEnv('POLONRLM_LIVE_CASE_TIMEOUT_MS', 1_800_000, 1_000, 3_600_000);
+const minimumRequestIntervalMs = integerEnv('POLONRLM_LIVE_MIN_REQUEST_INTERVAL_MS', providerId === 'google' ? 5_000 : 0, 0, 60_000);
 
 const projectRoot = process.cwd();
 const reportPath = path.resolve('docs/tool-review-live.json');
@@ -50,19 +56,35 @@ process.env.GIT_TEMPLATE_DIR = gitTemplate;
 for (const name of ['GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES']) delete process.env[name];
 
 const config = new ConfigManager(); await config.load();
-const google = structuredClone(config.settings.providers.google!);
-const key = await new SecretVault(config.home).get('google', google.apiKeyEnv);
-if (!key) throw new Error('Google API key not found in the local secret vault.');
-const catalog = await createProvider(google, key, 800).listModels();
-const selected = catalog.find(model => model.id === google.model && model.toolCalling !== false)
-  ?? catalog.find(model => /flash/i.test(model.id) && !/audio|tts|live|image|preview/i.test(model.id) && model.toolCalling !== false);
-if (!selected) throw new Error('No listed Google model supports tool calls.');
-google.model = selected.id;
+const configuredProvider = config.settings.providers[providerId];
+if (!configuredProvider) throw new Error(`Unknown configured provider: ${providerId}.`);
+const liveProviderConfig = structuredClone(configuredProvider);
+if (process.env.POLONRLM_LIVE_BASE_URL) liveProviderConfig.baseURL = process.env.POLONRLM_LIVE_BASE_URL;
+if (process.env.POLONRLM_LIVE_API_KEY) liveProviderConfig.apiKeyEnv = 'POLONRLM_LIVE_API_KEY';
+const key = await new SecretVault(config.home).get(providerId, liveProviderConfig.apiKeyEnv);
+if (!key) throw new Error(`No credential found for ${providerId} in the local vault or its configured environment variable.`);
+for (const name of Object.keys(process.env)) if (isSecretEnvironmentName(name)) delete process.env[name];
+let catalog: Awaited<ReturnType<ReturnType<typeof createProvider>['listModels']>> = [];
+try { catalog = await createProvider(liveProviderConfig, key, 800).listModels(AbortSignal.timeout(Math.min(requestTimeoutMs, 60_000))); }
+catch (error) {
+  if (!requestedModelId) throw error;
+  console.log(`Model catalog unavailable; using the explicitly selected model ${requestedModelId}.`);
+}
+const selected = requestedModelId
+  ? catalog.find(model => model.id === requestedModelId) ?? { id: requestedModelId }
+  : catalog.find(model => model.id === liveProviderConfig.model && model.toolCalling !== false)
+    ?? catalog.find(model => /flash/i.test(model.id) && !/audio|tts|live|image|preview/i.test(model.id) && model.toolCalling !== false);
+if (!selected) throw new Error(requestedModelId
+  ? `Requested model ${requestedModelId} was not returned by ${providerId} or the provider did not expose a tool-capable catalog entry.`
+  : `No listed tool-capable model was found for ${providerId}. Set POLONRLM_LIVE_MODEL to a tool-capable model ID.`);
+if (selected.toolCalling === false) throw new Error(`Model ${selected.id} is marked as not supporting tool calls.`);
+liveProviderConfig.model = selected.id;
+liveProviderConfig.requestTimeoutMs = requestTimeoutMs;
 
 const settings = {
-  ...config.settings, provider: 'google', providers: { ...config.settings.providers, google }, mode: 'BUILD' as const,
+  ...config.settings, provider: providerId, fallback: [], providers: { ...config.settings.providers, [providerId]: liveProviderConfig }, mode: 'BUILD' as const,
   cortex: 1, maxSteps: 24, maxAgents: 2, maxDepth: 1, maxInputTokens: 20_000,
-  maxOutputTokens: 1200, tokenBudget: 0, dollarBudget: 1000, timeoutMs: 20_000,
+  maxOutputTokens: 1200, tokenBudget: 0, dollarBudget: 1000, timeoutMs: requestTimeoutMs,
   permissions: 'all' as const, toolPermissions: {}, allowTools: [], denyTools: [],
 };
 const permissions = new Permissions(settings);
@@ -72,17 +94,48 @@ const registry = new ToolRegistry(permissions, settings.toolOutputLimit);
 registerBuiltins(registry, workspace, settings, { computer: false });
 const mcp = new MCPManager({ fixture: { type: 'stdio', command: process.execPath, args: ['--import', 'tsx', path.join(projectRoot, 'tests/fixtures/mcp-server.ts'), '--stdio'], timeoutMs: 15_000 } });
 const events: RuntimeEvent[] = [];
-const baseProvider = createProvider(google, key, settings.maxOutputTokens);
-let requestQueue = Promise.resolve(); let lastGoogleRequest = 0;
-const throttledProvider = { ...baseProvider, async complete(...args: Parameters<typeof baseProvider.complete>) {
-  let release!: () => void; const previous = requestQueue; requestQueue = new Promise<void>(resolve => { release = resolve; });
+const baseProvider = createProvider(liveProviderConfig, key, settings.maxOutputTokens);
+let requestQueue = Promise.resolve(); let lastProviderRequest = 0;
+let activeCase: string | undefined;
+let requestId = 0;
+const requests: Array<{ id: number; case: string; model: string; startedAt: string; status: 'running' | 'complete' | 'aborted' | 'error'; firstTokenMs: number | null; durationMs: number | null; error?: string }> = [];
+async function reserveProviderSlot(signal: AbortSignal): Promise<void> {
+  let release!: () => void;
+  const previous = requestQueue;
+  requestQueue = new Promise<void>(resolve => { release = resolve; });
   await previous;
   try {
-    const wait = Math.max(0, lastGoogleRequest + 5_000 - Date.now());
-    if (wait) await delay(wait, undefined, { signal: args[3] });
-    lastGoogleRequest = Date.now();
-    return await baseProvider.complete(...args);
+    const wait = Math.max(0, lastProviderRequest + minimumRequestIntervalMs - Date.now());
+    if (wait) await delay(wait, undefined, { signal });
+    lastProviderRequest = Date.now();
   } finally { release(); }
+}
+const throttledProvider = { ...baseProvider, async complete(...args: Parameters<typeof baseProvider.complete>) {
+  await reserveProviderSlot(args[3]);
+  const started = Date.now();
+  const request: { id: number; case: string; model: string; startedAt: string; status: 'running' | 'complete' | 'aborted' | 'error'; firstTokenMs: number | null; durationMs: number | null; error?: string } = { id: ++requestId, case: activeCase ?? 'unknown', model: liveProviderConfig.model, startedAt: new Date(started).toISOString(), status: 'running', firstTokenMs: null, durationMs: null };
+  requests.push(request);
+  console.log(`Model request ${request.id} started (${request.case}; ${request.model}).`);
+  await writeReport();
+  try {
+    const reply = await baseProvider.complete(args[0], args[1], text => {
+      if (request.firstTokenMs === null) {
+        request.firstTokenMs = Date.now() - started;
+        console.log(`Model request ${request.id}: first token after ${request.firstTokenMs}ms.`);
+      }
+      args[2](text);
+    }, args[3]);
+    request.status = 'complete';
+    request.durationMs = Date.now() - started;
+    console.log(`Model request ${request.id} completed in ${request.durationMs}ms.`);
+    return reply;
+  } catch (error) {
+    request.status = args[3].aborted ? 'aborted' : 'error';
+    request.durationMs = Date.now() - started;
+    request.error = safe(error);
+    console.log(`Model request ${request.id} ${request.status} after ${request.durationMs}ms.`);
+    throw error;
+  } finally { await writeReport(); }
 } };
 const runtime = new AgentRuntime(settings, store, registry, workspace, new SkillsManager(home, workspace.root), mcp, async () => throttledProvider, event => events.push(event));
 runtime.askQuestion = async question => question.options[question.recommended]!.label;
@@ -92,7 +145,11 @@ assert.equal(registry.getSpec('computer_use'), undefined);
 
 let priorChecks: any[] = [];
 if (resume) {
-  try { priorChecks = JSON.parse(await readFile(reportPath, 'utf8')).checks ?? []; } catch { priorChecks = []; }
+  try {
+    const previousReport = JSON.parse(await readFile(reportPath, 'utf8'));
+    if (previousReport.provider === providerId && previousReport.model === liveProviderConfig.model) priorChecks = previousReport.checks ?? [];
+    else console.log(`Ignoring previous report for ${previousReport.provider ?? 'unknown provider'}/${previousReport.model ?? 'unknown model'}.`);
+  } catch { priorChecks = []; }
 }
 const checks: any[] = priorChecks;
 const usage = { input: 0, output: 0, cost: 0 };
@@ -103,13 +160,21 @@ const mcpNames = mcp.tools().map(tool => tool.name).sort();
 
 async function runCase(name: string, prompt: string, required: string[], options: { prepare?: (session: string) => void; verify?: () => Promise<string> } = {}): Promise<void> {
   if (requestedCases && !requestedCases.includes(name)) return;
+  const previous = resume ? checks.find(check => check.name === name) : undefined;
+  const expectedErrors = new Set(['mcp_fixture_failure']);
+  if (previous && !previous.fatal && !previous.missing?.length && !previous.unsubstantiatedClaim && !previous.errors?.some(error => !expectedErrors.has(error.name))) {
+    console.log(`${name}: skipped; a passing result for ${providerId}/${liveProviderConfig.model} is already recorded.`);
+    return;
+  }
+  activeCase = name;
+  await writeReport();
   events.length = 0;
   const session = store.create(workspace.root, `QA ${name}`);
   options.prepare?.(session);
   const start = Date.now();
   let answer = '';
   let fatal: string | undefined;
-  try { answer = await runtime.run(session, prompt, AbortSignal.timeout(240_000)); }
+  try { answer = await runtime.run(session, prompt, AbortSignal.timeout(caseTimeoutMs)); }
   catch (error) { fatal = safe(error); }
   const operations = events.filter((event): event is Extract<RuntimeEvent, { type: 'tool' }> => event.type === 'tool' && event.state !== 'running');
   const called = [...new Set(operations.map(event => event.name!).filter(Boolean))];
@@ -122,11 +187,17 @@ async function runCase(name: string, prompt: string, required: string[], options
   const old = checks.findIndex(check => check.name === name); if (old >= 0) checks.splice(old, 1);
   checks.push(entry);
   const current = store.usage(session); usage.input += current.input; usage.output += current.output; usage.cost += current.cost;
+  activeCase = undefined;
   await writeReport();
   console.log(`${name}: ${required.length - entry.missing.length}/${required.length} expected tools; ${errors.length} tool errors; ${entry.durationMs}ms`);
+  if (fatal && /timeout|timed out|aborted|fetch failed|ECONN|ENOTFOUND|forbidden|high demand|rate.?limit|too many requests|quota|overloaded|HTTP\s+[45]\d\d/i.test(fatal)) {
+    throw new Error(`Provider request failed during ${name}; the redacted report is saved at ${reportPath}. Stopped to avoid repeating a failing API call.`);
+  }
 }
 
-async function writeReport(): Promise<void> {
+let reportWriteQueue = Promise.resolve();
+function writeReport(): Promise<void> {
+  const pending = reportWriteQueue.then(async () => {
   const tested = new Set(checks.flatMap(entry => entry.called));
   const expectedErrors = new Set(['mcp_fixture_failure']);
   const findings = checks.flatMap(entry => [
@@ -135,16 +206,19 @@ async function writeReport(): Promise<void> {
     ...(entry.fatal ? [{ severity: 'high', area: entry.name, status: 'case failed', evidence: entry.fatal }] : []),
     ...(entry.unsubstantiatedClaim ? [{ severity: 'medium', area: entry.name, status: 'action claim without a tool call', evidence: entry.answer }] : []),
   ]);
-  const report = { date: new Date().toISOString(), model: google.model, permissions: 'file operations confined to disposable workspace; inspect_process read host metadata; no process was terminated', computerUse: 'excluded and not registered', inventory,
+  const report = { date: new Date().toISOString(), status: activeCase ? 'running' : checks.some(entry => entry.fatal) ? 'failed' : checks.length ? 'checkpoint' : 'ready', activeCase, provider: providerId, model: liveProviderConfig.model, requestTimeoutMs, caseTimeoutMs, requests, permissions: 'file operations confined to disposable workspace; inspect_process read host metadata; no process was terminated', computerUse: 'excluded and not registered', inventory,
     runtimeTools: ['discover_tools','request_tool','ask_question','finish_interview','load_skill','remember','search_history','get_goal','update_goal','delegate','agent_message','agent_changes','agent_apply'],
     findings,
     mcpFixtureTools: mcpNames, tested: [...tested].sort(), untested: [...inventory.filter(name => !tested.has(name)), ...mcpNames.filter(name => !tested.has(name))].sort(),
     usage: { input: checks.reduce((sum, item) => sum + item.usage.input, 0), output: checks.reduce((sum, item) => sum + item.usage.output, 0), costKnown: false }, checks };
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n', 'utf8');
+  });
+  reportWriteQueue = pending.catch(() => {});
+  return pending;
 }
 
 try {
-  console.log(`Google live review: ${google.model}; ${inventory.length} registry tools; ${mcpNames.length} fixture MCP tools.`);
+  console.log(`${providerId} live review: ${liveProviderConfig.model}; request timeout ${requestTimeoutMs}ms; ${inventory.length} registry tools; ${mcpNames.length} fixture MCP tools.`);
   await runCase('workspace-read-and-inspection',
     'This is a disposable QA workspace. Use the tools named here, via discover_tools when needed. Call list_directory and read_file on README.md; find *.ts with search_files and the literal QA_MARKER_731 with search_content; inspect the project with inspect_project, detect_project_type, and analyze_dependencies; batch-read README.md and src/sample.ts using read_files; run search_batch for QA_MARKER_731 and *.ts; then set a 2-step plan with plan_update and read it with plan_status. Do not edit files. Report which checks worked.',
     ['list_directory','read_file','search_files','search_content','inspect_project','detect_project_type','analyze_dependencies','read_files','search_batch','plan_update','plan_status']);
@@ -335,4 +409,14 @@ function crc32(data: Buffer): number {
     for (let bit = 0; bit < 8; bit++) crc = (crc & 1) ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
   }
   return (crc ^ 0xffffffff) >>> 0;
+}
+
+function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return value;
 }

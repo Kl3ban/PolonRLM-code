@@ -182,6 +182,7 @@ test('controller commands persist config and transient model overrides clear sta
     await controller.submit('/settings cortex 99'); assert.equal(controller.snapshot().cortex, 3);
     const providers = controller.config.settings.providers; const provider = providers.custom; const mcp = controller.config.settings.mcp;
     await controller.submit('/settings provider.reasoning low');
+    await controller.submit('/settings provider.requestTimeoutMs 123456');
     await controller.submit('/settings provider.temperature 0.2');
     await controller.submit('/settings provider.inputPrice 1.5');
     await controller.submit('/settings provider.outputPrice 3');
@@ -193,7 +194,7 @@ test('controller commands persist config and transient model overrides clear sta
     await controller.submit('/settings provider.apiKeyEnv TEST_ONLY_API_KEY');
     await controller.submit('/settings provider.kind compatible');
     assert.equal(controller.config.settings.providers, providers); assert.equal(providers.custom, provider); assert.equal(controller.config.settings.mcp, mcp);
-    assert.deepEqual({ reasoning: provider?.reasoning, temperature: provider?.temperature, inputPrice: provider?.inputPrice, outputPrice: provider?.outputPrice, toolCalling: provider?.toolCalling, vision: provider?.vision, contextWindow: provider?.contextWindow, maxOutputTokens: provider?.maxOutputTokens, reasoningSupported: provider?.reasoningSupported, apiKeyEnv: provider?.apiKeyEnv }, { reasoning: 'low', temperature: 0.2, inputPrice: 1.5, outputPrice: 3, toolCalling: false, vision: true, contextWindow: 65000, maxOutputTokens: 2048, reasoningSupported: true, apiKeyEnv: 'TEST_ONLY_API_KEY' });
+    assert.deepEqual({ reasoning: provider?.reasoning, requestTimeoutMs: provider?.requestTimeoutMs, temperature: provider?.temperature, inputPrice: provider?.inputPrice, outputPrice: provider?.outputPrice, toolCalling: provider?.toolCalling, vision: provider?.vision, contextWindow: provider?.contextWindow, maxOutputTokens: provider?.maxOutputTokens, reasoningSupported: provider?.reasoningSupported, apiKeyEnv: provider?.apiKeyEnv }, { reasoning: 'low', requestTimeoutMs: 123456, temperature: 0.2, inputPrice: 1.5, outputPrice: 3, toolCalling: false, vision: true, contextWindow: 65000, maxOutputTokens: 2048, reasoningSupported: true, apiKeyEnv: 'TEST_ONLY_API_KEY' });
     await controller.submit('/settings provider.temperature 8'); assert.equal(provider?.temperature, 0.2);
     await controller.submit('/settings provider.kind invalid'); assert.equal(provider?.kind, 'compatible');
     await controller.submit('/settings provider.inputPrice -1'); assert.equal(provider?.inputPrice, 1.5);

@@ -32,7 +32,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /tools [filter]                   Show available AI tools
 /settings [name] [value]          Settings and budgets
 /budget [tokens] [USD]            Set the next task's budget
-/settings provider.<field> <value> Reasoning, temperature, pricing, and capabilities
+/settings provider.<field> <value> Reasoning, request timeout, temperature, pricing, and capabilities
 /agents                           List subagents and limits
 /steer <id> <message>             Steer an active subagent
 /skills [list|install|enable|disable|remove|update|show|create]
@@ -468,7 +468,7 @@ export class Controller implements UIController {
         if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.key === 'tokenBudget' ? formatTokenBudget(settings.tokenBudget) : String(settings[field.key as keyof Settings])}`), '', '/settings <name> <value> · tokenBudget infinity = unlimited', '/permissions manages tool permissions.'].join('\n')); break; }
         if (args[0].startsWith('provider.')) {
           const field = args[0].slice('provider.'.length);
-          if (!['reasoning', 'reasoningSupported', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, temperature, contextWindow, maxOutputTokens, inputPrice, outputPrice, toolCalling, vision, apiKeyEnv, kind. Change the model with /model and the URL with /connect.');
+          if (!['reasoning', 'reasoningSupported', 'requestTimeoutMs', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, requestTimeoutMs, temperature, contextWindow, maxOutputTokens, inputPrice, outputPrice, toolCalling, vision, apiKeyEnv, kind. Change the model with /model and the URL with /connect.');
           const provider = settings.providers[settings.provider]!;
           if (args.length === 1) { this.note(`${args[0]}: ${JSON.stringify((provider as any)[field])}`); break; }
           const raw = tail.slice(args[0].length).trim(); let value: unknown; try { value = JSON.parse(raw); } catch { value = raw; }

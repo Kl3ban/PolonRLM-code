@@ -46,13 +46,17 @@ test('existing configuration gains the provider catalog while retaining custom s
   t.after(() => rm(home, { recursive: true, force: true }));
   const settings = defaultSettings();
   const openai = { ...settings.providers.openai!, model: 'my-model', baseURL: 'https://gateway.example/v1' };
-  await writeFile(path.join(home, 'config.json'), JSON.stringify({ ...settings, provider: 'openai', providers: { openai } }));
+  const nvidia = { ...settings.providers.nvidia!, model: 'my-nim-model' };
+  delete nvidia.requestTimeoutMs;
+  await writeFile(path.join(home, 'config.json'), JSON.stringify({ ...settings, provider: 'openai', providers: { openai, nvidia } }));
   const config = new ConfigManager(home); await config.load();
   assert.equal(Object.keys(config.settings.providers).length, 54);
   const localOrCustom = new Set(['ollama', 'lmstudio', 'vllm', 'custom']);
   assert.equal(Object.keys(config.settings.providers).filter(id => !localOrCustom.has(id)).length, 50);
   assert.equal(['ollama', 'lmstudio', 'vllm'].filter(id => id in config.settings.providers).length, 3);
   assert.deepEqual(config.settings.providers.openai, openai);
+  assert.equal(config.settings.providers.nvidia?.model, 'my-nim-model');
+  assert.equal(config.settings.providers.nvidia?.requestTimeoutMs, 600_000);
   for (const id of ['google', 'nvidia', 'mistral', 'custom', 'xai']) assert.ok(config.settings.providers[id]);
   for (const provider of Object.values(config.settings.providers)) assert.ok(new URL(provider.baseURL).hostname);
 });
