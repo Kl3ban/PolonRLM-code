@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { ConfigManager, defaultSettings } from '../src/core/config.js';
 import { SecretVault, redact } from '../src/core/secrets.js';
@@ -43,6 +44,17 @@ const settings = {
   allowTools: ['web_search', 'read_webpage', 'fetch_webpage', 'fetch_documentation', 'github_repo_inspector', 'download_to_disk', 'browser', 'browser_sessions', 'browser_automation', 'discover_tools', 'load_skill'],
 };
 const provider = createProvider(google, key, settings.maxOutputTokens);
+let requestQueue = Promise.resolve(), lastModelRequest = 0;
+const throttledProvider = { ...provider, async complete(...args: Parameters<typeof provider.complete>) {
+  let release!: () => void; const previous = requestQueue; requestQueue = new Promise<void>(resolve => { release = resolve; });
+  await previous;
+  try {
+    const wait = Math.max(0, lastModelRequest + 5_500 - Date.now());
+    if (wait) await delay(wait, undefined, { signal: args[3] });
+    lastModelRequest = Date.now();
+    return await provider.complete(...args);
+  } finally { release(); }
+} };
 const folder = await mkdtemp(path.join(tmpdir(), 'polon-web-live-'));
 const home = path.join(folder, 'home'), project = path.join(folder, 'project'); await mkdir(home); await mkdir(project);
 const permissions = new Permissions(settings);
@@ -59,7 +71,7 @@ const workspace = await Workspace.open(project, permissions);
 const store = new SessionStore(home), tools = new ToolRegistry(permissions, settings.toolOutputLimit), mcp = new MCPManager({});
 registerBuiltins(tools, workspace, settings, { computer: false });
 const events: RuntimeEvent[] = [];
-const runtime = new AgentRuntime(settings, store, tools, workspace, new SkillsManager(home, workspace.root), mcp, async () => provider, event => events.push(event));
+const runtime = new AgentRuntime(settings, store, tools, workspace, new SkillsManager(home, workspace.root), mcp, async () => throttledProvider, event => events.push(event));
 
 type SmokeTask = { testCase: string; name: string; required: string[]; forbidden: string[]; requiredActions?: { tool: string; action: string }[]; prompt: string };
 const tasks: SmokeTask[] = [
@@ -72,10 +84,31 @@ const tasks: SmokeTask[] = [
 ];
 
 const requestedCases = new Set((process.env.POLONRLM_LIVE_WEB_CASE ?? '').split(',').map(value => value.trim()).filter(Boolean));
-const checks: unknown[] = [];
+const reportPath = path.resolve('docs/web-live-check.json');
+const resume = process.env.POLONRLM_LIVE_WEB_RESUME === '1';
+let priorChecks: any[] = [];
+if (resume) {
+  try {
+    const saved = JSON.parse(await readFile(reportPath, 'utf8')).checks ?? [];
+    const latestByCase = new Map<string, any>();
+    for (const check of saved) {
+      const task = tasks.find(task => task.testCase === check.testCase || task.name === check.name);
+      if (!task) continue;
+      check.testCase = task.testCase;
+      latestByCase.set(task.testCase, check);
+    }
+    priorChecks = [...latestByCase.values()];
+  } catch { priorChecks = []; }
+}
+const checks: any[] = priorChecks;
+const unknownCases = [...requestedCases].filter(name => !tasks.some(task => task.testCase === name));
+if (unknownCases.length) throw new Error(`Unknown live web case: ${unknownCases.join(', ')}. Available: ${tasks.map(task => task.testCase).join(', ')}.`);
 try {
   for (const task of tasks) {
     if (requestedCases.size && !requestedCases.has(task.testCase)) continue;
+    const old = checks.findIndex((check: any) => check.testCase === task.testCase);
+    if (resume && old >= 0 && checks[old].passed === true) continue;
+    if (old >= 0) checks.splice(old, 1);
     events.length = 0;
     const session = store.create(workspace.root), started = Date.now();
     let answer = '', failure: string | undefined;
@@ -92,29 +125,36 @@ try {
       operations: operations.map(event => ({ name: event.name, detail: event.toolDetail, state: event.state, ms: event.durationMs, ...(event.state === 'error' ? { error: event.text } : {}) })),
       usage: store.usage(session), answer: redact(answer),
     };
+    check.testCase = task.testCase;
     checks.push(check);
-    await writeFile(path.resolve('docs/web-live-check.json'), JSON.stringify({ date: new Date().toISOString(), model: google.model, checks }, null, 2) + '\n');
-    if (failure) throw new Error(`${task.name}: ${failure}`);
-    for (const name of task.required) assert.ok(used.includes(name), `Model did not use ${name}`);
-    for (const name of task.forbidden) assert.equal(used.includes(name), false, `Model used forbidden tool ${name}`);
-    for (const expected of task.requiredActions ?? []) assert.ok(modelCalls.some(call => call.name === expected.tool && call.arguments.action === expected.action), `Model did not call ${expected.tool} action ${expected.action}`);
-    assert.equal(errors.length, 0, errors.map(event => `${event.name}: ${event.text}`).join('\n'));
-    if (task.testCase === 'search') assert.ok(operations.some(event => event.name === 'read_webpage' && event.state === 'done'));
-    if (task.testCase === 'download') {
-      const file = path.join(project, 'agent_workspace', 'downloads', 'python-license.txt');
-      const bytes = await readFile(file);
-      assert.ok(bytes.length > 1000 && bytes.length < 100_000);
-      check.download = { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
-      assert.ok(answer.includes(createHash('sha256').update(bytes).digest('hex')), 'Model answer should report the verified download hash.');
+    try {
+      if (failure) throw new Error(failure);
+      for (const name of task.required) assert.ok(used.includes(name), `Model did not use ${name}`);
+      for (const name of task.forbidden) assert.equal(used.includes(name), false, `Model used forbidden tool ${name}`);
+      for (const expected of task.requiredActions ?? []) assert.ok(modelCalls.some(call => call.name === expected.tool && call.arguments.action === expected.action), `Model did not call ${expected.tool} action ${expected.action}`);
+      assert.equal(errors.length, 0, errors.map(event => `${event.name}: ${event.text}`).join('\n'));
+      if (task.testCase === 'search') assert.ok(operations.some(event => event.name === 'read_webpage' && event.state === 'done'));
+      if (task.testCase === 'download') {
+        const file = path.join(project, 'agent_workspace', 'downloads', 'python-license.txt');
+        const bytes = await readFile(file);
+        assert.ok(bytes.length > 1000 && bytes.length < 100_000);
+        check.download = { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+        assert.ok(answer.includes(createHash('sha256').update(bytes).digest('hex')), 'Model answer should report the verified download hash.');
+      }
+      if (task.testCase === 'browser') {
+        const sessions = JSON.parse(await tools.execute('browser_sessions', {}, { mode: 'BUILD', signal: AbortSignal.timeout(5000) }));
+        assert.deepEqual(sessions, [], 'Browser session must be closed after the model finishes.');
+      }
+      check.passed = true;
+    } catch (error) {
+      check.passed = false;
+      check.failure = error instanceof Error ? error.message : String(error);
     }
-    if (task.testCase === 'browser') {
-      const sessions = JSON.parse(await tools.execute('browser_sessions', {}, { mode: 'BUILD', signal: AbortSignal.timeout(5000) }));
-      assert.deepEqual(sessions, [], 'Browser session must be closed after the model finishes.');
-    }
-    await writeFile(path.resolve('docs/web-live-check.json'), JSON.stringify({ date: new Date().toISOString(), model: google.model, checks }, null, 2) + '\n');
+    await writeFile(reportPath, JSON.stringify({ date: new Date().toISOString(), model: google.model, checks }, null, 2) + '\n');
+    if (check.passed !== true) throw new Error(`${task.name}: ${check.failure}`);
   }
   assert.ok(checks.length > 0, 'No live smoke cases were selected.');
   const report = { date: new Date().toISOString(), model: google.model, browserEngine: 'chromium (preflighted; no installer called)', checks };
-  await writeFile(path.resolve('docs/web-live-check.json'), JSON.stringify(report, null, 2) + '\n');
+  await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify(report, null, 2));
 } finally { await tools.close(); await mcp.close(); store.close(); await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
