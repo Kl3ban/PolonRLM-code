@@ -88,8 +88,16 @@ const reportPath = path.resolve('docs/web-live-check.json');
 const resume = process.env.POLONRLM_LIVE_WEB_RESUME === '1';
 let priorChecks: any[] = [];
 if (resume) {
+  let reportText: string | undefined;
   try {
-    const saved = JSON.parse(await readFile(reportPath, 'utf8')).checks ?? [];
+    reportText = await readFile(reportPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (reportText !== undefined) {
+    let saved: any[];
+    try { saved = JSON.parse(reportText.replace(/^\uFEFF/, '')).checks ?? []; }
+    catch { throw new Error(`Could not parse live web resume report: ${reportPath}`); }
     const latestByCase = new Map<string, any>();
     for (const check of saved) {
       const task = tasks.find(task => task.testCase === check.testCase || task.name === check.name);
@@ -98,7 +106,7 @@ if (resume) {
       latestByCase.set(task.testCase, check);
     }
     priorChecks = [...latestByCase.values()];
-  } catch { priorChecks = []; }
+  }
 }
 const checks: any[] = priorChecks;
 const unknownCases = [...requestedCases].filter(name => !tasks.some(task => task.testCase === name));
