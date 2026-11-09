@@ -228,6 +228,30 @@ test('runtime exposes local web research tools without unrelated browser control
   await coding.runtime.run(coding.session, 'Sprawdź funkcję src/index.ts.', new AbortController().signal);
 });
 
+test('explicit browser_automation request stays available while reading a URL', async t => {
+  let calls = 0, executions = 0;
+  const h = await harness(t, async (messages, specs) => {
+    calls++;
+    if (calls === 1) {
+      assert.ok(specs.some(spec => spec.name === 'discover_tools'));
+      return reply('', [{ id: 'discover-browser-automation', name: 'discover_tools', arguments: { query: 'browser_automation' } }]);
+    }
+    if (calls === 2) {
+      assert.match(messages.at(-1)?.content ?? '', /browser_automation/);
+      return reply('', [{ id: 'browser-automation-read', name: 'browser_automation', arguments: { action: 'text', url: 'https://example.org' } }]);
+    }
+    assert.match(messages.at(-1)?.content ?? '', /Example Domain/);
+    return reply('Read the page.');
+  }, { permissions: 'all' });
+  const { z } = await import('zod');
+  h.tools.add('browser_automation', 'Fixture browser automation.', z.object({ action: z.literal('text'), url: z.url() }), true, async args => {
+    assert.equal(args.url, 'https://example.org'); executions++; return 'Example Domain';
+  });
+  assert.equal(await h.runtime.run(h.session, 'Use browser_automation to read https://example.org.', new AbortController().signal), 'Read the page.');
+  assert.equal(executions, 1);
+  assert.equal(calls, 3);
+});
+
 test('web research executes at most two searches and feeds a clear stop signal for batched extras', async t => {
   let calls = 0, executed = 0;
   const h = await harness(t, async messages => {

@@ -36,6 +36,7 @@ function repeatedObservation(name: string, args: Record<string, unknown>): boole
 
 function foldPolish(value: string): string { return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().replaceAll('ł', 'l'); }
 function explicitlyRequestsInteractiveBrowser(task: string): boolean {
+  if (/\bbrowser[_ ](?:tool|sessions?|automation)\b/i.test(task)) return true;
   return /\b(?:use|open|launch|interact with|browse in)\s+(?:the\s+)?(?:web\s+)?browser\b|\b(?:browser tool|browser session|browser automation)\b|(?:użyj|otwórz|uruchom|interaguj z).{0,40}przegl[aą]dark/i.test(task);
 }
 function asksForAction(task: string): boolean {

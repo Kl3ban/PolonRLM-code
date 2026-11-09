@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,10 +23,30 @@ const projectRoot = process.cwd();
 const reportPath = path.resolve('docs/tool-review-live.json');
 const resume = process.env.POLONRLM_LIVE_TOOL_REVIEW_RESUME === '1';
 const requestedCase = process.env.POLONRLM_LIVE_TOOL_REVIEW_CASE;
+const liveCaseNames = [
+  'workspace-read-and-inspection', 'file-edits-and-transactions', 'transaction-commit-smoke', 'checkpoint-lifecycle',
+  'typescript-and-ast', 'lsp-protocol', 'documents-and-ocr', 'background-process-tools', 'git-read-and-commit',
+  'git-commit-smoke', 'local-web-tools', 'browser-and-browser-automation', 'browser-automation-smoke', 'mcp-fixture',
+  'skills-memory-question', 'history-and-goal', 'request-tool-approval-readonly', 'shell-and-system-commands',
+  'test-and-dependency-commands', 'subagents-and-reviewed-apply', 'interview-finish',
+];
+const requestedCases = requestedCase?.split(',').map(name => name.trim()).filter(Boolean);
+if (requestedCases) {
+  const unknown = requestedCases.filter(name => !liveCaseNames.includes(name));
+  if (!requestedCases.length || unknown.length) throw new Error(`Invalid live review case${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ') || '(empty)'}. Available: ${liveCaseNames.join(', ')}.`);
+}
 const isolated = await mkdtemp(path.join(os.tmpdir(), 'polon-tools-review-'));
 const home = path.join(isolated, 'home');
 const project = path.join(isolated, 'workspace');
 await mkdir(home); await mkdir(project); await mkdir(path.join(project, 'src'));
+const gitTemplate = path.join(home, 'git-templates');
+await mkdir(gitTemplate);
+await writeFile(path.join(home, 'gitconfig'), '', 'utf8');
+process.env.GIT_CONFIG_NOSYSTEM = '1';
+process.env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
+process.env.GIT_CONFIG_COUNT = '0';
+process.env.GIT_TEMPLATE_DIR = gitTemplate;
+for (const name of ['GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES']) delete process.env[name];
 
 const config = new ConfigManager(); await config.load();
 const google = structuredClone(config.settings.providers.google!);
@@ -81,7 +101,7 @@ await mcp.connect('fixture');
 const mcpNames = mcp.tools().map(tool => tool.name).sort();
 
 async function runCase(name: string, prompt: string, required: string[], options: { prepare?: (session: string) => void; verify?: () => Promise<string> } = {}): Promise<void> {
-  if (requestedCase && !requestedCase.split(',').includes(name)) return;
+  if (requestedCases && !requestedCases.includes(name)) return;
   events.length = 0;
   const session = store.create(workspace.root, `QA ${name}`);
   options.prepare?.(session);
@@ -170,12 +190,16 @@ try {
     ['web_search','read_webpage','fetch_webpage','fetch_documentation','github_repo_inspector','download_to_disk']);
 
   await runCase('browser-and-browser-automation',
-    'Use the persistent browser tool: launch https://example.com, inspect browser_sessions, then use browser actions tabs, text, links, forms, screenshot, navigate to https://example.org, back, forward, reload, and close. After closing that session, use browser_automation with action `text` on https://example.com. This is a read-only browser check; do not click links or submit anything. Report titles and whether the screenshot action worked.',
+    'Use the persistent browser once to launch https://example.com. Call browser_sessions once and confirm that the launched session is listed. Use browser text once to read the page. Then close the persistent session. Finally call browser_automation exactly once with action `text` and URL https://example.com. This is read-only: do not click links, submit forms, take screenshots, or repeat an action. Report the page title and confirm the session was closed.',
     ['browser','browser_sessions','browser_automation']);
 
   await runCase('browser-automation-smoke',
-    'Call discover_tools with `browser_automation` and wait for that schema. Then invoke browser_automation exactly once with action `text` and URL `https://example.com`. Do not use the persistent browser, take screenshots or click anything. Summarize only the returned title/text.',
-    ['discover_tools','browser_automation']);
+    'Call discover_tools with `browser_automation` and wait for that schema. Then invoke browser_automation exactly once with action `screenshot`, URL `https://example.com`, and output `browser-smoke.png`. Do not use the persistent browser or interact with the page. Report only whether the screenshot was saved.',
+    ['discover_tools','browser_automation'], { verify: async () => {
+      const image = await readFile(await workspace.resolve('browser-smoke.png'));
+      assert.equal(image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      return `PNG screenshot saved (${image.length} bytes)`;
+    } });
 
   await runCase('mcp-fixture',
     'Use the connected fixture MCP tools: mcp_fixture_sum with a=20 and b=22; mcp_fixture_slow with milliseconds=10; and mcp_fixture_failure once to inspect its deliberate error response. Do not retry failures. Report 42, completion, and the expected error without exposing server internals.',
@@ -217,6 +241,7 @@ try {
     'This is only a disposable interview-tool smoke test. Ask one concise question using ask_question with two options. After the test runner answers, call finish_interview with a one-sentence summary of the selected option. Do not make project changes.',
     ['ask_question','finish_interview'], { prepare: session => store.saveWorkflow(session, { grill: { task: 'choose a harmless QA label', active: true } }) });
 
+  assert.ok(checks.length > 0, 'No live smoke cases were selected.');
   await writeReport();
   const finalReport = JSON.parse(await readFile(reportPath, 'utf8'));
   const missing = finalReport.untested;
@@ -224,7 +249,23 @@ try {
   console.log(`Live review finished. ${targetCovered}/${targetNames.size} registered tools exercised; ${missing.length} untested; token usage ${finalReport.usage.input} in / ${finalReport.usage.output} out.`);
 } finally {
   await registry.close().catch(() => {}); await mcp.close().catch(() => {}); store.close();
-  await rm(isolated, { recursive: true, force: true, maxRetries: 0 }).catch(() => console.warn(`Windows left a test reparse-point marker; isolated workspace retained at ${isolated}.`));
+  await rm(isolated, { recursive: true, force: true, maxRetries: 0 }).catch(async () => {
+    try {
+      await unlinkReparsePoints(isolated);
+      await rm(isolated, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+    } catch (error) { console.warn(`Test workspace cleanup failed; isolated workspace retained at ${isolated}: ${safe(error)}`); }
+  });
+}
+
+async function unlinkReparsePoints(directory: string): Promise<void> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      try { await unlink(target); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    else if (entry.isDirectory()) await unlinkReparsePoints(target);
+  }
 }
 
 function safe(value: unknown): string { return redact(value instanceof Error ? value.message : String(value)); }
