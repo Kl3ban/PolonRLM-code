@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveNetworkRuntime } from '../src/tools/network.js';
+import { resolveNetworkRuntime, setupNetworkRuntime } from '../src/tools/network.js';
 
 test('network runtime reuses an interpreter only when all required dependencies are available', async () => {
   let setups = 0;
@@ -27,6 +27,17 @@ test('network runtime does not modify an explicitly selected interpreter', async
     /POLONRLM_WEB_PYTHON.*required web dependencies/,
   );
   assert.equal(setups, 0);
+});
+
+test('setup web validates an explicitly selected interpreter instead of installing elsewhere', async () => {
+  const previous = process.env.POLONRLM_WEB_PYTHON;
+  process.env.POLONRLM_WEB_PYTHON = process.execPath;
+  try {
+    await assert.rejects(setupNetworkRuntime(), /POLONRLM_WEB_PYTHON is selected.*unset the variable/);
+  } finally {
+    if (previous === undefined) delete process.env.POLONRLM_WEB_PYTHON;
+    else process.env.POLONRLM_WEB_PYTHON = previous;
+  }
 });
 
 test('network runtime reports an unsuccessful repair clearly', async () => {

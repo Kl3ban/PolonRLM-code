@@ -16,8 +16,15 @@ export function networkPython(): string {
   return process.env.POLONRLM_WEB_PYTHON ?? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), '.local', 'share'), 'PolonRLM', 'web-runtime', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 }
 export async function setupNetworkRuntime(): Promise<string> {
+  if (process.env.POLONRLM_WEB_PYTHON) {
+    const selected = networkPython();
+    if (!await hasNetworkDependencies(selected)) {
+      throw new Error('POLONRLM_WEB_PYTHON is selected but does not have the required web dependencies. Install them for that interpreter or unset the variable to prepare the private runtime.');
+    }
+    return selected;
+  }
   const setup = fileURLToPath(new URL('../../scripts/setup_local_web.py', import.meta.url));
-  const candidates: [string, string[]][] = [...(process.env.POLONRLM_WEB_PYTHON ? [[process.env.POLONRLM_WEB_PYTHON, []] as [string, string[]]] : []), ['py', ['-3.11']], ['py', ['-3.12']], ['python3.11', []], ['python3', []], ['python', []]];
+  const candidates: [string, string[]][] = [['py', ['-3.11']], ['py', ['-3.12']], ['python3.11', []], ['python3', []], ['python', []]];
   try { const found = await resolvePythonCommand(); candidates.unshift([found.command, found.prefixArgs]); } catch { /* Try the versioned candidates below. */ }
   for (const [command, prefix] of candidates) {
     try { await execa(command, [...prefix, '-c', 'import sys; assert sys.version_info >= (3,11)'], { timeout: 5000, windowsHide: true }); }
