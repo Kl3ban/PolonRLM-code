@@ -27,7 +27,7 @@ test('model discovery reads capabilities/prices, caches results, preserves unkno
     requests++;
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({ data: [
-      { id: 'smart', name: 'Smart', context_length: 32768, supported_parameters: ['tools', 'reasoning'], architecture: { input_modalities: ['text', 'image'] }, pricing: { prompt: '0.000001', completion: '0.000002' } },
+      { id: 'smart', name: 'Smart', context_length: 32768, supported_parameters: ['tools', 'reasoning'], reasoning_control: 'effort', reasoning_efforts: ['low', 'high'], architecture: { input_modalities: ['text', 'image'] }, pricing: { prompt: '0.000001', completion: '0.000002' } },
       { id: 'unknown' },
     ] }));
   });
@@ -37,6 +37,8 @@ test('model discovery reads capabilities/prices, caches results, preserves unkno
     assert.equal(models[0]?.toolCalling, true);
     assert.equal(models[0]?.vision, true);
     assert.equal(models[0]?.reasoning, true);
+    assert.equal(models[0]?.reasoningControl, 'effort');
+    assert.deepEqual(models[0]?.reasoningEfforts, ['low', 'high']);
     assert.equal(models[0]?.inputPrice, 1);
     assert.equal(models[1]?.toolCalling, undefined);
     models[0]!.id = 'mutated';
@@ -123,13 +125,14 @@ test('OpenAI native adapter sends bearer auth and streams a completed answer', a
   try {
     const streamed: string[] = [];
     const imageData = 'AAECAwQ=';
-    const result = await createProvider({ ...config(local.baseURL), kind: 'openai' }, 'openai-test', 100).complete(
+    const result = await createProvider({ ...config(local.baseURL), id: 'openai', kind: 'openai', model: 'gpt-6-astra', reasoning: 'high' }, 'openai-test', 100).complete(
       [{ role: 'user', content: 'Say the test marker and inspect this image.', images: [{ data: imageData, mediaType: 'image/png' }] }], [], text => streamed.push(text), new AbortController().signal);
     assert.equal(result.text, 'OpenAI adapter OK.');
     assert.deepEqual(streamed, ['OpenAI adapter OK.']);
     assert.equal(result.usage.input, 12);
     assert.equal(result.usage.output, 4);
-    assert.equal(requestBody.model, 'test-model');
+    assert.equal(requestBody.model, 'gpt-6-astra');
+    assert.equal(requestBody.reasoning_effort, 'high');
     assert.equal(requestBody.stream, true);
     assert.ok(JSON.stringify(requestBody.messages).includes(`data:image/png;base64,${imageData}`));
   } finally { await local.close(); }
@@ -195,11 +198,29 @@ test('overloaded model errors recommend retrying the selected model without sugg
   try {
     await assert.rejects(createProvider(config(local.baseURL), undefined, 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
       assert.ok(error instanceof Error);
-      assert.equal(error.message, 'The selected provider is temporarily busy. Wait briefly, then retry the selected model.');
+      assert.equal(error.message, 'The selected provider is temporarily busy (HTTP 429). Wait briefly, then retry the selected model.');
       assert.ok(!error.message.includes('deepseek-v4-flash'));
+      assert.equal((error as Error & { statusCode?: number }).statusCode, 429);
       return true;
     });
     assert.ok(models.length >= 1 && models.every(model => model === 'test-model'));
+  } finally { await local.close(); }
+});
+
+test('provider keeps unusual overload status codes visible without exposing provider details', async () => {
+  const local = await server(async (_request, response) => {
+    response.writeHead(402, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'deepseek-v4-flash-free is experiencing high demand. Secret token must not appear.' } }));
+  });
+  try {
+    await assert.rejects(createProvider(config(local.baseURL), 'secret-token', 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, 'The selected provider is temporarily busy (HTTP 402). Wait briefly, then retry the selected model.');
+      assert.ok(!error.message.includes('deepseek-v4-flash'));
+      assert.ok(!error.message.includes('secret-token'));
+      assert.equal((error as Error & { statusCode?: number }).statusCode, 402);
+      return true;
+    });
   } finally { await local.close(); }
 });
 
@@ -207,6 +228,7 @@ test('provider retry policy waits ten seconds and retries only transient failure
   assert.equal(PROVIDER_RETRY_DELAY_MS, 10_000);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Service unavailable'), { statusCode: 503 })), true);
   assert.equal(isRetryableProviderError(new Error('The selected provider is temporarily busy.')), true);
+  assert.equal(isRetryableProviderError(Object.assign(new Error('The selected provider is temporarily busy (HTTP 402).'), { statusCode: 402 })), true);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Bad request'), { statusCode: 400 })), false);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Unauthorized'), { statusCode: 401 })), false);
   assert.equal(isRetryableProviderError(new DOMException('Request cancelled.', 'AbortError')), false);
@@ -343,6 +365,22 @@ test('Google adapter uses native generateContent streaming', async () => {
   try {
     const reply = await createProvider({ ...config(local.baseURL), kind: 'google', maxOutputTokens: 32, reasoning: 'off', reasoningSupported: false }, 'google-test', 100).complete([{ role: 'user', content: 'Hello' }], [], () => {}, new AbortController().signal);
     assert.equal(reply.text, 'Google OK'); assert.equal(reply.usage.input, 10); assert.equal(reply.usage.output, 3);
+  } finally { await local.close(); }
+});
+
+test('Google reasoning effort is serialized into the native thinking config', async () => {
+  const local = await server(async (request, response) => {
+    assert.ok(request.url?.startsWith('/v1/models/gemini-3.5-flash-lite:streamGenerateContent'));
+    let body = ''; for await (const data of request) body += data;
+    const requestBody = JSON.parse(body);
+    assert.deepEqual(requestBody.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    event(response, { candidates: [{ content: { role: 'model', parts: [{ text: 'Google effort OK' }] }, finishReason: 'STOP', index: 0 }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 3, totalTokenCount: 13 } });
+    response.end();
+  });
+  try {
+    const reply = await createProvider({ ...config(local.baseURL), id: 'google', kind: 'google', model: 'gemini-3.5-flash-lite', reasoning: 'low' }, 'google-test', 100).complete([{ role: 'user', content: 'Hello' }], [], () => {}, new AbortController().signal);
+    assert.equal(reply.text, 'Google effort OK');
   } finally { await local.close(); }
 });
 

@@ -234,6 +234,12 @@
     "apiKeyEnv": "ORCAROUTER_API_KEY"
   },
   {
+    "id": "teamorouter",
+    "name": "TeamRouter",
+    "baseURL": "https://api.teamorouter.com/v1",
+    "apiKeyEnv": "TEAMOROUTER_API_KEY"
+  },
+  {
     "id": "zenmux",
     "name": "ZenMux",
     "baseURL": "https://zenmux.ai/api/v1",

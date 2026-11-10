@@ -12,7 +12,7 @@ export function estimateTokens(value: unknown): number {
 }
 
 export function clip(text: string, limit: number): string {
-  if (text.length <= limit) return text;
+  if (limit <= 0 || text.length <= limit) return text;
   return `${text.slice(0, Math.floor(limit * .7))}\n[output truncated, SHA256 ${createHash('sha256').update(text).digest('hex').slice(0, 12)}, ${text.length} characters]\n${text.slice(-Math.floor(limit * .2))}`;
 }
 

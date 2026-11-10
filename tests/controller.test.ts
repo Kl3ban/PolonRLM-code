@@ -157,6 +157,36 @@ test('controller streams real tool execution and resumes persisted history past 
   } finally { await controller?.close(); await local.dispose(); }
 });
 
+test('HTTP adapter tool call reaches a real workspace tool and its result returns on the next request', { timeout: 15000 }, async () => {
+  const requests: Record<string, any>[] = [];
+  const local = await fixture(async (request, response) => {
+    requests.push(await body(request));
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (requests.length === 1) {
+      chunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'read-1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } }] });
+      chunk(response, {}, 'tool_calls');
+    } else {
+      chunk(response, { role: 'assistant', content: 'The file says: MODEL_TOOL_ROUNDTRIP_OK.' }, 'stop');
+    }
+    finish(response);
+  });
+  await writeFile(path.join(local.root, 'note.txt'), 'MODEL_TOOL_ROUNDTRIP_OK\n', 'utf8');
+  let controller: Controller | undefined;
+  try {
+    controller = await Controller.open(local.root, local.home);
+    await controller.submit('Read note.txt and report its exact contents.');
+    const state = controller.snapshot();
+    assert.equal(state.status, 'Ready');
+    assert.equal(requests.length, 2);
+    assert.ok((requests[0]!.tools as any[]).some(tool => tool.function?.name === 'read_file'));
+    const followupMessages = requests[1]!.messages as any[];
+    assert.ok(followupMessages.some(message => message.role === 'assistant' && message.tool_calls?.some((call: any) => call.id === 'read-1')));
+    assert.ok(followupMessages.some(message => message.role === 'tool' && message.tool_call_id === 'read-1' && String(message.content).includes('MODEL_TOOL_ROUNDTRIP_OK')));
+    assert.ok(state.messages.some(message => message.role === 'tool' && message.toolName === 'read_file' && message.toolOutput?.includes('MODEL_TOOL_ROUNDTRIP_OK')));
+    assert.ok(state.messages.some(message => message.role === 'assistant' && message.text.includes('MODEL_TOOL_ROUNDTRIP_OK')));
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
 test('controller commands persist config and transient model overrides clear stale metadata', { timeout: 10000 }, async () => {
   const local = await fixture((_request, response) => { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ data: [{ id: 'discovered', context_length: 8192, max_completion_tokens: 1024, supported_parameters: ['tools'], pricing: { prompt: '0.000001', completion: '0.000002' } }] })); });
   let controller: Controller | undefined;
@@ -204,6 +234,35 @@ test('controller commands persist config and transient model overrides clear sta
     assert.ok(controller.config.settings.mcp.example);
     await controller.submit('/mcp remove example'); assert.equal(controller.config.settings.mcp.example, undefined);
     await saved.load(); assert.equal(saved.settings.mode, 'REVIEW'); assert.equal(saved.settings.permissions, 'readonly'); assert.equal(saved.settings.theme, 'light'); assert.equal(saved.settings.browserEngine, 'edge'); assert.equal(saved.settings.providers.custom?.reasoning, 'low'); assert.equal(saved.settings.providers.custom?.temperature, 0.2);
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
+test('/effort command lists model controls, persists a valid choice and restores automatic mode', async t => {
+  const local = await fixture();
+  let controller: Controller | undefined;
+  try {
+    controller = await Controller.open(local.root, local.home);
+    const provider = controller.config.settings.providers.custom!;
+    provider.kind = 'google';
+    provider.baseURL = 'https://generativelanguage.googleapis.com/v1beta';
+    await controller.setModel('gemini-3.5-flash-lite');
+
+    await controller.submit('/effort');
+    assert.ok(controller.listEfforts().some(option => option.id === 'minimal'));
+    assert.ok(controller.snapshot().messages.some(message => message.text.includes('Reasoning effort') && message.text.includes('Minimal')));
+    await controller.submit('/effort high');
+    assert.equal(provider.reasoning, 'high');
+    assert.equal(controller.listEfforts().find(option => option.id === 'high')?.detail, 'Current');
+
+    await controller.submit('/effort off');
+    assert.ok(controller.snapshot().messages.at(-1)?.text.includes('not available'));
+    assert.equal(provider.reasoning, 'high');
+
+    await controller.submit('/effort auto');
+    assert.equal(provider.reasoning, undefined);
+    const saved = new ConfigManager(local.home);
+    await saved.load();
+    assert.equal(saved.settings.providers.custom?.reasoning, undefined);
   } finally { await controller?.close(); await local.dispose(); }
 });
 

@@ -30,6 +30,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
   const submissions: string[] = [];
   const modelsChosen: { id: string; persist?: boolean }[] = [];
   const providersChosen: string[] = [];
+  const effortsChosen: string[] = [];
   const keysSaved: string[] = [];
   const imagesAdded: string[] = [];
   const imagesRemoved: number[] = [];
@@ -55,6 +56,8 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     async close() { closed++; },
     setApprover(approve) { approver = approve; },
     async listModels() { if (services.failModels) throw new Error('HTTP 401: set an API key'); return [{ id: 'acme/fast', contextWindow: 32000 }, { id: 'acme/deep', contextWindow: 64000 }]; },
+    listEfforts() { return [{ id: 'auto', label: 'Automatic' }, { id: 'low', label: 'Low' }, { id: 'high', label: 'High' }]; },
+    async setEffort(id) { effortsChosen.push(id); },
     listProviders() { return [{ id: 'custom', url: 'http://localhost/v1', model: 'test-model' }, ...['google', 'nvidia', 'mistral', 'openai'].map(id => ({ id, url: 'https://example.com', model: 'test-model' }))]; },
     async configureProvider(provider, apiKey) { endpointsSaved.push({ provider, apiKey }); update({ provider: provider.id, model: provider.model }); },
     async setModel(id, persist) { modelsChosen.push({ id, persist }); update({ model: id }); },
@@ -63,7 +66,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
   };
   const app = render(React.createElement(TerminalApp, { controller, readImageClipboard: async () => '', ...inputs }));
   return {
-    app, submissions, listeners, update, modelsChosen, providersChosen, keysSaved, imagesAdded, imagesRemoved, endpointsSaved, services,
+    app, submissions, listeners, update, modelsChosen, providersChosen, effortsChosen, keysSaved, imagesAdded, imagesRemoved, endpointsSaved, services,
     get cancelled() { return cancelled; },
     get closed() { return closed; },
     get modeChanges() { return modeChanges; },
@@ -391,6 +394,10 @@ test('Markdown strips hostile terminal controls and wraps Unicode and code', () 
   assert.ok(!markdownLines(hostile, 80).some(line => line.text.includes('clipboard-payload')));
 });
 
+test('unlabeled Markdown code blocks use English UI text', () => {
+  assert.ok(markdownLines('```\nconst value = 1;\n```', 80).some(line => line.text.includes('code')));
+});
+
 test('stream updates parse only changed messages and invalidate cache after resize or role change', { timeout: 5000 }, async t => {
   const parser = t.mock.method(marked, 'lexer');
   const historic = { role: 'assistant', text: 'Historic **result**' };
@@ -462,6 +469,18 @@ test('model picker filters live catalog and persists chosen model; provider pick
   await view.type('google'); view.app.stdin.write('\r');
   await until(() => view.providersChosen.length === 1, 'choose provider');
   assert.deepEqual(view.providersChosen, ['google']);
+});
+
+test('reasoning picker lists model-supported choices and applies the selected effort', async t => {
+  const view = fixture(); t.after(() => view.dispose()); await view.ready();
+  await view.type('/effort'); view.app.stdin.write('\r');
+  await until(() => /Reasoning effort/.test(view.app.lastFrame() || ''), 'open reasoning picker');
+  assert.match(view.app.lastFrame()!, /Automatic/);
+  assert.match(view.app.lastFrame()!, /Low/);
+  assert.match(view.app.lastFrame()!, /High/);
+  await view.type('high'); view.app.stdin.write('\r');
+  await until(() => view.effortsChosen.length === 1, 'apply reasoning effort');
+  assert.deepEqual(view.effortsChosen, ['high']);
 });
 
 test('model picker reports failures and Escape restores draft without executing a command', async t => {

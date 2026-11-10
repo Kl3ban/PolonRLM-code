@@ -83,7 +83,7 @@ export class NetworkWorker {
       const result = await execa(python, ['-I', worker], {
         input: JSON.stringify({ tool, arguments: args, request_id: requestId }), cwd: this.workspace.root,
         env: subprocessEnvironment(true), windowsHide: true, cancelSignal: context.signal, killDescendants: true,
-        timeout: Math.min(this.settings.timeoutMs, tool === 'download_to_disk' ? 120_000 : 45_000), maxBuffer: 1_000_000, reject: false,
+        timeout: this.settings.timeoutMs > 0 ? this.settings.timeoutMs : undefined, maxBuffer: 1_000_000, reject: false,
       });
       context.signal.throwIfAborted();
       if (result.timedOut) throw new Error('Network tool timed out; the process was stopped.');

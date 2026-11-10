@@ -12,11 +12,12 @@ import { ToolRegistry } from '../tools/registry.js';
 import { registerBuiltins } from '../tools/builtin.js';
 import { SkillsManager } from '../integrations/skills.js';
 import { MCPManager, mcpConfigPreview } from '../integrations/mcp.js';
-import { createProvider } from '../providers/provider.js';
+import { createProvider, PROVIDER_PRESETS } from '../providers/provider.js';
+import { effortChoices, findEffortChoice, normalizeEffort } from '../providers/reasoning.js';
 import { AgentRuntime } from './runtime.js';
 import { compactMessages, estimateTokens } from './context.js';
 import { CORTEX } from './cortex.js';
-import { formatTokenBudget, parseTokenBudget, tokenBudgetMaximum } from './budget.js';
+import { formatLimit, formatTokenBudget, parseTokenBudget, parseUnlimitedLimit, tokenBudgetMaximum } from './budget.js';
 import { SETTINGS_FIELDS } from './settings-fields.js';
 import { describeToolCall } from './tool-display.js';
 
@@ -28,6 +29,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /key <key>                        Save API key securely with Windows DPAPI
 /models                           Fetch models from the endpoint
 /model <id|number>                Change model without restarting
+/effort [value]                   Choose an effort supported by the current model
 /image <path>|clear               Attach an image to the next message or clear attachments
 /tools [filter]                   Show available AI tools
 /settings [name] [value]          Settings and budgets
@@ -59,9 +61,10 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /cancel                           Cancel the task
 /clear                            Clear the view
 /exit                             Exit`;
-const MODEL_METADATA = ['contextWindow', 'maxOutputTokens', 'reasoningSupported', 'toolCalling', 'vision', 'inputPrice', 'outputPrice'] as const;
+const MODEL_METADATA = ['contextWindow', 'maxOutputTokens', 'reasoningSupported', 'reasoningControl', 'reasoningEfforts', 'toolCalling', 'vision', 'inputPrice', 'outputPrice'] as const;
 const MAX_IMAGES_PER_TASK = 5;
 function updateModel(provider: ProviderConfig, id: string, metadata?: ModelInfo): void {
+  if (provider.model !== id) delete provider.reasoning;
   for (const key of MODEL_METADATA) {
     delete provider[key];
     const value = key === 'reasoningSupported' ? metadata?.reasoning : metadata?.[key as keyof ModelInfo];
@@ -69,10 +72,18 @@ function updateModel(provider: ProviderConfig, id: string, metadata?: ModelInfo)
   }
   provider.model = id;
 }
-function outputLimit(configured: number, provider?: ProviderConfig): number { return Math.min(configured, provider?.maxOutputTokens ?? configured); }
-function contextLimit(configuredInput: number, configuredOutput: number, provider?: ProviderConfig): number {
-  return Math.max(0, Math.min(configuredInput, (provider?.contextWindow ?? Infinity) - outputLimit(configuredOutput, provider)));
+function outputLimit(configured: number, provider?: ProviderConfig): number {
+  return configured > 0 ? Math.min(configured, provider?.maxOutputTokens ?? configured) : provider?.maxOutputTokens ?? 0;
 }
+function contextLimit(configuredInput: number, configuredOutput: number, provider?: ProviderConfig): number {
+  const appLimit = configuredInput > 0 ? configuredInput : Infinity;
+  const modelLimit = provider?.contextWindow === undefined ? Infinity : provider.contextWindow - outputLimit(configuredOutput, provider);
+  return Math.max(0, Math.min(appLimit, modelLimit));
+}
+function displayLimit(name: string, value: number): string {
+  return formatLimit(value, name === 'maxDepth' ? -1 : 0);
+}
+function displayCostLimit(value: number): string { return value === 0 ? 'unlimited cost' : `$${value}`; }
 
 export class Controller implements UIController {
   private events = new EventEmitter();
@@ -148,14 +159,45 @@ export class Controller implements UIController {
     return structuredClone(this.models);
   }
   listProviders(): { id: string; url: string; model: string }[] {
-    return Object.values(this.config.settings.providers).map(provider => ({ id: provider.id, url: provider.baseURL, model: provider.model }));
+    const providers = new Map(Object.entries(PROVIDER_PRESETS));
+    for (const provider of Object.values(this.config.settings.providers)) providers.set(provider.id, provider);
+    return [...providers.values()].map(provider => ({ id: provider.id, url: provider.baseURL, model: provider.model }));
+  }
+  listEfforts(): { id: string; label: string; detail?: string }[] {
+    const provider = this.config.settings.providers[this.config.settings.provider]!;
+    const current = normalizeEffort(provider.reasoning ?? 'auto');
+    return effortChoices(provider, this.models.find(model => model.id === provider.model)).map(option => ({
+      id: option.id, label: option.label,
+      detail: option.id === current ? 'Current' : option.detail,
+    }));
+  }
+  async setEffort(value: string): Promise<void> {
+    if (this.state.busy || this.closing) throw new Error('Change the reasoning effort before starting a task.');
+    const provider = this.config.settings.providers[this.config.settings.provider]!;
+    const options = effortChoices(provider, this.models.find(model => model.id === provider.model));
+    const selected = findEffortChoice(options, value);
+    if (!selected) throw new Error(`"${value}" is not available for ${provider.model || 'the selected model'}. Choices: ${options.map(option => option.id).join(', ')}.`);
+    const previous = provider.reasoning;
+    if (selected.id === 'auto') delete provider.reasoning;
+    else provider.reasoning = selected.id;
+    try { await this.persistSettings(() => { if (previous === undefined) delete provider.reasoning; else provider.reasoning = previous; }); }
+    catch (error) { this.sync(); throw error; }
+    this.providers.clear(); this.sync();
   }
   async selectProvider(id: string): Promise<void> {
     if (this.state.busy || this.closing) throw new Error('Wait for the task to finish.');
-    if (!Object.hasOwn(this.config.settings.providers, id)) throw new Error('Unknown provider.');
-    const settings = this.config.settings, previousProvider = settings.provider, previousModels = this.models, previousProviders = new Map(this.providers);
+    const settings = this.config.settings;
+    const existing = Object.hasOwn(settings.providers, id) ? settings.providers[id] : undefined;
+    const preset = Object.hasOwn(PROVIDER_PRESETS, id) ? PROVIDER_PRESETS[id] : undefined;
+    if (!existing && !preset) throw new Error('Unknown provider.');
+    const previousProvider = settings.provider, previousModels = this.models, previousProviders = new Map(this.providers);
+    if (!existing) settings.providers[id] = structuredClone(preset!);
     settings.provider = id; this.models = []; this.providers.clear();
-    await this.persistSettings(() => { settings.provider = previousProvider; this.models = previousModels; this.providers = previousProviders; });
+    await this.persistSettings(() => {
+      settings.provider = previousProvider;
+      if (!existing) delete settings.providers[id];
+      this.models = previousModels; this.providers = previousProviders;
+    });
     this.sync();
   }
   async setApiKey(key: string): Promise<void> {
@@ -201,7 +243,7 @@ export class Controller implements UIController {
     updateModel(provider, id, this.models.find(model => model.id === id));
     this.providers.clear();
     if (persist) await this.persistSettings(() => {
-      for (const key of ['model', ...MODEL_METADATA] as const) {
+      for (const key of ['model', 'reasoning', ...MODEL_METADATA] as const) {
         if (previous[key] === undefined) delete provider[key]; else (provider as any)[key] = previous[key];
       }
       this.providers = previousProviders;
@@ -212,7 +254,7 @@ export class Controller implements UIController {
   renameSession(id: string, title: string): void { this.store.rename(id, this.workspace.root, title); this.notify(); }
   async setBudgets(tokenLimit: number, dollarLimit: number): Promise<void> {
     if (this.state.busy || this.closing) throw new Error('Change the budget before the next task.');
-    const next = settingsSchema.parse({ ...this.config.settings, tokenBudget: tokenLimit, dollarBudget: dollarLimit });
+    const next = settingsSchema.parse({ ...this.config.settings, tokenBudget: parseTokenBudget(tokenLimit), dollarBudget: parseUnlimitedLimit(dollarLimit) });
     const previousTokenLimit = this.config.settings.tokenBudget, previousDollarLimit = this.config.settings.dollarBudget;
     this.config.settings.tokenBudget = next.tokenBudget; this.config.settings.dollarBudget = next.dollarBudget;
     await this.persistSettings(() => { this.config.settings.tokenBudget = previousTokenLimit; this.config.settings.dollarBudget = previousDollarLimit; });
@@ -236,7 +278,9 @@ export class Controller implements UIController {
     } else {
       if (!SETTINGS_FIELDS.some(field => field.key === name)) throw new Error('Unknown setting.');
       const key = name as keyof Settings;
-      const parsed = settingsSchema.safeParse({ ...settings, [name]: name === 'tokenBudget' ? parseTokenBudget(value) : value });
+      const parsedValue = name === 'tokenBudget' ? parseTokenBudget(value)
+        : SETTINGS_FIELDS.some(field => field.key === name && field.section === 'limits') ? parseUnlimitedLimit(value, name === 'maxDepth' ? -1 : 0) : value;
+      const parsed = settingsSchema.safeParse({ ...settings, [name]: parsedValue });
       if (!parsed.success) {
         const issue = parsed.error.issues[0]!;
         throw new Error(issue.code === 'too_small' ? `Minimum value: ${issue.minimum}.` : issue.code === 'too_big' ? `Maximum value: ${issue.maximum}.` : 'Invalid setting value. Check the number or choose an available option.');
@@ -332,7 +376,7 @@ export class Controller implements UIController {
           const originalBudget = this.config.settings.tokenBudget; const originalDollarBudget = this.config.settings.dollarBudget;
           if (goalBefore?.status === 'active') {
             const spent = this.store.usage(this.session).cost - startUsage.cost;
-            if (spent >= originalDollarBudget) { this.note('Goal stopped at dollar budget.'); break; }
+            if (originalDollarBudget > 0 && spent >= originalDollarBudget) { this.note('Goal stopped at dollar budget.'); break; }
 
             const remaining = tokenBudgetMaximum(goalBefore.tokenBudget) - goalBefore.usedTokens;
             if (remaining < 1000) { goalBefore.status = 'limit'; const w = this.store.workflow(this.session); w.goal = goalBefore; this.store.saveWorkflow(this.session, w); this.note('Goal token limit reached. /goal shows progress.'); break; }
@@ -347,7 +391,6 @@ export class Controller implements UIController {
           }
           const goal = this.store.workflow(this.session).goal;
           if (!goal || goal.status !== 'active') break;
-          if (continuation >= 7) { this.note('Goal remains active. Continuation limit reached; /goal resume continues.'); break; }
           this.abort!.signal.throwIfAborted();
           task = 'Continue the active goal using existing results. Do not repeat completed work. Use update_goal complete only when all requirements are achieved with evidence.';
         }
@@ -407,7 +450,7 @@ export class Controller implements UIController {
           { name: 'discover_tools', description: 'Search for extra tools by keyword.', parameters: { type: 'object' } },
           { name: 'load_skill', description: 'Load an enabled skill by name.', parameters: { type: 'object' } }];
         if (settings.mode === 'BUILD') {
-          if (settings.cortex > 0 && settings.maxDepth > 0 && this.permissions.available('delegate', true, settings.mode)) tools.push({ name: 'delegate', description: 'Run independent subagents in separate project copies.', parameters: { type: 'object' } });
+          if (settings.cortex > 0 && (settings.maxDepth < 0 || settings.maxDepth > 0) && this.permissions.available('delegate', true, settings.mode)) tools.push({ name: 'delegate', description: 'Run independent subagents in separate project copies.', parameters: { type: 'object' } });
           if (this.permissions.available('agent_changes', false, settings.mode)) tools.push({ name: 'agent_changes', description: 'Show changes proposed by a subagent.', parameters: { type: 'object' } });
           if (this.permissions.available('agent_apply', true, settings.mode)) tools.push({ name: 'agent_apply', description: 'Apply selected subagent changes after checking for conflicts.', parameters: { type: 'object' } });
           if (this.permissions.available('remember', true, settings.mode)) tools.push({ name: 'remember', description: 'Save a short project procedure to memory.', parameters: { type: 'object' } });
@@ -429,13 +472,20 @@ export class Controller implements UIController {
       case '/exit': await this.close(); break;
       case '/clear': this.state.messages = []; this.notify(); break;
       case '/connect': {
-        if (!args[0]) { this.note(Object.values(settings.providers).map(provider => `${provider.id} · ${provider.baseURL}`).join('\n') + '\n/connect <provider> [BaseURL], then /key and /models.'); break; }
+        if (!args[0]) { this.note(this.listProviders().map(provider => `${provider.id} · ${provider.url}`).join('\n') + '\n/connect <provider> [BaseURL], then /key and /models.'); break; }
         const id = args[0];
-        if (!Object.hasOwn(settings.providers, id)) throw new Error('Unknown preset. Use /connect custom https://host/v1.');
-        const provider = settings.providers[id]!, previous = { ...provider };
-        if (args[1]) { const url = new URL(args[1]); if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('BaseURL must not contain secrets, query parameters, or fragments.'); const baseURL = url.href.replace(/\/$/, ''); if (provider.baseURL !== baseURL) updateModel(provider, provider.model); provider.baseURL = baseURL; }
+        const existing = Object.hasOwn(settings.providers, id) ? settings.providers[id] : undefined;
+        const preset = Object.hasOwn(PROVIDER_PRESETS, id) ? PROVIDER_PRESETS[id] : undefined;
+        const provider = existing ?? (preset ? structuredClone(preset) : undefined);
+        if (!provider) throw new Error('Unknown preset. Use /connect custom https://host/v1.');
+        const previous = { ...provider };
+        let baseURL: string | undefined;
+        if (args[1]) { const url = new URL(args[1]); if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('BaseURL must not contain secrets, query parameters, or fragments.'); baseURL = url.href.replace(/\/$/, ''); }
+        if (!existing) settings.providers[id] = provider;
+        if (baseURL) { if (provider.baseURL !== baseURL) updateModel(provider, provider.model); provider.baseURL = baseURL; }
         try { await this.selectProvider(id); }
         catch (error) {
+          if (!existing) delete settings.providers[id];
           provider.baseURL = previous.baseURL; provider.model = previous.model;
           for (const key of MODEL_METADATA) { if (previous[key] === undefined) delete provider[key]; else (provider as any)[key] = previous[key]; }
           throw error;
@@ -453,22 +503,37 @@ export class Controller implements UIController {
         if (/^\d+$/.test(tail) && !selected) throw new Error('That number is outside the /models list.');
         await this.setModel(selected?.id ?? tail, true); this.note(`Selected ${this.state.model}. Unknown capabilities and prices remain unknown.`); break;
       }
+      case '/effort': {
+        const provider = settings.providers[settings.provider]!;
+        if (!tail) {
+          const options = effortChoices(provider, this.models.find(model => model.id === provider.model));
+          const current = normalizeEffort(provider.reasoning ?? 'auto');
+          this.note([`Reasoning effort · ${provider.model || 'no model selected'}`,
+            ...options.map(option => `${option.id === current ? '• ' : '  '}${option.label}${option.detail ? ` · ${option.detail}` : ''}`),
+            ...(provider.reasoning && !options.some(option => option.id === current) ? [`Current setting ${provider.reasoning} is unsupported by this model.`] : []),
+            '', '/effort <value> · /effort auto restores the model default'].join('\n'));
+          break;
+        }
+        await this.setEffort(tail);
+        this.note(`Reasoning effort set to ${settings.providers[settings.provider]!.reasoning ?? 'automatic'} for ${provider.model || 'the selected model'}.`);
+        break;
+      }
       case '/mode': if (!tail) await this.cycleMode(); else {
         if (!['PLAN', 'BUILD', 'REVIEW'].includes(tail.toUpperCase())) throw new Error('Modes: PLAN, BUILD, REVIEW.');
         const previous = settings.mode; settings.mode = tail.toUpperCase() as any;
         await this.persistSettings(() => { settings.mode = previous; }); this.sync();
       } break;
-      case '/cortex': if (!tail) this.note(CORTEX.map((level, index) => `${index}: ${level.name} · do ${level.steps} steps · do ${level.agents} subagents`).join('\n')); else {
+      case '/cortex': if (!tail) this.note(CORTEX.map((level, index) => `${index}: ${level.name} · suggested effort ${level.steps} steps · ${level.agents} subagents`).join('\n') + '\nThese are effort suggestions, not hard limits.'); else {
         const level = Number(tail); if (!Number.isInteger(level) || level < 0 || level > 5) throw new Error('Cortex: 0–5.');
         const previous = settings.cortex; settings.cortex = level;
         await this.persistSettings(() => { settings.cortex = previous; }); this.sync();
       } break;
       case '/setting':
       case '/settings': {
-        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.key === 'tokenBudget' ? formatTokenBudget(settings.tokenBudget) : String(settings[field.key as keyof Settings])}`), '', '/settings <name> <value> · tokenBudget infinity = unlimited', '/permissions manages tool permissions.'].join('\n')); break; }
+        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : String(settings[field.key as keyof Settings])}`), '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/permissions manages tool permissions.'].join('\n')); break; }
         if (args[0].startsWith('provider.')) {
           const field = args[0].slice('provider.'.length);
-          if (!['reasoning', 'reasoningSupported', 'requestTimeoutMs', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, requestTimeoutMs, temperature, contextWindow, maxOutputTokens, inputPrice, outputPrice, toolCalling, vision, apiKeyEnv, kind. Change the model with /model and the URL with /connect.');
+          if (!['reasoning', 'reasoningSupported', 'reasoningControl', 'reasoningEfforts', 'requestTimeoutMs', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, reasoningControl, reasoningEfforts, requestTimeoutMs, temperature, pricing, and capabilities. Change the model with /model and the URL with /connect.');
           const provider = settings.providers[settings.provider]!;
           if (args.length === 1) { this.note(`${args[0]}: ${JSON.stringify((provider as any)[field])}`); break; }
           const raw = tail.slice(args[0].length).trim(); let value: unknown; try { value = JSON.parse(raw); } catch { value = raw; }
@@ -493,7 +558,7 @@ export class Controller implements UIController {
         if (!match) throw new Error('Use /steer <id> <message>.');
         this.steerAgent(match[1]!, match[2]!); break;
       }
-      case '/agents': this.note(`Parallel limit: ${settings.maxAgents}; depth: ${settings.maxDepth}; Cortex: ${CORTEX[settings.cortex]!.agents} subagents per task.\n${this.runtime.agents.map(agent => `${agent.id} · ${agent.role} · ${agent.status}`).join('\n') || 'No subagents.'}`); break;
+      case '/agents': this.note(`Parallel limit: ${displayLimit('maxAgents', settings.maxAgents)}; delegation depth: ${displayLimit('maxDepth', settings.maxDepth)}; Cortex ${settings.cortex} effort: ${CORTEX[settings.cortex]!.name}.\n${this.runtime.agents.map(agent => `${agent.id} · ${agent.role} · ${agent.status}`).join('\n') || 'No subagents.'}`); break;
       case '/permissions': {
         const [action, tool] = args;
         const registered = new Set([...this.registry.discovery(settings.mode).map(item => item.name), ...this.mcp.tools().map(item => item.name), 'ask_question', 'get_goal', 'update_goal', 'finish_interview', 'discover_tools', 'request_tool', 'search_history', 'delegate', 'agent_message', 'agent_changes', 'agent_apply', 'load_skill', 'remember']);
@@ -525,15 +590,19 @@ export class Controller implements UIController {
       case '/status': this.note(`${this.workspace.root}\nSession: ${this.session}\n${settings.provider} / ${this.state.model || 'select a model'}\n${settings.mode} · Cortex ${settings.cortex} · ${settings.permissions}\nConfiguration: ${this.config.home}\n${this.state.status}`); break;
       case '/cost': this.note(JSON.stringify(this.store.usage(this.session), null, 2) + '\nPrices: USD per 1M tokens. An unknown price does not mean the model is free. The USD limit applies only when prices are known.'); break;
       case '/budget': {
-        if (!args.length) { this.note(`Task budget: ${formatTokenBudget(settings.tokenBudget)} tokens · $${settings.dollarBudget}. Change it with /budget <tokens or infinity> <USD>.`); break; }
-        const tokenLimit = parseTokenBudget(args[0]), dollarLimit = args[1] === undefined ? settings.dollarBudget : Number(args[1]);
-        if (!Number.isInteger(tokenLimit) || !Number.isFinite(dollarLimit) || dollarLimit <= 0) throw new Error('Use /budget <whole number of tokens> <USD limit>.');
-        await this.setBudgets(tokenLimit, dollarLimit); this.note(`Task limit set to ${formatTokenBudget(settings.tokenBudget)} tokens · $${settings.dollarBudget}.`); break;
+        if (!args.length) { this.note(`Task budget: ${formatTokenBudget(settings.tokenBudget)} tokens · ${displayCostLimit(settings.dollarBudget)}. Change it with /budget <tokens or infinity> <USD or infinity>.`); break; }
+        const tokenLimit = parseTokenBudget(args[0]), dollarLimit = args[1] === undefined ? settings.dollarBudget : parseUnlimitedLimit(args[1]);
+        if (!Number.isInteger(tokenLimit) || !Number.isFinite(dollarLimit) || dollarLimit < 0) throw new Error('Use /budget <whole number of tokens or infinity> <USD or infinity>.');
+        await this.setBudgets(tokenLimit, dollarLimit); this.note(`Task limit set to ${formatTokenBudget(settings.tokenBudget)} tokens · ${displayCostLimit(settings.dollarBudget)}.`); break;
       }
-      case '/context': this.note(`Context: about ${estimateTokens(this.store.context(this.session))} tokens (UTF-8 estimate). Input limit: ${settings.maxInputTokens}. Task budget: ${formatTokenBudget(settings.tokenBudget)}. Schemas and instructions also use context.`); break;
+      case '/context': {
+        const provider = settings.providers[settings.provider];
+        this.note(`Context: ~${estimateTokens(this.store.context(this.session)).toLocaleString('en-US')} tokens (local UTF-8 estimate, not the provider tokenizer). App input cap: ${displayLimit('maxInputTokens', settings.maxInputTokens)}. Model context: ${provider?.contextWindow?.toLocaleString('en-US') ?? 'unknown'}${provider?.contextWindow ? ` · max output ${provider.maxOutputTokens?.toLocaleString('en-US') ?? 'provider default'}` : ''}. Task token budget: ${formatTokenBudget(settings.tokenBudget)}. Automatic compaction runs only when a configured or known model context limit requires it. /compact makes a local extractive summary without an AI call; the full transcript remains archived.`); break;
+      }
       case '/compact': {
         const before = this.store.context(this.session);
-        const result = compactMessages(before, Math.floor(settings.maxInputTokens / 2));
+        const target = settings.maxInputTokens > 0 ? Math.floor(settings.maxInputTokens / 2) : Math.max(500, Math.floor(estimateTokens(before) * 0.6));
+        const result = compactMessages(before, target);
         this.store.archiveContext(this.session, result.messages);
         const saved = Math.max(0, result.beforeTokens - result.afterTokens);
         this.note(saved ? `Context compacted locally: ~${result.beforeTokens.toLocaleString('en-US')} → ${result.afterTokens.toLocaleString('en-US')} tokens; ${result.removed} messages summarized and ${result.shortened} long outputs shortened. Full history remains in the SQLite archive. No extra AI call was made.` : `Context is already about ${result.afterTokens.toLocaleString('en-US')} tokens or the current message cannot be safely shortened. SQLite history was left unchanged.`);

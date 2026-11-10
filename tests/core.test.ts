@@ -50,9 +50,9 @@ test('existing configuration gains the provider catalog while retaining custom s
   delete nvidia.requestTimeoutMs;
   await writeFile(path.join(home, 'config.json'), JSON.stringify({ ...settings, provider: 'openai', providers: { openai, nvidia } }));
   const config = new ConfigManager(home); await config.load();
-  assert.equal(Object.keys(config.settings.providers).length, 54);
+  assert.equal(Object.keys(config.settings.providers).length, 55);
   const localOrCustom = new Set(['ollama', 'lmstudio', 'vllm', 'custom']);
-  assert.equal(Object.keys(config.settings.providers).filter(id => !localOrCustom.has(id)).length, 50);
+  assert.equal(Object.keys(config.settings.providers).filter(id => !localOrCustom.has(id)).length, 51);
   assert.equal(['ollama', 'lmstudio', 'vllm'].filter(id => id in config.settings.providers).length, 3);
   assert.deepEqual(config.settings.providers.openai, openai);
   assert.equal(config.settings.providers.nvidia?.model, 'my-nim-model');
@@ -252,11 +252,11 @@ test('home precedence honors new and legacy environment routes; explicit homes n
   const old = new ConfigManager(oldHome); await old.load(); old.settings.maxAgents = 2; await old.save();
   const newOverride = path.join(directory, 'override-new'), legacyOverride = path.join(directory, 'override-legacy'), explicitHome = path.join(directory, 'explicit');
   const both = new ConfigManager(undefined, { LOCALAPPDATA: directory, POLONRLM_HOME: newOverride, JANUSZGPT_HOME: legacyOverride });
-  assert.equal(both.home, newOverride); await both.load(); assert.equal(both.legacyHome, undefined); assert.equal(both.settings.maxAgents, 3);
+  assert.equal(both.home, newOverride); await both.load(); assert.equal(both.legacyHome, undefined); assert.equal(both.settings.maxAgents, 0);
   const previous = new ConfigManager(undefined, { LOCALAPPDATA: directory, JANUSZGPT_HOME: oldHome });
   assert.equal(previous.home, oldHome); await previous.load(); assert.equal(previous.settings.maxAgents, 2); assert.equal(previous.migration, undefined);
   const explicit = new ConfigManager(explicitHome, { LOCALAPPDATA: directory, POLONRLM_HOME: newOverride, JANUSZGPT_HOME: oldHome });
-  assert.equal(explicit.home, explicitHome); await explicit.load(); assert.equal(explicit.legacyHome, undefined); assert.equal(explicit.settings.maxAgents, 3);
+  assert.equal(explicit.home, explicitHome); await explicit.load(); assert.equal(explicit.legacyHome, undefined); assert.equal(explicit.settings.maxAgents, 0);
   await assert.rejects(access(path.join(directory, 'PolonRLM')));
 });
 

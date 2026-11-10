@@ -38,7 +38,9 @@ export const secureMcpServerSchema = z.object({
 const providerSchema = z.object({
   id: z.string().min(1), kind: z.enum(['openai', 'compatible', 'anthropic', 'google']),
   baseURL: z.url().refine(value => /^https?:\/\//.test(value), 'HTTP or HTTPS is required'), model: z.string(),
-  apiKeyEnv: z.string().optional(), reasoning: z.enum(['off', 'low', 'medium', 'high']).optional(),
+  apiKeyEnv: z.string().optional(), reasoning: z.string().min(1).max(48).regex(/^[A-Za-z0-9][A-Za-z0-9_. -]*$/).optional(),
+  reasoningControl: z.enum(['effort', 'toggle', 'thinking-level', 'thinking-budget']).optional(),
+  reasoningEfforts: z.array(z.string().min(1).max(32).regex(/^[A-Za-z0-9][A-Za-z0-9_. -]*$/)).max(16).optional(),
   temperature: z.number().min(0).max(2).optional(), inputPrice: z.number().nonnegative().optional(), outputPrice: z.number().nonnegative().optional(),
   contextWindow: z.number().int().positive().optional(), maxOutputTokens: z.number().int().positive().optional(), reasoningSupported: z.boolean().optional(), toolCalling: z.boolean().optional(), vision: z.boolean().optional(),
   requestTimeoutMs: z.number().int().min(1000).max(600000).optional()
@@ -46,21 +48,35 @@ const providerSchema = z.object({
 export const settingsSchema = z.object({
   provider: z.string(), providers: z.record(z.string(), providerSchema), fallback: z.array(z.string()),
   mode: z.enum(['PLAN', 'BUILD', 'REVIEW']), cortex: z.number().int().min(0).max(5),
-  maxSteps: z.number().int().min(1).max(200), maxInputTokens: z.number().int().min(1024).max(1000000),
-  maxOutputTokens: z.number().int().min(128).max(128000), tokenBudget: z.preprocess(value => value === null ? 0 : value, z.number().int().nonnegative().refine(value => value === 0 || value >= 1000, 'Minimum 1,000 or 0 for unlimited')),
-  dollarBudget: z.number().positive(), maxAgents: z.number().int().min(1).max(8), maxDepth: z.number().int().min(0).max(2),
+  maxSteps: z.number().int().nonnegative().max(200), maxInputTokens: z.number().int().nonnegative().max(1_000_000),
+  maxOutputTokens: z.number().int().nonnegative().max(128_000), tokenBudget: z.preprocess(value => value === null ? 0 : value, z.number().int().nonnegative().safe().refine(value => value === 0 || value >= 1000, 'Minimum 1,000 or 0 for unlimited')),
+  dollarBudget: z.number().nonnegative(), maxAgents: z.number().int().nonnegative().max(8), maxDepth: z.number().int().min(-1).max(2),
   permissions: z.enum(['ask', 'workspace', 'readonly', 'all']), toolPermissions: z.record(z.string(), z.enum(['ask', 'auto', 'off'])).default({}), allowTools: z.array(z.string()), denyTools: z.array(z.string()),
-  theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().min(500).max(100000), timeoutMs: z.number().int().min(1000).max(600000),
+  theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().nonnegative().max(100_000), timeoutMs: z.number().int().nonnegative().max(600_000),
   webSearchMode: z.preprocess(value => value === 'duckduckgo' ? 'auto' : value, z.enum(['auto', 'bing', 'brave', 'yahoo']).default('auto')),
   browserEngine: z.enum(['auto', 'chromium', 'chrome', 'edge', 'brave', 'firefox']).default('auto'),
   mcp: z.record(z.string(), mcpServerSchema)
+}).superRefine((settings, context) => {
+  if (!Object.hasOwn(settings.providers, settings.provider)) context.addIssue({ code: 'custom', path: ['provider'], message: 'Selected provider is not configured.' });
+  for (const [index, provider] of settings.fallback.entries()) {
+    if (!Object.hasOwn(settings.providers, provider)) context.addIssue({ code: 'custom', path: ['fallback', index], message: `Fallback provider ${provider} is not configured.` });
+  }
 });
 export function defaultSettings(): Settings {
   return { provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1,
-    maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 0, dollarBudget: 5,
-    maxAgents: 3, maxDepth: 1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 10000, timeoutMs: 120000, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
+    maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
+    maxAgents: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
+function migrateDefaultLimits(saved: unknown): unknown {
+  if (!isRecord(saved)) return saved;
+  const migrated = { ...saved };
+  for (const [key, previousDefault] of Object.entries(previousDefaultLimits)) {
+    if (migrated[key] === previousDefault) migrated[key] = key === 'maxDepth' ? -1 : 0;
+  }
+  return migrated;
+}
 function mergeProviderConfigs(saved: unknown): Record<string, unknown> {
   const merged: Record<string, unknown> = structuredClone(PROVIDER_PRESETS);
   if (!isRecord(saved)) return merged;
@@ -178,7 +194,11 @@ export class ConfigManager {
   async load(): Promise<void> {
     await this.migrateLegacy();
     await mkdir(this.home, { recursive: true });
-    try { const saved = JSON.parse(await readFile(path.join(this.home, 'config.json'), 'utf8')); this.settings = settingsSchema.parse({ ...defaultSettings(), ...saved, providers: mergeProviderConfigs(saved.providers) }); }
+    try {
+      const saved = migrateDefaultLimits(JSON.parse(await readFile(path.join(this.home, 'config.json'), 'utf8')));
+      const config = isRecord(saved) ? saved : {};
+      this.settings = settingsSchema.parse({ ...defaultSettings(), ...config, providers: mergeProviderConfigs(config.providers) });
+    }
     catch (error: any) { if (error.code !== 'ENOENT') throw new Error(`Invalid configuration: ${error.message}`); }
     this.baseline = structuredClone(this.settings);
   }
@@ -215,8 +235,9 @@ export class ConfigManager {
   }
   private async readCurrentSettings(target: string): Promise<Settings> {
     try {
-      const saved = JSON.parse(await readFile(target, 'utf8'));
-      return settingsSchema.parse({ ...defaultSettings(), ...saved, providers: mergeProviderConfigs(saved.providers) });
+      const saved = migrateDefaultLimits(JSON.parse(await readFile(target, 'utf8')));
+      const config = isRecord(saved) ? saved : {};
+      return settingsSchema.parse({ ...defaultSettings(), ...config, providers: mergeProviderConfigs(config.providers) });
     } catch (error: any) {
       if (error.code === 'ENOENT') return defaultSettings();
       throw new Error(`Invalid configuration while saving: ${error.message}`);

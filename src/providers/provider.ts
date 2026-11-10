@@ -6,6 +6,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { LLMProvider, Message, ModelInfo, ModelReply, ProviderConfig, ToolSpec } from '../core/types.js';
 export { isRetryableProviderError, PROVIDER_RETRY_DELAY_MS } from './retry.js';
 import catalog from './catalog.json' with { type: 'json' };
+import { providerEffortOptions } from './reasoning.js';
 export const PROVIDER_NAMES: Record<string, string> = Object.fromEntries(catalog.map(provider => [provider.id, provider.name]));
 
 const preset = (id: string, kind: ProviderConfig['kind'], baseURL: string, apiKeyEnv?: string): ProviderConfig =>
@@ -108,6 +109,12 @@ function modelInfo(value: unknown, google: boolean): ModelInfo | undefined {
   const modalities = strings(data.supportedInputModalities) ?? strings(data.inputModalities) ?? strings(architecture.input_modalities);
   const capabilities = object(data.capabilities);
   const topProvider = object(data.top_provider);
+  const reasoningObject = object(data.reasoning);
+  const reasoningEfforts = strings(data.reasoningEfforts) ?? strings(data.reasoning_efforts) ?? strings(data.reasoningLevels) ?? strings(data.reasoning_levels) ?? strings(data.supported_reasoning_efforts) ?? strings(reasoningObject.efforts);
+  const rawReasoningControl = data.reasoningControl ?? data.reasoning_control ?? reasoningObject.control;
+  const reasoningControl = ['effort', 'toggle', 'thinking-level', 'thinking-budget'].includes(String(rawReasoningControl))
+    ? rawReasoningControl as ProviderConfig['reasoningControl']
+    : parameters?.includes('reasoning_effort') ? 'effort' : parameters?.includes('reasoning') ? 'toggle' : undefined;
   const reasoning = typeof data.thinking === 'boolean' ? data.thinking
     : parameters ? parameters.some(parameter => ['reasoning', 'reasoning_effort'].includes(parameter))
       : typeof capabilities.reasoning === 'boolean' ? capabilities.reasoning : undefined;
@@ -117,7 +124,8 @@ function modelInfo(value: unknown, google: boolean): ModelInfo | undefined {
     maxOutputTokens: positiveInteger(data.outputTokenLimit) ?? positiveInteger(data.output_token_limit) ?? positiveInteger(data.max_output_tokens) ?? positiveInteger(data.max_completion_tokens) ?? positiveInteger(data.max_tokens) ?? positiveInteger(topProvider.max_completion_tokens),
     toolCalling: parameters ? parameters.includes('tools') : typeof capabilities.function_calling === 'boolean' ? capabilities.function_calling : undefined,
     vision: modalities ? modalities.some(modality => modality.toLowerCase() === 'image') : typeof capabilities.vision === 'boolean' ? capabilities.vision : undefined,
-    reasoning,
+    reasoning, reasoningControl,
+    ...(reasoningEfforts?.length ? { reasoningEfforts: reasoningEfforts.filter(value => /^[A-Za-z0-9][A-Za-z0-9_. -]{0,31}$/.test(value)).slice(0, 16) } : {}),
     inputPrice: google ? undefined : price(pricing.prompt), outputPrice: google ? undefined : price(pricing.completion),
   };
 }
@@ -126,18 +134,19 @@ function cleanError(error: unknown, secret: string | undefined): Error {
   const text = error instanceof Error ? error.message : String(error);
   const cleaned = secret ? text.split(secret).join('[REDACTED]') : text;
   const safeMessage = cleaned.replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]');
+  const metadata = error instanceof Error ? object(error) : {};
+  const response = object(metadata.response);
+  const rawStatusCode = metadata.statusCode ?? metadata.status ?? response.status;
+  const statusCode = typeof rawStatusCode === 'number' && Number.isInteger(rawStatusCode) ? rawStatusCode : undefined;
+  const statusAlreadyShown = statusCode !== undefined && new RegExp(`\\b(?:HTTP|status)\\s*[:=]?\\s*${statusCode}\\b`, 'i').test(safeMessage);
+  const statusLabel = statusCode !== undefined && !statusAlreadyShown ? ` (HTTP ${statusCode})` : '';
   const message = /\bhigh demand\b|rate.?limit|too many requests|overloaded|HTTP\s*429/i.test(safeMessage)
-    ? 'The selected provider is temporarily busy. Wait briefly, then retry the selected model.'
-    : safeMessage;
+    ? `The selected provider is temporarily busy${statusLabel}. Wait briefly, then retry the selected model.`
+    : `${safeMessage}${statusLabel}`;
   const result = new Error(message);
-  if (error instanceof Error) {
-    result.name = error.name;
-    const metadata = object(error);
-    const response = object(metadata.response);
-    const statusCode = metadata.statusCode ?? metadata.status ?? response.status;
-    if (typeof statusCode === 'number' && Number.isInteger(statusCode)) Object.assign(result, { statusCode });
-    if (typeof metadata.code === 'string') Object.assign(result, { code: metadata.code });
-  }
+  if (error instanceof Error) result.name = error.name;
+  if (statusCode !== undefined) Object.assign(result, { statusCode });
+  if (typeof metadata.code === 'string') Object.assign(result, { code: metadata.code });
   return result;
 }
 
@@ -164,19 +173,7 @@ export function createProvider(config: ProviderConfig, apiKey: string | undefine
   }
 
   function providerOptions(): Record<string, Record<string, JSONValue>> | undefined {
-    if (!config.reasoning) return undefined;
-    if (config.reasoningSupported === false) {
-      if (config.reasoning !== 'off') throw new Error(`Model ${config.model} does not support reasoning settings. Set /settings provider.reasoning off or choose a model that supports reasoning.`);
-      return undefined;
-    }
-    if (config.kind === 'openai') return { openai: { reasoningEffort: config.reasoning === 'off' ? 'none' : config.reasoning } };
-    if (config.kind === 'google') return { google: { thinkingConfig: config.reasoning === 'off' ? { thinkingBudget: 0 } : { thinkingLevel: config.reasoning } } };
-    // Anthropic signed thinking blocks require a richer persisted message format.
-    // Keep thinking disabled rather than losing signatures during tool continuation.
-    if (config.kind === 'anthropic' && config.reasoning === 'off') return { anthropic: { thinking: { type: 'disabled' } } };
-    if (config.kind === 'anthropic') throw new Error('Explicit Anthropic thinking requires signed block preservation and is not supported yet. Remove the reasoning setting or set it to off.');
-    if (config.kind === 'compatible' && config.reasoning !== 'off') return { [name]: { reasoningEffort: config.reasoning } };
-    return undefined;
+    return providerEffortOptions(config) as Record<string, Record<string, JSONValue>> | undefined;
   }
 
   return {
@@ -185,13 +182,15 @@ export function createProvider(config: ProviderConfig, apiKey: string | undefine
       if (config.vision === false && messages.some(message => message.images?.length)) throw new Error(`Model ${config.model} does not support images. Choose a vision model or remove the attachment.`);
       const activeTools = config.toolCalling === false ? [] : tools;
       const activeMessages = config.toolCalling === false ? textOnlyHistory(messages) : messages;
+      const outputCaps = [maxOutputTokens, config.maxOutputTokens].filter((limit): limit is number => typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0);
+      const effectiveMaxOutputTokens = outputCaps.length ? Math.min(...outputCaps) : undefined;
       const toolSet: ToolSet = Object.fromEntries(activeTools.map(spec => [spec.name,
         tool({ description: spec.description, inputSchema: jsonSchema<Record<string, unknown>>(spec.parameters) })]));
       try {
         const result = streamText({
           model: model(), instructions: messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n') || undefined,
           messages: sdkMessages(activeMessages.filter(message => message.role !== 'system')), tools: activeTools.length ? toolSet : undefined,
-          maxOutputTokens: Math.min(maxOutputTokens, config.maxOutputTokens ?? maxOutputTokens), temperature: config.temperature, providerOptions: providerOptions(),
+          ...(effectiveMaxOutputTokens ? { maxOutputTokens: effectiveMaxOutputTokens } : {}), temperature: config.temperature, providerOptions: providerOptions(),
           // Runtime retries are visible, cancelable, budgeted, and spaced at a fixed interval.
           maxRetries: 0, streamRetries: 0, abortSignal: signal,
           onError: () => { /* The error is surfaced below without logging request bodies. */ },

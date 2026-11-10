@@ -10,7 +10,7 @@ import { AgentPanel, AttachmentPanel, BudgetPanel, MessageCopyPanel, SessionPane
 import { PROVIDER_NAMES as CATALOG_NAMES } from '../providers/provider.js';
 import { SettingsPanel } from './settings.js';
 
-export type MenuKind = 'commands' | 'models' | 'providers' | 'configure' | 'key' | 'manual' | 'sessions' | 'messages' | 'agents' | 'budget' | 'attachments' | 'settings';
+export type MenuKind = 'commands' | 'models' | 'providers' | 'efforts' | 'configure' | 'key' | 'manual' | 'sessions' | 'messages' | 'agents' | 'budget' | 'attachments' | 'settings';
 interface Item { id: string; label: string; detail?: string }
 interface EndpointDraft { id: string; baseURL: string; model: string; apiKey: string }
 
@@ -22,6 +22,7 @@ const COMMANDS: Item[] = [
   { id: '/retry', label: 'Retry last task', detail: '/retry' },
   { id: 'models', label: 'Select model', detail: 'Alt+L' },
   { id: 'providers', label: 'API providers', detail: '/connect' },
+  { id: 'efforts', label: 'Reasoning effort', detail: '/effort · options depend on model' },
   { id: 'key', label: 'Save API key', detail: '/key' },
   { id: 'manual', label: 'Enter a model manually', detail: 'Exact model ID' },
   { id: 'attachments', label: 'Attachments', detail: 'Alt+I · files and images' },
@@ -62,7 +63,7 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
   mouseEvents?: EventEmitter; close: () => void; readClipboard?: () => Promise<string>;
 }): React.JSX.Element {
   const [kind, setKind] = useState(initial), [query, setQuery] = useState(''), [selected, setSelected] = useState(0);
-  const [items, setItems] = useState<Item[]>(() => initial === 'commands' ? COMMANDS : initial === 'providers' ? providerItems(controller) : []);
+  const [items, setItems] = useState<Item[]>(() => initial === 'commands' ? COMMANDS : initial === 'providers' ? providerItems(controller) : initial === 'efforts' ? effortItems(controller) : []);
   const [loading, setLoading] = useState(initial === 'models'), [error, setError] = useState('');
   const [copyStatus, setCopyStatus] = useState('');
   const [revision, reload] = useState(0);
@@ -90,6 +91,7 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
     setQuery(''); setSelected(0); setError(''); setLoading(kind === 'models'); focusSearch(true); focusField(true);
     if (kind === 'commands') setItems(COMMANDS);
     else if (kind === 'providers') setItems(providerItems(controller));
+    else if (kind === 'efforts') setItems(effortItems(controller));
     else if (['configure', 'key', 'manual', 'sessions', 'messages', 'agents', 'budget', 'attachments', 'settings'].includes(kind)) { setItems([]); setLoading(false); }
     else {
       setItems([]);
@@ -206,7 +208,7 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
     if (selecting.current) return;
     selecting.current = true;
     try {
-      if (kind === 'commands' && ['models', 'providers', 'key', 'manual', 'sessions', 'messages', 'agents', 'budget', 'attachments', 'settings'].includes(item.id)) { setKind(item.id as MenuKind); return; }
+      if (kind === 'commands' && ['models', 'providers', 'efforts', 'key', 'manual', 'sessions', 'messages', 'agents', 'budget', 'attachments', 'settings'].includes(item.id)) { setKind(item.id as MenuKind); return; }
       if (kind === 'models' && item.id === '__manual__') { setKind('manual'); return; }
       if (kind === 'models' && item.id === '__key__') { setKind('key'); return; }
       if (kind === 'models' && item.id === '__provider__') { returnToModels.current = true; setKind('providers'); return; }
@@ -218,6 +220,7 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
         beginEndpoint('custom', existing?.url, existing?.model); return;
       }
       else if (kind === 'providers') { if (controller.selectProvider) await controller.selectProvider(item.id); else await controller.submit(`/connect ${item.id}`); returnToModels.current = true; setKind('key'); return; }
+      else if (kind === 'efforts') { if (controller.setEffort) await controller.setEffort(item.id); else await controller.submit(`/effort ${item.id}`); close(); return; }
       else if (item.id === 'mode') controller.cycleMode();
       else await controller.submit(item.id);
       close();
@@ -402,8 +405,8 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
     <Box ref={pasteRef} paddingX={1} alignSelf="flex-start" backgroundColor={colors.selected}><Text color={colors.text}>{pasting ? 'Pasting…' : 'Paste from clipboard'}</Text></Box>
   </Box>;
   return <Box width={width} flexDirection="column" paddingX={2} paddingY={1} backgroundColor={colors.panel}>
-    <Text color={colors.text} bold>{kind === 'commands' ? 'Commands / PolonRLM' : kind === 'providers' ? 'API providers' : 'Models / ENGINE'}</Text>
-    <Text color={colors.muted}>{kind === 'models' ? 'Provider: ' + sanitizeTerminalText(state.provider) + ' · Model: ' + sanitizeTerminalText(state.model || 'none') : kind === 'providers' ? '01 provider  →  02 key  →  03 model' : 'Search commands or choose one from the list.'}</Text>
+    <Text color={colors.text} bold>{kind === 'commands' ? 'Commands / PolonRLM' : kind === 'providers' ? 'API providers' : kind === 'efforts' ? 'Reasoning effort' : 'Models / ENGINE'}</Text>
+    <Text color={colors.muted}>{kind === 'models' || kind === 'efforts' ? 'Provider: ' + sanitizeTerminalText(state.provider) + ' · Model: ' + sanitizeTerminalText(state.model || 'none') : kind === 'providers' ? '01 provider  →  02 key  →  03 model' : 'Search commands or choose one from the list.'}</Text>
     <Box ref={searchRef} marginY={1}><Text color={colors.accent}>/ </Text><Text color={colors.text}>{query || <Text color={colors.muted}>Search…</Text>}{searchFocused && <Text inverse> </Text>}</Text></Box>
     {loading && <Text color={colors.muted}>Loading model catalog…</Text>}
     {error && <Text color={colors.warm} wrap="truncate-end">{error}</Text>}
@@ -415,6 +418,7 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
     <Box marginTop={1} flexDirection="column">
       <Text color={colors.muted}>↑ ↓ select   Enter open   Esc close{filtered.length ? '   ' + (chosen + 1) + '/' + filtered.length : ''}</Text>
       {kind === 'models' && <Text color={colors.accent}>Ctrl+N enter a model   Ctrl+L API key   Ctrl+A provider   Ctrl+R refresh</Text>}
+      {kind === 'efforts' && <Text color={colors.muted}>Only controls supported by the selected model are listed. Automatic uses its default.</Text>}
       {copyStatus && <Text color={colors.accent}>{copyStatus}</Text>}
     </Box>
   </Box>;
@@ -423,7 +427,11 @@ export function CommandMenu({ initial, controller, state, width, rows, mouseEven
 function providerItems(controller: UIController): Item[] {
   const providers = controller.listProviders?.() ?? [];
   return [
-    ...providers.sort((a, b) => { const primary = ['openai', 'anthropic', 'google', 'nvidia', 'mistral', 'openrouter', 'groq', 'deepseek', 'custom']; const rank = (id: string) => primary.includes(id) ? primary.indexOf(id) : 100; return rank(a.id) - rank(b.id) || (PROVIDER_NAMES[a.id] ?? a.id).localeCompare(PROVIDER_NAMES[b.id] ?? b.id); }).map(provider => ({ id: provider.id, label: PROVIDER_NAMES[provider.id] ?? provider.id, detail: provider.model || '' })),
+    ...providers.sort((a, b) => { const primary = ['openai', 'anthropic', 'google', 'nvidia', 'mistral', 'openrouter', 'teamorouter', 'groq', 'deepseek', 'custom']; const rank = (id: string) => primary.includes(id) ? primary.indexOf(id) : 100; return rank(a.id) - rank(b.id) || (PROVIDER_NAMES[a.id] ?? a.id).localeCompare(PROVIDER_NAMES[b.id] ?? b.id); }).map(provider => ({ id: provider.id, label: PROVIDER_NAMES[provider.id] ?? provider.id, detail: provider.model || '' })),
     { id: '__new_endpoint__', label: 'Add a custom endpoint…', detail: 'OpenAI compatible' },
   ];
+}
+
+function effortItems(controller: UIController): Item[] {
+  return controller.listEfforts?.() ?? [{ id: 'auto', label: 'Automatic', detail: 'Use the model default' }];
 }

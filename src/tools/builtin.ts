@@ -49,7 +49,7 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
   async function processRun(tool: string, command: string, args: string[], context: ToolContext, approved = false): Promise<unknown> {
     if (!approved) await workspace.permissions.check(tool, 'shell', 'Command runs with your permissions, outside a sandbox. Approve only trusted code.', `${command} ${args.join(' ')}`, context.mode, context.signal);
     context.signal.throwIfAborted();
-    const result = await execa(command, args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), reject: false, timeout: settings.timeoutMs, cancelSignal: context.signal, killDescendants: true, forceKillAfterDelay: 1000, maxBuffer: 2_000_000, windowsHide: true, cleanup: true });
+    const result = await execa(command, args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), reject: false, timeout: settings.timeoutMs > 0 ? settings.timeoutMs : undefined, cancelSignal: context.signal, killDescendants: true, forceKillAfterDelay: 1000, maxBuffer: 2_000_000, windowsHide: true, cleanup: true });
     context.signal.throwIfAborted();
     if (result.timedOut) throw new Error(`Command timed out after ${settings.timeoutMs} ms.`);
     if (result.isMaxBuffer) throw new Error('Command output exceeds the 2 MB limit. Narrow the command.');

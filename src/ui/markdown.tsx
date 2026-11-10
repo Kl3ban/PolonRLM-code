@@ -53,7 +53,7 @@ export function markdownLines(markdown: string, width: number): MarkdownLine[] {
         case 'heading': add(`${prefix}${inline(token.text)}`, { bold: true, color: 'cyan' }); break;
         case 'paragraph': case 'text': add(`${prefix}${inline(token.text)}`); break;
         case 'code': {
-          add(`${prefix}╭─ ${token.lang || 'kod'}`, { dim: true });
+          add(`${prefix}╭─ ${token.lang || 'code'}`, { dim: true });
           let code = token.text;
           try { code = highlight(code, { language: token.lang?.split(/\s/)[0], ignoreIllegals: true }); } catch { /* Unknown language stays plain. */ }
           for (const line of code.split('\n')) add(`${prefix}│ ${line}`);

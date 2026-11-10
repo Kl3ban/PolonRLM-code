@@ -6,10 +6,11 @@ PolonRLM is written in TypeScript and runs on Node.js 24 or newer. The workflow 
 
 ## What it can do
 
-- Connect to Google, OpenAI, Anthropic, OpenRouter, NVIDIA, Mistral, DeepSeek, Groq, Ollama, LM Studio, vLLM, and custom OpenAI-compatible endpoints.
+- Connect to Google, OpenAI, Anthropic, OpenRouter, NVIDIA, Mistral, DeepSeek, TeamRouter, Groq, Ollama, LM Studio, vLLM, and custom OpenAI-compatible endpoints.
 - Read and edit files, search code, inspect Git, run tests, and use shell tools.
 - Delegate focused work to subagents that share the task budget.
 - Keep conversation history in a local SQLite database and compact old context without another model call.
+- Start with no global task caps for tokens, cost, calls, context, agents, or tool output. Configure caps in `/settings` or `/budget` if you need them; model and provider limits still apply. NVIDIA keeps a provider-specific long timeout for slow inference startup.
 - Search the web through ordinary public search pages, without a search API key.
 - Automate a headless browser with Playwright. Missing Chromium or Firefox builds are downloaded only when first needed.
 - Attach images when the selected model supports vision.
@@ -80,10 +81,13 @@ Built-in presets cover hosted APIs and local model servers. Local endpoints such
 
 ~~~text
 /connect nvidia
+/connect teamorouter
 /connect ollama
 /connect custom https://host.example/v1
 /models
 /model <model-id>
+/effort
+/effort high
 /settings provider.reasoning low
 ~~~
 

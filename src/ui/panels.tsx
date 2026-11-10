@@ -5,7 +5,7 @@ import type { UIController, UIState } from '../core/types.js';
 import { THEMES } from './design.js';
 import { sanitizeTerminalText } from './markdown.js';
 import { readClipboardImage as readWindowsClipboardImage } from './clipboard.js';
-import { parseTokenBudget } from '../core/budget.js';
+import { parseTokenBudget, parseUnlimitedLimit } from '../core/budget.js';
 import { copyToClipboard } from './clipboard.js';
 import type { TerminalMouseEvent } from './input-router.js';
 
@@ -132,23 +132,23 @@ export function AgentPanel(props: Props): React.JSX.Element {
 
 export function BudgetPanel(props: Props): React.JSX.Element {
   const { controller, state, close } = props;
-  const [values, setValues] = useState([state.tokenLimit === 0 ? 'infinity' : String(state.tokenLimit), String(state.dollarLimit)]), [field, setField] = useState(0), [error, setError] = useState('');
+  const [values, setValues] = useState([state.tokenLimit === 0 ? 'infinity' : String(state.tokenLimit), state.dollarLimit === 0 ? 'infinity' : String(state.dollarLimit)]), [field, setField] = useState(0), [error, setError] = useState('');
   useInput((input, key) => {
     if (key.eventType === 'release') return;
     if (key.escape) { close(); return; }
     if (key.tab || key.return) {
       if (field === 0) { setField(1); return; }
-      void (async () => { try { if (!controller.setBudgets) throw new Error('Budget controls are unavailable.'); await controller.setBudgets(parseTokenBudget(values[0]), Number(values[1])); close(); } catch (cause) { setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause))); } })(); return;
+      void (async () => { try { if (!controller.setBudgets) throw new Error('Budget controls are unavailable.'); await controller.setBudgets(parseTokenBudget(values[0]), parseUnlimitedLimit(values[1])); close(); } catch (cause) { setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause))); } })(); return;
     }
     if (key.ctrl && input.toLowerCase() === 'u') { setValues(current => current.map((value, index) => index === field ? '' : value)); return; }
     if (key.backspace || key.delete) { setValues(current => current.map((value, index) => index === field ? value.slice(0, -1) : value)); return; }
-    if (!key.ctrl && !key.meta && (field === 0 ? /^[0-9a-z∞]+$/i : /^[0-9.]+$/).test(input)) setValues(current => current.map((value, index) => index === field ? value + input : value));
+    if (!key.ctrl && !key.meta && (field === 0 ? /^[0-9a-z∞]+$/i : /^[0-9a-z∞.]+$/i).test(input)) setValues(current => current.map((value, index) => index === field ? value + input : value));
   });
   return <Frame {...props} title="NEXT TASK BUDGET" hint="Tab choose a limit · Enter next/save · values apply to one task">
-    <Box marginTop={1}><Text color={THEMES[state.theme].muted}>Tokeny maks.    </Text><Text color={field === 0 ? THEMES[state.theme].accent : THEMES[state.theme].text}>{values[0]}</Text></Box>
-    <Box><Text color={THEMES[state.theme].muted}>Koszt USD maks.  </Text><Text color={field === 1 ? THEMES[state.theme].accent : THEMES[state.theme].text}>{values[1]}</Text></Box>
+    <Box marginTop={1}><Text color={THEMES[state.theme].muted}>Tokens max.     </Text><Text color={field === 0 ? THEMES[state.theme].accent : THEMES[state.theme].text}>{values[0]}</Text></Box>
+    <Box><Text color={THEMES[state.theme].muted}>Cost USD max.    </Text><Text color={field === 1 ? THEMES[state.theme].accent : THEMES[state.theme].text}>{values[1]}</Text></Box>
     <Text color={THEMES[state.theme].muted}>Last task: {state.taskUsage.input + state.taskUsage.output} tokens · {state.taskUsage.costKnown ? `$${state.taskUsage.cost.toFixed(5)}` : 'cost unknown'}</Text>
-    <Text color={THEMES[state.theme].muted}>Context now: ~{state.contextTokens.toLocaleString('en-US')} / {state.contextLimit.toLocaleString('en-US')}</Text>
+    <Text color={THEMES[state.theme].muted}>Context now: ~{state.contextTokens.toLocaleString('en-US')} / {Number.isFinite(state.contextLimit) ? state.contextLimit.toLocaleString('en-US') : 'model limit unknown'}</Text>
     {error && <Text color={THEMES[state.theme].error}>{error}</Text>}
   </Frame>;
 }

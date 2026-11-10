@@ -24,8 +24,12 @@ PolonRLM run "Add a small settings panel" --permission workspace
 | `/key <secret>` | Stores a provider key in the local secret vault. Never put a real key in a script or commit. |
 | `/models` | Fetches models exposed by the selected provider. |
 | `/model <id>` | Changes the active model without restarting. |
+| `/effort` | Opens the reasoning controls supported by the selected model. |
+| `/effort <value>` | Sets a listed level, toggle, or provider-specific mode. Use `/effort auto` to restore the model default. |
 
 Provider APIs decide which models work with a given account. A model can appear in a provider list and still be unavailable to your account.
+
+Reasoning options are model-aware. OpenAI, Gemini and compatible providers use different request fields. The picker only shows known options for the selected model; providers that return their own reasoning modes take precedence over the built-in model profiles. If no reasoning control is known, `Automatic` leaves the provider's default unchanged.
 
 ## Modes, permissions and limits
 
@@ -40,7 +44,7 @@ Provider APIs decide which models work with a given account. A model can appear 
 | `/permissions workspace` | Allows normal project file changes, with the configured workspace boundary. |
 | `/permissions readonly` | Blocks writes and shell actions. |
 | `/settings` | Opens settings for browser choice, budgets, model options, search and other preferences. |
-| `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token cap. |
+| `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token or cost cap. |
 | `/cortex 0..5` | Changes how much planning and subagent work is allowed. |
 
 Shell commands run with the current user's operating system permissions. They are not sandboxed. Review command approval prompts before accepting them.
@@ -53,8 +57,8 @@ Shell commands run with the current user's operating system permissions. They ar
 | `/image <path>` | Adds an image to the next task for a vision capable model. |
 | `/image clear` | Removes images waiting to be sent. |
 | `/undo` | Reverts the most recent file change made through PolonRLM in this process. |
-| `/compact` | Summarizes older context locally without another model call. |
-| `/context` | Shows the estimated context size. |
+| `/compact` | Makes a local extractive summary without another model call. The full transcript stays archived. |
+| `/context` | Shows a local token estimate, the app input cap, and known model context. |
 | `/cost` | Shows token use and known provider costs. Unknown prices stay marked unknown. |
 | `/settings browserEngine auto` | Lets PolonRLM choose an available browser. |
 | `/settings browserEngine firefox` | Selects Playwright Firefox. It downloads on first use if needed. |
@@ -77,7 +81,7 @@ The built in search reads ordinary public search result pages. It does not use a
 | `/goal pause` | Pauses the saved goal. |
 | `/goal resume` | Continues a paused goal. |
 
-Subagents share the configured task budget. They receive a focused task and project instructions rather than the full conversation history.
+Subagents share the configured task budget. Token, cost, call, context, output, global-timeout, tool-output, and parallel-agent caps start unlimited in the app and can be set in `/settings` or `/budget`. NVIDIA NIM has a separate long request timeout because its free inference can take several minutes to start. Providers still enforce their own context and output limits, rate limits, and billing. Subagents receive a focused task and project instructions rather than the full conversation history.
 
 ## Skills and MCP
 

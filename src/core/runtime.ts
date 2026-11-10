@@ -256,7 +256,7 @@ ${skills.join('\n')}`;
     }
     if (browserRestrictedForTask) instructions += '\nFor this task, use web_search and read_webpage for ordinary research. Interactive browser tools are unavailable unless the user explicitly asks to use a browser. Do not try to re-enable them with discover_tools.';
     if (/pobierz|download|ściągnij/i.test(task) && /https?:\/\//i.test(task)) enabled.add('download_to_disk');
-    const steps = Math.min(this.settings.maxSteps, CORTEX[this.settings.cortex]!.steps, depth ? 12 : Infinity);
+    const steps = this.settings.maxSteps > 0 ? this.settings.maxSteps : Infinity;
     const append = (message: Message) => { messages.push(message); if (!depth) this.store.append(session, message); };
     let emptyDesktopDiscovery = false;
     const rejectedApprovals = new Set<string>();
@@ -296,8 +296,9 @@ ${skills.join('\n')}`;
       if (!(wantsComputer && emptyDesktopDiscovery)) specs.push({ name: 'discover_tools', description: 'Find additional tools by keyword. For screen, mouse, window, taskbar or app tasks, computer_use is directly available; call it instead of searching.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
       if (unavailableTools.size) specs.push({ name: 'request_tool', description: 'Ask the user to approve exactly one invocation of a discovered disabled registered tool. Approval pauses the run, does not change settings, and authorizes only these arguments once.', parameters: { type: 'object', properties: { tool: { type: 'string', minLength: 1, maxLength: 100 }, arguments: { type: 'object', additionalProperties: true }, reason: { type: 'string', minLength: 4, maxLength: 1000 } }, required: ['tool', 'arguments', 'reason'], additionalProperties: false } });
       if (!depth && messages.some(message => message.name === 'polonrlm_context')) specs.push(historySearchToolSpec);
-      const canDelegate = !isolated && depth < this.settings.maxDepth && this.settings.cortex > 0 && budget.agents < CORTEX[this.settings.cortex]!.agents;
-      if (canDelegate) specs.push({ name: 'delegate', description: 'Run focused subagents in parallel. Members of this batch may exchange bounded direct notes via agent_message; do not assume execution order. Share only each task and needed context. Global budget and permissions apply.', parameters: { type: 'object', properties: { tasks: { type: 'array', minItems: 1, maxItems: this.settings.maxAgents, items: { type: 'object', properties: { role: { type: 'string', enum: ['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] }, task: { type: 'string', minLength: 10, maxLength: 12000 } }, required: ['role', 'task'], additionalProperties: false } } }, required: ['tasks'], additionalProperties: false } });
+      const agentSlots = this.settings.maxAgents > 0 ? this.settings.maxAgents - budget.active : undefined;
+      const canDelegate = !isolated && (this.settings.maxDepth < 0 || depth < this.settings.maxDepth) && this.settings.cortex > 0 && (agentSlots === undefined || agentSlots > 0);
+      if (canDelegate) specs.push({ name: 'delegate', description: 'Run focused subagents in parallel. Members of this batch may exchange bounded direct notes via agent_message; do not assume execution order. Share only each task and needed context. Global budget and permissions apply.', parameters: { type: 'object', properties: { tasks: { type: 'array', minItems: 1, ...(agentSlots !== undefined ? { maxItems: agentSlots } : {}), items: { type: 'object', properties: { role: { type: 'string', enum: ['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] }, task: { type: 'string', minLength: 10, maxLength: 12000 } }, required: ['role', 'task'], additionalProperties: false } } }, required: ['tasks'], additionalProperties: false } });
       specs.push({ name: 'load_skill', description: 'Load one enabled skill by name only when required.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false } });
       if (team && agentId && isolated) {
         const peers = team.peers(agentId);
@@ -329,8 +330,11 @@ ${skills.join('\n')}`;
       const selectedAttempts = (taskNeedsTools || taskNeedsVision) && capableAttempts.length ? capableAttempts : attempts;
       const candidates = selectedAttempts.map(id => this.settings.providers[id]).filter(value => !!value);
       const estimateSpecs = candidates.some(candidate => candidate.toolCalling !== false) ? specs : [];
-      const outputLimits = candidates.map(candidate => Math.min(this.settings.maxOutputTokens, candidate.maxOutputTokens ?? this.settings.maxOutputTokens));
-      const maximum = Math.min(this.settings.maxInputTokens, ...candidates.map((candidate, index) => (candidate.contextWindow ?? Infinity) - outputLimits[index]!));
+      const outputLimits = candidates.map(candidate => this.settings.maxOutputTokens > 0
+        ? Math.min(this.settings.maxOutputTokens, candidate.maxOutputTokens ?? this.settings.maxOutputTokens)
+        : candidate.maxOutputTokens ?? 0);
+      const appInputLimit = this.settings.maxInputTokens > 0 ? this.settings.maxInputTokens : Infinity;
+      const maximum = Math.min(appInputLimit, ...candidates.map((candidate, index) => (candidate.contextWindow ?? Infinity) - outputLimits[index]!));
       const overhead = estimateTokens([system, estimateSpecs]);
       const mayAddHistorySearch = !depth && estimateSpecs.length > 0 && !messages.some(message => message.name === 'polonrlm_context');
       const historySearchReserve = mayAddHistorySearch
@@ -359,16 +363,16 @@ ${skills.join('\n')}`;
       estimated = estimateTokens([input, estimateSpecs]);
       if (estimated > maximum) throw new Error('Context exceeds the limit. Use /compact, a smaller task, or increase maxInputTokens.');
       const reserve = Math.ceil(estimated * 1.25) + Math.max(...outputLimits);
-      if (budget.calls >= this.settings.maxSteps) throw new Error(`Shared limit of ${this.settings.maxSteps} model calls reached.`);
+      if (this.settings.maxSteps > 0 && budget.calls >= this.settings.maxSteps) throw new Error(`Shared limit of ${this.settings.maxSteps} model calls reached.`);
       if (this.settings.tokenBudget > 0 && budget.usage.input + budget.usage.output + budget.reserved + reserve > this.settings.tokenBudget) throw new Error('Shared token limit reached. Increase /settings tokenBudget or set it to infinity.');
-      const reserveCost = Math.max(0, ...candidates.map(candidate => candidate.inputPrice !== undefined && candidate.outputPrice !== undefined ? (estimated * 1.25 * candidate.inputPrice + Math.min(this.settings.maxOutputTokens, candidate.maxOutputTokens ?? this.settings.maxOutputTokens) * candidate.outputPrice) / 1_000_000 : 0));
-      if (budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error('Cost limit reached.');
+      const reserveCost = Math.max(0, ...candidates.map((candidate, index) => candidate.inputPrice !== undefined && candidate.outputPrice !== undefined ? (estimated * 1.25 * candidate.inputPrice + outputLimits[index]! * candidate.outputPrice) / 1_000_000 : 0));
+      if (this.settings.dollarBudget > 0 && budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error('Cost limit reached.');
       budget.reserved += reserve; budget.reservedCost += reserveCost; budget.calls++;
       let reservationCount = 1;
-      this.emit({ type: 'status', text: `${depth ? role : 'Agent'} · step ${step + 1}/${steps}`, contextTokens: estimated });
+      this.emit({ type: 'status', text: `${depth ? role : 'Agent'} · step ${step + 1}${Number.isFinite(steps) ? `/${steps}` : ''}`, contextTokens: estimated });
       if (depth && agentId) {
         const agent = this.agents.find(value => value.id === agentId);
-        if (agent) { agent.progress = step + 1; agent.totalSteps = steps; agent.status = 'working'; this.emit({ type: 'agent', id: agent.id, name: agent.role, state: agent.status }); }
+        if (agent) { agent.progress = step + 1; agent.totalSteps = Number.isFinite(steps) ? steps : 0; agent.status = 'working'; this.emit({ type: 'agent', id: agent.id, name: agent.role, state: agent.status }); }
       }
       let reply: ModelReply | undefined;
       let respondingModel = providerConfig.model;
@@ -391,8 +395,9 @@ ${skills.join('\n')}`;
           while (true) {
             let emittedThisAttempt = false;
             let receivedTextThisAttempt = '';
-            const requestTimeout = AbortSignal.timeout(candidate.requestTimeoutMs ?? this.settings.timeoutMs);
-            const requestSignal = AbortSignal.any([signal, requestTimeout]);
+            const timeoutMs = candidate.requestTimeoutMs ?? this.settings.timeoutMs;
+            const requestTimeout = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+            const requestSignal = requestTimeout ? AbortSignal.any([signal, requestTimeout]) : signal;
             reply = undefined;
             try {
               const stream = new StreamRedactor();
@@ -419,12 +424,12 @@ ${skills.join('\n')}`;
             } catch (error) {
               if (signal.aborted) throw error;
               const emptyResponse = error instanceof Error && error.name === 'EmptyProviderResponseError';
-              const transient = emptyResponse || requestTimeout.aborted || isRetryableProviderError(error);
+              const transient = emptyResponse || requestTimeout?.aborted === true || isRetryableProviderError(error);
               const hasPartialAnswer = receivedTextThisAttempt.trim().length > 0;
               if (transient && (!hasPartialAnswer || emptyResponse)) {
-                if (budget.calls >= this.settings.maxSteps) throw new Error(`Shared limit of ${this.settings.maxSteps} model calls reached while retrying ${candidate.model}.`);
+                if (this.settings.maxSteps > 0 && budget.calls >= this.settings.maxSteps) throw new Error(`Shared limit of ${this.settings.maxSteps} model calls reached while retrying ${candidate.model}.`);
                 if (this.settings.tokenBudget > 0 && budget.usage.input + budget.usage.output + budget.reserved + reserve > this.settings.tokenBudget) throw new Error(`Shared token limit reached before retrying ${candidate.model}.`);
-                if (budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error(`Cost limit reached before retrying ${candidate.model}.`);
+                if (this.settings.dollarBudget > 0 && budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error(`Cost limit reached before retrying ${candidate.model}.`);
                 retryNumber++;
                 const delaySeconds = Math.ceil(this.providerRetryDelayMs / 1000);
                 this.emit({ type: 'status', text: `${candidate.model} did not respond. Retrying in ${delaySeconds} seconds (retry ${retryNumber}).` });
@@ -598,8 +603,9 @@ ${skills.join('\n')}`;
             if (remaining.length) this.agentChanges.set(agentId, remaining); else this.agentChanges.delete(agentId);
             result = JSON.stringify({ applied, ...(failed ?? {}) });
           } else if (call.name === 'delegate' && canDelegate) {
-            const { tasks } = z.object({ tasks: z.array(z.object({ role: z.enum(['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger']), task: z.string().min(10).max(12000) })).min(1).max(this.settings.maxAgents) }).parse(call.arguments);
-            if (budget.agents + tasks.length > CORTEX[this.settings.cortex]!.agents || budget.active + tasks.length > this.settings.maxAgents) throw new Error('Subagent limit reached. Reduce the number of tasks.');
+            let taskBatchSchema = z.array(z.object({ role: z.enum(['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger']), task: z.string().min(10).max(12000) })).min(1);
+            const { tasks } = z.object({ tasks: taskBatchSchema }).parse(call.arguments);
+            if (this.settings.maxAgents > 0 && budget.active + tasks.length > this.settings.maxAgents) throw new Error('Subagent limit reached. Reduce the number of tasks or configure a higher maxAgents value.');
             budget.agents += tasks.length; budget.active += tasks.length;
             const members = tasks.map(child => {
               const id = randomUUID().slice(0, 8);

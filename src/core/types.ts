@@ -1,15 +1,16 @@
 export type Mode = 'PLAN' | 'BUILD' | 'REVIEW';
 export type ProviderKind = 'openai' | 'compatible' | 'anthropic' | 'google';
+export type ReasoningControl = 'effort' | 'toggle' | 'thinking-level' | 'thinking-budget';
 export interface ProviderConfig {
   id: string; kind: ProviderKind; baseURL: string; model: string;
-  apiKeyEnv?: string; reasoning?: 'off' | 'low' | 'medium' | 'high';
+  apiKeyEnv?: string; reasoning?: string; reasoningControl?: ReasoningControl; reasoningEfforts?: string[];
   requestTimeoutMs?: number;
   temperature?: number; inputPrice?: number; outputPrice?: number;
   contextWindow?: number; maxOutputTokens?: number; reasoningSupported?: boolean; toolCalling?: boolean; vision?: boolean;
 }
 export interface ModelInfo {
   id: string; name?: string; contextWindow?: number; maxOutputTokens?: number; toolCalling?: boolean;
-  vision?: boolean; reasoning?: boolean; inputPrice?: number; outputPrice?: number;
+  vision?: boolean; reasoning?: boolean; reasoningControl?: ReasoningControl; reasoningEfforts?: string[]; inputPrice?: number; outputPrice?: number;
 }
 export interface ToolCall { id: string; name: string; arguments: Record<string, unknown>; validationError?: string; providerOptions?: Record<string, Record<string, unknown>> }
 export interface Message {
@@ -75,6 +76,8 @@ export interface UIController {
   listModels?(): Promise<ModelInfo[]>;
   listProviders?(): { id: string; url: string; model: string }[];
   setModel?(id: string, persist?: boolean): Promise<void>;
+  listEfforts?(): { id: string; label: string; detail?: string }[];
+  setEffort?(id: string): Promise<void>;
   selectProvider?(id: string): Promise<void>;
   setApiKey?(key: string): Promise<void>;
   configureProvider?(provider: ProviderConfig, apiKey?: string): Promise<void>;

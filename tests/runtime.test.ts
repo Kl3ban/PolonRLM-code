@@ -766,7 +766,7 @@ test('global agent count rejects oversized delegation without spawning children'
     if (++calls === 1) return reply('', [{ id: 'too-many', name: 'delegate', arguments: { tasks: [{ role: 'coder', task: 'Perform isolated alpha work.' }, { role: 'tester', task: 'Perform isolated beta work.' }, { role: 'reviewer', task: 'Perform isolated gamma work.' }] } }]);
     assert.match(messages.at(-1)?.content ?? '', /Subagent limit/);
     return reply();
-  }, { cortex: 1, maxAgents: 3 });
+  }, { cortex: 1, maxAgents: 2 });
   await h.runtime.run(h.session, 'Delegate independent work.', new AbortController().signal);
   assert.equal(h.runtime.agents.length, 0);
 });
@@ -991,6 +991,23 @@ test('compaction bounds a long single turn without orphan tool replies or lost c
   assert.ok(compacted.messages.some(message => message.content === messages[0]!.content));
   for (const message of compacted.messages) if (message.role === 'tool') assert.ok(compacted.messages.some(assistant => assistant.toolCalls?.some(call => call.id === message.toolCallId)));
   assert.equal(JSON.stringify(messages), original);
+});
+
+test('compaction summarizes an oversized historical user requirement and keeps the latest request verbatim', () => {
+  const marker = 'PRESERVE_HISTORICAL_REQUIREMENT_9421';
+  const latest = 'Continue the current implementation and verify it.';
+  const messages: Message[] = [{ role: 'user', content: `Never delete the migration source. Preserve the exact requirement ${marker}. ${'Historical implementation context. '.repeat(300)}` }];
+  for (let index = 0; index < 50; index++) {
+    messages.push({ role: 'user', content: `Historical request ${index}: inspect a routine module. ${'Routine context detail. '.repeat(48)}` });
+    messages.push({ role: 'assistant', content: `Historical result ${index}: ordinary inspection completed. ${'Routine finding. '.repeat(48)}` });
+  }
+  messages.push({ role: 'user', content: latest });
+  const compacted = compactMessages(messages, 1_800);
+  const summary = compacted.messages.find(message => message.name === 'polonrlm_context')?.content ?? '';
+  assert.ok(compacted.removed > 0);
+  assert.ok(summary.includes(marker), 'the critical requirement should survive in the structured summary');
+  assert.ok(compacted.messages.some(message => message.role === 'user' && message.content === latest));
+  assert.ok(estimateTokens(compacted.messages) <= 1_800);
 });
 
 test('automatic compaction persists structured context and can retrieve exact older details on demand', async t => {

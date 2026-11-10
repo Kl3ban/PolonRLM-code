@@ -23,7 +23,7 @@ PolonRLM doctor                  Check the installation
 --json                            Print NDJSON events without API keys
 --help, --version
 
-In the TUI: /connect, /key, /models, /model, /help. Tab changes mode; Alt+M opens the menu; Alt+D opens providers; Alt+L opens models.
+In the TUI: /connect, /key, /models, /model, /effort, /help. Tab changes mode; Alt+M opens the menu; Alt+D opens providers; Alt+L opens models.
 Alt+Enter or Ctrl+J adds a line. Ctrl+C cancels work, then exits if idle.
 Terminal commands run with your user permissions and are not sandboxed.`;
 
