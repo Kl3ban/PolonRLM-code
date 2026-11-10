@@ -15,57 +15,105 @@ const worker = fileURLToPath(new URL('../../scripts/local_web_tool.py', import.m
 export function networkPython(): string {
   return process.env.POLONRLM_WEB_PYTHON ?? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), '.local', 'share'), 'PolonRLM', 'web-runtime', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 }
-export async function setupNetworkRuntime(): Promise<string> {
+export async function setupNetworkRuntime(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (process.env.POLONRLM_WEB_PYTHON) {
     const selected = networkPython();
-    if (!await hasNetworkDependencies(selected)) {
+    if (!await hasNetworkDependencies(selected, signal)) {
+      signal?.throwIfAborted();
       throw new Error('POLONRLM_WEB_PYTHON is selected but does not have the required web dependencies. Install them for that interpreter or unset the variable to prepare the private runtime.');
     }
+    signal?.throwIfAborted();
     return selected;
   }
   const setup = fileURLToPath(new URL('../../scripts/setup_local_web.py', import.meta.url));
   const candidates: [string, string[]][] = [['py', ['-3.11']], ['py', ['-3.12']], ['python3.11', []], ['python3', []], ['python', []]];
-  try { const found = await resolvePythonCommand(); candidates.unshift([found.command, found.prefixArgs]); } catch { /* Try the versioned candidates below. */ }
+  try { const found = await resolvePythonCommand(); signal?.throwIfAborted(); candidates.unshift([found.command, found.prefixArgs]); }
+  catch { signal?.throwIfAborted(); /* Try the versioned candidates below. */ }
   for (const [command, prefix] of candidates) {
-    try { await execa(command, [...prefix, '-c', 'import sys; assert sys.version_info >= (3,11)'], { timeout: 5000, windowsHide: true }); }
-    catch { continue; }
-    await execa(command, [...prefix, setup], { timeout: 180_000, windowsHide: true, maxBuffer: 4_000_000 });
+    signal?.throwIfAborted();
+    try { await execa(command, [...prefix, '-c', 'import sys; assert sys.version_info >= (3,11)'], { timeout: 5000, windowsHide: true, cancelSignal: signal }); }
+    catch { signal?.throwIfAborted(); continue; }
+    await execa(command, [...prefix, setup], { timeout: 180_000, windowsHide: true, maxBuffer: 4_000_000, cancelSignal: signal });
+    signal?.throwIfAborted();
     return networkPython();
   }
   throw new Error('Install Python 3.11+ and run PolonRLM setup web.');
 }
 
-let runtimeSetup: Promise<string> | undefined;
-let verifiedRuntime: string | undefined;
-
-async function hasNetworkDependencies(python: string): Promise<boolean> {
+async function hasNetworkDependencies(python: string, signal?: AbortSignal): Promise<boolean> {
   try {
-    const result = await execa(python, ['-I', '-c', 'import sys; assert sys.version_info >= (3, 11); import curl_cffi, lxml, pydantic, rank_bm25, trafilatura'], { reject: false, timeout: 5000, windowsHide: true });
+    const result = await execa(python, ['-I', '-c', 'import sys; assert sys.version_info >= (3, 11); import curl_cffi, lxml, pydantic, rank_bm25, trafilatura'], { reject: false, timeout: 5000, windowsHide: true, cancelSignal: signal });
     return result.exitCode === 0;
-  } catch { return false; }
+  } catch { signal?.throwIfAborted(); return false; }
 }
 
 export async function resolveNetworkRuntime(
   current: string,
   overridden: boolean,
-  probe: (python: string) => Promise<boolean>,
-  setup: () => Promise<string>,
+  probe: (python: string, signal?: AbortSignal) => Promise<boolean>,
+  setup: (signal?: AbortSignal) => Promise<string>,
+  signal?: AbortSignal,
 ): Promise<string> {
-  if (await probe(current)) return current;
+  signal?.throwIfAborted();
+  if (await probe(current, signal)) { signal?.throwIfAborted(); return current; }
+  signal?.throwIfAborted();
   if (overridden) throw new Error('POLONRLM_WEB_PYTHON is not a working Python 3.11+ interpreter with the required web dependencies. Fix the path and install the local-web requirements, or unset it for automatic setup.');
-  const installed = await setup();
-  if (!await probe(installed)) throw new Error('Web runtime setup finished, but its required dependencies are still missing. Run PolonRLM setup web and check the pip output.');
+  const installed = await setup(signal);
+  signal?.throwIfAborted();
+  if (!await probe(installed, signal)) { signal?.throwIfAborted(); throw new Error('Web runtime setup finished, but its required dependencies are still missing. Run PolonRLM setup web and check the pip output.'); }
+  signal?.throwIfAborted();
   return installed;
 }
 
-export async function ensureNetworkRuntime(): Promise<string> {
-  const python = networkPython();
-  if (verifiedRuntime === python) return python;
-  runtimeSetup ??= resolveNetworkRuntime(python, !!process.env.POLONRLM_WEB_PYTHON, hasNetworkDependencies, setupNetworkRuntime)
-    .then(value => { verifiedRuntime = value; return value; })
-    .finally(() => { runtimeSetup = undefined; });
-  return runtimeSetup;
+type RuntimeSetupJob = { python: string; controller: AbortController; promise: Promise<string>; waiters: number; done: boolean };
+function waitForSetup<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => { if (settled) return; settled = true; signal.removeEventListener('abort', onAbort); callback(); };
+    const onAbort = () => finish(() => reject(signal.reason ?? new DOMException('Aborted', 'AbortError')));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+    if (signal.aborted) onAbort();
+  });
 }
+
+export function createNetworkRuntimeManager(
+  current: () => string,
+  overridden: () => boolean,
+  probe: (python: string, signal?: AbortSignal) => Promise<boolean>,
+  setup: (signal?: AbortSignal) => Promise<string>,
+): (signal?: AbortSignal) => Promise<string> {
+  let runtimeSetup: RuntimeSetupJob | undefined;
+  let verifiedRuntime: string | undefined;
+  return async signal => {
+    signal?.throwIfAborted();
+    const python = current();
+    if (verifiedRuntime === python) return python;
+    if (runtimeSetup && (runtimeSetup.python !== python || runtimeSetup.controller.signal.aborted) && !runtimeSetup.done) {
+      await waitForSetup(runtimeSetup.promise.then(() => undefined, () => undefined), signal);
+      signal?.throwIfAborted();
+      if (verifiedRuntime === python) return python;
+    }
+    let job = runtimeSetup;
+    if (!job) {
+      const controller = new AbortController();
+      const created: RuntimeSetupJob = { python, controller, promise: Promise.resolve(''), waiters: 0, done: false };
+      created.promise = resolveNetworkRuntime(python, overridden(), probe, setup, controller.signal)
+        .then(value => { verifiedRuntime = value; return value; })
+        .finally(() => { created.done = true; if (runtimeSetup === created) runtimeSetup = undefined; });
+      runtimeSetup = created;
+      job = created;
+    }
+    job.waiters++;
+    try { return await waitForSetup(job.promise, signal); }
+    finally { job.waiters--; if (job.waiters === 0 && !job.done) job.controller.abort(); }
+  };
+}
+
+const ensureNetworkRuntime = createNetworkRuntimeManager(networkPython, () => !!process.env.POLONRLM_WEB_PYTHON, hasNetworkDependencies, setupNetworkRuntime);
 
 export class NetworkWorker {
   private cache = new Map<string, { expires: number; value: unknown }>();
@@ -74,7 +122,7 @@ export class NetworkWorker {
     context.signal.throwIfAborted();
     const key = tool + JSON.stringify(args), cached = this.cache.get(key);
     if (tool === 'web_search' && cached && cached.expires > Date.now()) return structuredClone(cached.value);
-    const python = await ensureNetworkRuntime();
+    const python = await ensureNetworkRuntime(context.signal);
     context.signal.throwIfAborted();
     const requestId = randomUUID().replace(/-/g, '');
     const downloads = path.join('agent_workspace', 'downloads');
