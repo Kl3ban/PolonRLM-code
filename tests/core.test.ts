@@ -47,9 +47,14 @@ test('migrates the former 200000-token factory budget but preserves a customized
   const oldSettings = { ...defaultSettings(), maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
   await writeFile(path.join(directory, 'config.json'), JSON.stringify(oldSettings));
   const migrated = new ConfigManager(directory); await migrated.load();
-  assert.equal(migrated.settings.tokenBudget, 0);
-  assert.equal(migrated.settings.maxInputTokens, 0);
-  assert.equal(migrated.settings.dollarBudget, 0);
+  assert.deepEqual({
+    maxSteps: migrated.settings.maxSteps, maxInputTokens: migrated.settings.maxInputTokens, maxOutputTokens: migrated.settings.maxOutputTokens,
+    tokenBudget: migrated.settings.tokenBudget, dollarBudget: migrated.settings.dollarBudget, maxAgents: migrated.settings.maxAgents,
+    maxDepth: migrated.settings.maxDepth, toolOutputLimit: migrated.settings.toolOutputLimit, timeoutMs: migrated.settings.timeoutMs,
+  }, {
+    maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
+    maxAgents: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
+  });
 
   const customizedDirectory = await mkdtemp(path.join(os.tmpdir(), 'polon-custom-budget-'));
   t.after(() => rm(customizedDirectory, { recursive: true, force: true }));
