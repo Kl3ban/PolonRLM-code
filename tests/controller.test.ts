@@ -198,6 +198,12 @@ test('controller commands persist config and transient model overrides clear sta
     assert.equal(controller.config.settings.providers.custom!.maxOutputTokens, 1024);
     assert.equal(controller.config.settings.providers.custom!.reasoningSupported, false);
     assert.equal(controller.snapshot().contextLimit, 8064);
+    assert.equal(controller.snapshot().contextLimitSource, 'model');
+    await controller.submit('/settings maxInputTokens 2048');
+    assert.equal(controller.snapshot().contextLimit, 2048);
+    assert.equal(controller.snapshot().contextLimitSource, 'app');
+    await controller.submit('/settings maxInputTokens infinity');
+    assert.equal(controller.snapshot().contextLimitSource, 'model');
     assert.equal(controller.config.settings.providers.custom!.inputPrice, 1);
     await controller.setModel('cli-override');
     assert.equal(controller.snapshot().model, 'cli-override');

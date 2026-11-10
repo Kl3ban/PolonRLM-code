@@ -23,7 +23,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     busy: false, status: 'Ready', messages: [],
     usage: { input: 100, output: 5, cached: 10, cost: 0, costKnown: false },
     taskUsage: { input: 0, output: 0, cached: 0, cost: 0, costKnown: true }, agents: [], attachments: [],
-    contextTokens: 0, contextLimit: 12_000, tokenLimit: 100_000, dollarLimit: 10, vision: true, theme: 'dark',
+    contextTokens: 0, contextLimit: 12_000, contextLimitSource: 'model', tokenLimit: 100_000, dollarLimit: 10, vision: true, theme: 'dark',
     ...initial,
   };
   const listeners = new Set<() => void>();
@@ -173,6 +173,8 @@ test('TUI renders provider, mode, usage and live model output', { timeout: 5000 
   assert.match(view.app.lastFrame()!, /test-model.*custom/);
   assert.match(view.app.lastFrame()!, /105/);
   assert.match(view.app.lastFrame()!, /unknown/);
+  view.update({ busy: true, contextTokens: 1234 });
+  await until(() => /context ~1234\/12,000 model/.test(view.app.lastFrame() || ''), 'label the model context window');
   view.update({ messages: [{ role: 'assistant', text: '# Result\n\nStreaming answer' }], usage: { input: 100, output: 20, cached: 10, cost: 0.001, costKnown: true } });
   await until(() => /Streaming answer/.test(view.app.lastFrame() || ''), 'show streamed output');
   assert.match(view.app.lastFrame()!, /Result/);

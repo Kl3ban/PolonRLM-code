@@ -80,6 +80,13 @@ function contextLimit(configuredInput: number, configuredOutput: number, provide
   const modelLimit = provider?.contextWindow === undefined ? Infinity : provider.contextWindow - outputLimit(configuredOutput, provider);
   return Math.max(0, Math.min(appLimit, modelLimit));
 }
+function contextLimitSource(configuredInput: number, configuredOutput: number, provider?: ProviderConfig): UIState['contextLimitSource'] {
+  const appLimit = configuredInput > 0 ? configuredInput : Infinity;
+  const modelLimit = provider?.contextWindow === undefined ? Infinity : provider.contextWindow - outputLimit(configuredOutput, provider);
+  if (!Number.isFinite(appLimit) && !Number.isFinite(modelLimit)) return 'unknown';
+  if (appLimit === modelLimit) return 'both';
+  return appLimit < modelLimit ? 'app' : 'model';
+}
 function displayLimit(name: string, value: number): string {
   return formatLimit(value, name === 'maxDepth' ? -1 : 0);
 }
@@ -141,7 +148,7 @@ export class Controller implements UIController {
     this.session = this.store.create(this.workspace.root);
     this.state = { workspace: this.workspace.root, sessionId: this.session, provider: settings.provider, model: settings.providers[settings.provider]?.model ?? '', mode: settings.mode, cortex: settings.cortex,
       busy: false, status: 'Ready', messages: [], usage: this.store.usage(this.session), taskUsage: { input: 0, output: 0, cached: 0, cost: 0, costKnown: true },
-      agents: [], attachments: [], contextTokens: 0, contextLimit: contextLimit(settings.maxInputTokens, settings.maxOutputTokens, settings.providers[settings.provider]), tokenLimit: settings.tokenBudget, dollarLimit: settings.dollarBudget,
+      agents: [], attachments: [], contextTokens: 0, contextLimit: contextLimit(settings.maxInputTokens, settings.maxOutputTokens, settings.providers[settings.provider]), contextLimitSource: contextLimitSource(settings.maxInputTokens, settings.maxOutputTokens, settings.providers[settings.provider]), tokenLimit: settings.tokenBudget, dollarLimit: settings.dollarBudget,
       vision: settings.providers[settings.provider]?.vision, theme: settings.theme };
     this.runtime = new AgentRuntime(settings, this.store, this.registry, this.workspace, this.skills, this.mcp, id => this.provider(id), event => this.event(event));
     const cliQuestion = this.runtime.askQuestion;
@@ -410,7 +417,7 @@ export class Controller implements UIController {
     return this.persistSettings(() => { settings.mode = previous; }).then(() => this.sync()).catch(error => { this.sync(); this.note(error.message, 'error'); });
   }
   private sync(): void {
-    const settings = this.config.settings; const provider = settings.providers[settings.provider]; this.state.provider = settings.provider; this.state.model = provider?.model ?? ''; this.state.mode = settings.mode; this.state.cortex = settings.cortex; this.state.theme = settings.theme; this.state.vision = provider?.vision; this.state.contextLimit = contextLimit(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.tokenLimit = settings.tokenBudget; this.state.dollarLimit = settings.dollarBudget; this.notify();
+    const settings = this.config.settings; const provider = settings.providers[settings.provider]; this.state.provider = settings.provider; this.state.model = provider?.model ?? ''; this.state.mode = settings.mode; this.state.cortex = settings.cortex; this.state.theme = settings.theme; this.state.vision = provider?.vision; this.state.contextLimit = contextLimit(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.contextLimitSource = contextLimitSource(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.tokenLimit = settings.tokenBudget; this.state.dollarLimit = settings.dollarBudget; this.notify();
   }
   private async command(line: string): Promise<void> {
     const [command = '', ...args] = line.split(/\s+/); const tail = line.slice(command.length).trim();

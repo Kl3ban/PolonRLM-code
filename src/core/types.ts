@@ -60,7 +60,7 @@ export interface UIState {
   workspace: string; sessionId: string; provider: string; model: string; mode: Mode; cortex: number;
   busy: boolean; status: string; messages: ViewMessage[]; usage: Usage; taskUsage: Usage;
   agents: AgentInfo[]; attachments: { name: string; mediaType: string; bytes: number }[];
-  contextTokens: number; contextLimit: number; tokenLimit: number; dollarLimit: number; vision?: boolean; theme: 'dark' | 'light';
+  contextTokens: number; contextLimit: number; contextLimitSource: 'app' | 'model' | 'both' | 'unknown'; tokenLimit: number; dollarLimit: number; vision?: boolean; theme: 'dark' | 'light';
 }
 export interface UIController {
   readSettings?(): { values: Record<string, string | number>; tools: { name: string; description: string; policy: string; available: boolean }[] };

@@ -26,7 +26,7 @@ const state = (overrides: Partial<UIState> = {}): UIState => ({
   workspace: 'C:\\Projects\\demo', sessionId: 'active', provider: 'test', model: 'vision-model', mode: 'BUILD', cortex: 2,
   busy: false, status: 'Ready', messages: [], usage: { input: 0, output: 0, cached: 0, cost: 0, costKnown: false },
   taskUsage: { input: 120, output: 30, cached: 0, cost: 0.002, costKnown: true },
-  agents: [], attachments: [], contextTokens: 1500, contextLimit: 8000, tokenLimit: 5000, dollarLimit: 0.5,
+  agents: [], attachments: [], contextTokens: 1500, contextLimit: 8000, contextLimitSource: 'model', tokenLimit: 5000, dollarLimit: 0.5,
   vision: true, theme: 'dark', ...overrides,
 });
 
@@ -162,6 +162,7 @@ test('budget panel edits per-task token and dollar limits before work starts', {
   const view = show(BudgetPanel, { async setBudgets(tokens: number, dollars: number) { budgets.push([tokens, dollars]); } });
   t.after(view.cleanup);
   await until(() => /5000/.test(view.app.lastFrame() ?? ''), 'show current token limit');
+  assert.match(view.app.lastFrame() ?? '', /Context now: ~1,500 \/ 8,000 \(model window\)/);
   for (let index = 0; index < 4; index++) await press(view.app, '\u007f');
   view.app.stdin.write('7500');
   await until(() => /7500/.test(view.app.lastFrame() ?? ''), 'show edited token limit', () => view.app.lastFrame() ?? '');

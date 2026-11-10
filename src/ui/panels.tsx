@@ -148,7 +148,7 @@ export function BudgetPanel(props: Props): React.JSX.Element {
     <Box marginTop={1}><Text color={THEMES[state.theme].muted}>Tokens max.     </Text><Text color={field === 0 ? THEMES[state.theme].accent : THEMES[state.theme].text}>{values[0]}</Text></Box>
     <Box><Text color={THEMES[state.theme].muted}>Cost USD max.    </Text><Text color={field === 1 ? THEMES[state.theme].accent : THEMES[state.theme].text}>{values[1]}</Text></Box>
     <Text color={THEMES[state.theme].muted}>Last task: {state.taskUsage.input + state.taskUsage.output} tokens · {state.taskUsage.costKnown ? `$${state.taskUsage.cost.toFixed(5)}` : 'cost unknown'}</Text>
-    <Text color={THEMES[state.theme].muted}>Context now: ~{state.contextTokens.toLocaleString('en-US')} / {Number.isFinite(state.contextLimit) ? state.contextLimit.toLocaleString('en-US') : 'model limit unknown'}</Text>
+    <Text color={THEMES[state.theme].muted}>Context now: ~{state.contextTokens.toLocaleString('en-US')} / {Number.isFinite(state.contextLimit) ? `${state.contextLimit.toLocaleString('en-US')} (${state.contextLimitSource === 'both' ? 'app and model' : state.contextLimitSource === 'unknown' ? 'limit unknown' : state.contextLimitSource === 'app' ? 'app setting' : 'model window'})` : 'model limit unknown'}</Text>
     {error && <Text color={THEMES[state.theme].error}>{error}</Text>}
   </Frame>;
 }
