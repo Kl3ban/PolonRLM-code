@@ -253,7 +253,8 @@ export function compactMessages(messages: Message[], budget: number): { messages
   });
   if (!archived.length && !shortenedOriginals.length) return { messages, removed: 0, shortened: 0, beforeTokens, afterTokens: beforeTokens };
 
-  const availableForSummary = Math.max(0, budget - estimateTokens(retained));
+  // Leave room for the enclosing array and message separators used in the final estimate.
+  const availableForSummary = Math.max(0, budget - estimateTokens(retained) - 16);
   const summaryBudget = Math.min(Math.min(4500, Math.max(100, Math.floor(budget * .35))), availableForSummary);
   const summary = makeSummary([...archived, ...shortenedOriginals], latestUser, summaryBudget);
   const compactedMessages = [...(summary ? [summary] : []), ...retained];

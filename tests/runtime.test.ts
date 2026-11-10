@@ -1120,6 +1120,29 @@ test('compaction bounds a long single turn without orphan tool replies or lost c
   assert.equal(JSON.stringify(messages), original);
 });
 
+test('compaction stays within budget after accounting for summary envelope overhead', () => {
+  let seed = 923401;
+  const next = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed; };
+  const budget = 800 + (next() % 4200), messages: Message[] = [];
+  const count = 20 + (next() % 100);
+  for (let index = 0; index < count; index++) {
+    const size = 100 + (next() % 2000);
+    const content = `Historical requirement ${index}: preserve stable Polish context, verify tool results, and retain key decisions. ${'Routine history detail. '.repeat(Math.ceil(size / 24))}`;
+    if (index % 13 === 12) {
+      const id = `call-${index}`;
+      messages.push({ role: 'assistant', content: '', toolCalls: [{ id, name: 'read_file', arguments: { path: `file-${index}.ts` } }] });
+      messages.push({ role: 'tool', name: 'read_file', toolCallId: id, content: `Tool result. ${'line detail. '.repeat(Math.ceil(size / 24))}` });
+    } else messages.push({ role: index % 2 ? 'assistant' : 'user', content });
+  }
+  const latest = { role: 'user' as const, content: 'Continue and verify the current change.' };
+  messages.push(latest);
+  const compacted = compactMessages(messages, budget);
+  assert.ok(estimateTokens(messages) > budget);
+  assert.ok(compacted.removed > 0);
+  assert.ok(compacted.afterTokens <= budget);
+  assert.ok(compacted.messages.some(message => message.role === 'user' && message.content === latest.content));
+});
+
 test('compaction summarizes an oversized historical user requirement and keeps the latest request verbatim', () => {
   const marker = 'PRESERVE_HISTORICAL_REQUIREMENT_9421';
   const latest = 'Continue the current implementation and verify it.';
