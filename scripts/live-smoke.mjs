@@ -5,6 +5,8 @@ import { Controller } from '../dist/core/controller.js';
 import { ConfigManager } from '../dist/core/config.js';
 import { SecretVault, isSecretEnvironmentName, redact } from '../dist/core/secrets.js';
 import { createProvider } from '../dist/providers/provider.js';
+
+async function main() {
 const provider = process.env.POLONRLM_LIVE_PROVIDER;
 const model = process.env.POLONRLM_LIVE_MODEL;
 if (!provider || !model) throw new Error('Set POLONRLM_LIVE_PROVIDER and POLONRLM_LIVE_MODEL explicitly; this test uses real API credits and the provider key environment variable.');
@@ -108,3 +110,9 @@ controller.onEvent = event => {
 async function saveReport(report) {
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n', 'utf8');
 }
+}
+
+main().catch(error => {
+  process.exitCode = 1;
+  console.error(redact(error instanceof Error ? error.message : String(error)));
+});
