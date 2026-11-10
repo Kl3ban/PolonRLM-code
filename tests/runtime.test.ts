@@ -803,7 +803,7 @@ test('unlimited agent setting runs a 32-agent batch concurrently', { timeout: 20
   }, { maxAgents: 0, maxDepth: -1, maxSteps: 0, tokenBudget: 0, dollarBudget: 0, maxInputTokens: 0, maxOutputTokens: 0, timeoutMs: 0, toolOutputLimit: 0 });
   assert.equal(await h.runtime.run(h.session, 'Run thirty-two independent reviews.', new AbortController().signal), 'All 32 reviewers completed.');
   assert.equal(childCalls, 32);
-  assert.ok(peakActiveChildren > 1, 'independent subagents should overlap instead of running serially');
+  assert.equal(peakActiveChildren, 32, 'all 32 independent subagents should overlap instead of being capped or serialized');
   assert.equal(h.runtime.agents.length, 32);
   assert.ok(h.runtime.agents.every(agent => agent.status === 'done'));
 });
