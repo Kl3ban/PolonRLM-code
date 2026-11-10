@@ -12,10 +12,8 @@ import { ProcessOutputBuffer } from '../src/tools/processes.js';
 import ExcelJS from 'exceljs';
 import { z } from 'zod';
 
-async function fixture(t: test.TestContext, overrides: { maxProcesses?: number; timeoutMs?: number } = {}) {
+async function fixture(t: test.TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'polon-advanced-')); const settings = defaultSettings(); settings.permissions = 'workspace'; settings.toolOutputLimit = 100000;
-  if (overrides.maxProcesses !== undefined) settings.maxProcesses = overrides.maxProcesses;
-  if (overrides.timeoutMs !== undefined) settings.timeoutMs = overrides.timeoutMs;
   const permissions = new Permissions(settings); permissions.approve = async () => true;
   const workspace = await Workspace.open(root, permissions); const registry = new ToolRegistry(permissions, 100000); registerBuiltins(registry, workspace, settings);
   t.after(async () => { await registry.close(); assert.equal(path.dirname(root), path.resolve(os.tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
@@ -154,14 +152,16 @@ test('background process count is unlimited by default and a configured limit is
   assert.equal((await f.run('process_list', {})).filter((job: any) => job.running).length, 9);
   await Promise.all(jobs.map(job => f.run('process_stop', { id: job.id })));
 
-  const limited = await fixture(t, { maxProcesses: 1 });
+  const limited = await fixture(t);
+  limited.settings.maxProcesses = 1;
   const first = await limited.run('process_start', { command: 'node -e "setTimeout(() => {},30000)"' });
   await assert.rejects(limited.run('process_start', { command: 'node -e "setTimeout(() => {},30000)"' }), /Configured limit of 1 active processes/);
   await limited.run('process_stop', { id: first.id });
 });
 
 test('configured global request timeout also caps background processes', async t => {
-  const f = await fixture(t, { timeoutMs: 500 });
+  const f = await fixture(t);
+  f.settings.timeoutMs = 500;
   const job = await f.run('process_start', { command: 'node -e "setTimeout(() => {},5000)"' });
   const result = await f.run('process_output', { id: job.id, waitMs: 3000 });
   assert.equal(result.running, false);
