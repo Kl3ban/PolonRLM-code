@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Message, Usage } from './types.js';
@@ -22,15 +23,121 @@ function execWithBusyRetry(db: DatabaseSync, sql: string): void {
   }
 }
 
+class CorruptSessionDatabaseError extends Error {
+  constructor(message: string, options?: ErrorOptions) { super(message, options); }
+}
+
+function isDatabaseCorruption(error: unknown): boolean {
+  if (error instanceof CorruptSessionDatabaseError) return true;
+  const code = (error as { errcode?: number } | null)?.errcode;
+  const primaryCode = typeof code === 'number' ? code & 0xff : 0;
+  return primaryCode === 11 || primaryCode === 26; // SQLITE_CORRUPT or SQLITE_NOTADB
+}
+
+function acquireRecoveryLock(filename: string): () => void {
+  const lockPath = `${filename}.recover-lock`;
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    let descriptor: number;
+    try {
+      descriptor = openSync(lockPath, 'wx');
+      try { writeSync(descriptor, `${process.pid}\n`); }
+      catch (error) { closeSync(descriptor); unlinkSync(lockPath); throw error; }
+      return () => {
+        closeSync(descriptor);
+        try { unlinkSync(lockPath); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      let owner: number | undefined;
+      try { owner = Number.parseInt(readFileSync(lockPath, 'utf8'), 10); } catch { /* The owner may be creating or removing the lock. */ }
+      let ownerAlive = Number.isInteger(owner) && owner! > 0;
+      if (ownerAlive) {
+        try { process.kill(owner!, 0); }
+        catch (probeError) { ownerAlive = (probeError as NodeJS.ErrnoException).code === 'EPERM'; }
+      }
+      if (!ownerAlive) {
+        try {
+          const age = Date.now() - statSync(lockPath).mtimeMs;
+          if (owner !== undefined || age > 5_000) { unlinkSync(lockPath); continue; }
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw statError;
+        }
+      }
+      if (Date.now() >= deadline) throw new Error('Another PolonRLM process is repairing the chat database. Close it and try again.');
+      Atomics.wait(waitCell, 0, 0, 25);
+    }
+  }
+}
+
+function quarantineCorruptDatabase(filename: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = `${filename}.corrupt-${stamp}-${randomUUID().slice(0, 8)}`;
+  const moved: [source: string, destination: string][] = [];
+  for (const suffix of ['', '-wal', '-shm', '-journal']) {
+    const source = `${filename}${suffix}`;
+    const destination = `${backup}${suffix}`;
+    try {
+      renameSync(source, destination);
+      moved.push([source, destination]);
+    } catch (error) {
+      if (suffix && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      for (const [original, preserved] of moved.reverse()) {
+        try { renameSync(preserved, original); } catch { /* Keep the original failure; never delete either file. */ }
+      }
+      throw new Error(`Could not safely preserve the corrupted chat database: ${(error as Error).message}`, { cause: error });
+    }
+  }
+  return backup;
+}
+
 export class SessionStore {
   private db: DatabaseSync;
+  recoveryBackupPath?: string;
   constructor(home: string) {
-    this.db = new DatabaseSync(path.join(home, 'sessions.sqlite'));
+    const filename = path.join(home, 'sessions.sqlite');
+    this.db = new DatabaseSync(filename);
+    try {
+      this.initializeDatabase();
+    } catch (error) {
+      this.db.close();
+      if (!isDatabaseCorruption(error)) throw error;
+      const releaseRecoveryLock = acquireRecoveryLock(filename);
+      try {
+        // Another process may have repaired the database while this instance
+        // waited for the lock. Reopen and check the path before moving anything.
+        this.db = new DatabaseSync(filename);
+        try { this.initializeDatabase(); return; }
+        catch (recheckError) {
+          this.db.close();
+          if (!isDatabaseCorruption(recheckError)) throw recheckError;
+        }
+        this.recoveryBackupPath = quarantineCorruptDatabase(filename);
+        this.db = new DatabaseSync(filename);
+        try { this.initializeDatabase(); }
+        catch (recoveryError) {
+          this.db.close();
+          throw new Error(`The damaged chat database was preserved as ${path.basename(this.recoveryBackupPath)}, but a clean database could not be created.`, { cause: recoveryError });
+        }
+      } finally {
+        releaseRecoveryLock();
+      }
+    }
+  }
+  private initializeDatabase(): void {
+    this.db.exec('PRAGMA busy_timeout=5000');
+    const check = this.db.prepare('PRAGMA quick_check').all() as { quick_check: string }[];
+    if (check.length !== 1 || check[0]?.quick_check !== 'ok') {
+      const problems = check.filter(row => row.quick_check !== 'ok').slice(0, 5).map(row => row.quick_check);
+      throw new CorruptSessionDatabaseError(`SQLite quick_check: ${problems.join('; ') || 'database integrity check failed'}`);
+    }
     // Configure the busy handler before WAL/schema setup. WAL changes and DDL
     // may still report SQLITE_BUSY immediately on simultaneous cold starts, so
     // retry the idempotent setup batch while another process initializes it.
-    this.db.exec('PRAGMA busy_timeout=5000');
-    execWithBusyRetry(this.db, `PRAGMA journal_mode=WAL;
+    execWithBusyRetry(this.db, `PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, title TEXT NOT NULL, updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, session TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session);

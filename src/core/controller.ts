@@ -131,7 +131,11 @@ export class Controller implements UIController {
     for (const id of [config.settings.provider, ...config.settings.fallback]) {
       if (!Object.hasOwn(config.settings.providers, id)) throw new Error(`Unknown provider ${id}. Use /connect.`);
     }
-    const controller = new Controller(config); await controller.initialize(root); return controller;
+    const controller = new Controller(config); await controller.initialize(root);
+    if (controller.store.recoveryBackupPath) {
+      controller.note(`The chat database failed its integrity check. A fresh database is ready. The old database files were kept as ${path.basename(controller.store.recoveryBackupPath)}.`);
+    }
+    return controller;
   }
   private async initialize(root: string): Promise<void> {
     const settings = this.config.settings;

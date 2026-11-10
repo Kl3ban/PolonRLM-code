@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { execa } from 'execa';
@@ -72,6 +72,20 @@ test('a corrupt unrelated DPAPI key leaves startup and provider switching availa
   assert.match(controller.snapshot().messages.map(message => message.text).join('\n'), /key nvidia/);
   await controller.selectProvider('openai');
   assert.equal(controller.snapshot().provider, 'openai');
+});
+
+test('controller starts on a fresh chat database and reports the preserved corrupted files', async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.home, 'sessions.sqlite'), 'not a SQLite database');
+  const controller = await Controller.open(f.root, f.home);
+  try {
+    assert.equal(controller.integrityCheck(), 'ok');
+    assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /chat database failed its integrity check/i);
+    assert.ok((await readdir(f.home)).some(name => name.startsWith('sessions.sqlite.corrupt-')));
+  } finally {
+    await controller.close();
+    await f.dispose();
+  }
 });
 
 test('/image attaches a local photo to the next prompt without persisting binary data', async () => {

@@ -5,6 +5,7 @@ import { mkdtemp, readFile, writeFile, mkdir, readdir, rm, access } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { ConfigManager, defaultSettings, secureMcpServerSchema, settingsSchema } from '../src/core/config.js';
 import { SessionStore } from '../src/core/store.js';
 import { redact, registerSecret, SecretVault, StreamRedactor, safeText } from '../src/core/secrets.js';
@@ -184,6 +185,80 @@ test('concurrent PolonRLM processes preserve SQLite sessions and messages', { ti
   try {
     assert.equal(store.integrityCheck(), 'ok');
     assert.equal(workers.reduce((total, worker) => total + store.messages(worker.id).length, 0), 200);
+  } finally { store.close(); }
+});
+
+test('a structurally corrupt chat database is preserved and replaced with a clean store', async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-store-recovery-'));
+  t.after(async () => {
+    assert.equal(path.dirname(home), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(home).startsWith('polon-store-recovery-'));
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const filename = path.join(home, 'sessions.sqlite');
+  const seed = new DatabaseSync(filename);
+  seed.exec('CREATE TABLE sessions(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, title TEXT NOT NULL, updated INTEGER NOT NULL); CREATE TABLE messages(id INTEGER PRIMARY KEY, session TEXT NOT NULL, data TEXT NOT NULL);');
+  const pageSize = (seed.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
+  const rootPage = (seed.prepare("SELECT rootpage FROM sqlite_master WHERE name='messages'").get() as { rootpage: number }).rootpage;
+  seed.close();
+
+  const corruptBytes = await readFile(filename);
+  const rootStart = (rootPage - 1) * pageSize;
+  assert.ok(corruptBytes.length >= rootStart + pageSize);
+  corruptBytes.fill(0, rootStart, rootStart + pageSize);
+  await writeFile(filename, corruptBytes);
+
+  const recovered = new SessionStore(home);
+  try {
+    assert.ok(recovered.recoveryBackupPath);
+    assert.deepEqual(await readFile(recovered.recoveryBackupPath), corruptBytes);
+    assert.equal(recovered.integrityCheck(), 'ok');
+    assert.deepEqual(recovered.list('workspace'), []);
+    const session = recovered.create('workspace');
+    recovered.append(session, { role: 'user', content: 'Fresh history works.' });
+    assert.equal(recovered.messages(session)[0]?.content, 'Fresh history works.');
+  } finally { recovered.close(); }
+});
+
+test('only one concurrent process quarantines a corrupt chat database', { timeout: 30000 }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-store-recovery-race-'));
+  t.after(async () => {
+    assert.equal(path.dirname(home), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(home).startsWith('polon-store-recovery-race-'));
+    await rm(home, { recursive: true, force: true });
+  });
+  await writeFile(path.join(home, 'sessions.sqlite'), 'broken sqlite file');
+  const storeUrl = pathToFileURL(path.resolve('src/core/store.ts')).href;
+  const workerSource = [
+    `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+    'const store = new SessionStore(process.env.POLON_RECOVERY_RACE_HOME);',
+    'const recovered = Boolean(store.recoveryBackupPath);',
+    "const id = store.create('workspace');",
+    'store.close();',
+    'process.stdout.write(JSON.stringify({ recovered, id }));',
+  ].join('\n');
+  const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+  const runWorker = () => new Promise<{ recovered: boolean; id: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', workerSource], {
+      cwd: process.cwd(), windowsHide: true,
+      env: { ...inherited, POLON_RECOVERY_RACE_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '', stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => stdout += chunk);
+    child.stderr.setEncoding('utf8').on('data', chunk => stderr += chunk);
+    child.once('error', reject);
+    child.once('close', code => {
+      if (code !== 0) { reject(new Error(`SQLite recovery worker exited ${code}: ${stderr.slice(-500)}`)); return; }
+      try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+    });
+  });
+  const workers = await Promise.all([runWorker(), runWorker()]);
+  assert.equal(workers.filter(worker => worker.recovered).length, 1);
+  const store = new SessionStore(home);
+  try {
+    assert.equal(store.integrityCheck(), 'ok');
+    assert.equal(store.list('workspace').length, 2);
   } finally { store.close(); }
 });
 
