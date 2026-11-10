@@ -46,3 +46,18 @@ test('ordinary case failures still report missing tools and unexpected tool erro
     'case failed',
   ]);
 });
+
+test('invalid model tool arguments are separated from tool implementation errors', () => {
+  const findings = liveReviewFindings({
+    name: 'documents-and-ocr',
+    missing: [],
+    errors: [{ name: 'request_tool', error: 'Invalid arguments for tool request_tool. The call was not executed. Choose a tool from the active list or use discover_tools.' }],
+  }, new Set());
+
+  assert.deepEqual(findings, [{
+    severity: 'low',
+    area: 'documents-and-ocr/request_tool',
+    status: 'model returned invalid tool arguments; call was blocked',
+    evidence: 'Invalid arguments for tool request_tool. The call was not executed. Choose a tool from the active list or use discover_tools.',
+  }]);
+});

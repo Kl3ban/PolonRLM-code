@@ -17,7 +17,11 @@ export function isProviderFailure(message: string | undefined): boolean {
 export function liveReviewFindings(entry: LiveReviewCase, expectedErrors: ReadonlySet<string>) {
   return [
     ...(!entry.providerFailure ? entry.missing.map(name => ({ severity: 'medium' as const, area: entry.name, status: 'required tool not called', evidence: name })) : []),
-    ...entry.errors.filter(error => !expectedErrors.has(error.name)).map(error => ({ severity: 'medium' as const, area: `${entry.name}/${error.name}`, status: 'tool returned an error', evidence: error.error })),
+    ...entry.errors.filter(error => !expectedErrors.has(error.name)).map(error => {
+      const invalidModelArguments = /^Invalid arguments for tool\b/i.test(error.error);
+      return { severity: invalidModelArguments ? 'low' as const : 'medium' as const, area: `${entry.name}/${error.name}`,
+        status: invalidModelArguments ? 'model returned invalid tool arguments; call was blocked' : 'tool returned an error', evidence: error.error };
+    }),
     ...(entry.fatal ? [{ severity: 'high' as const, area: entry.name, status: entry.providerFailure ? 'provider unavailable before tool review completed' : 'case failed', evidence: entry.fatal }] : []),
     ...(!entry.providerFailure && entry.unsubstantiatedClaim ? [{ severity: 'medium' as const, area: entry.name, status: 'action claim without a tool call', evidence: entry.answer ?? '' }] : []),
   ];
