@@ -215,9 +215,25 @@ test('HTTP 402 reports a billing requirement and is not treated as transient pro
   try {
     await assert.rejects(createProvider(config(local.baseURL), 'secret-token', 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
       assert.ok(error instanceof Error);
-      assert.equal(error.message, 'The provider returned HTTP 402 (payment required). Check its account balance or billing requirements; this error will not be retried automatically.');
+      assert.equal(error.message, 'The provider rejected this request because its account balance or billing allowance is insufficient (HTTP 402). Check the provider dashboard; this error will not be retried automatically.');
       assert.ok(!error.message.includes('secret-token'));
       assert.equal((error as Error & { statusCode?: number }).statusCode, 402);
+      assert.equal(isRetryableProviderError(error), false);
+      return true;
+    });
+  } finally { await local.close(); }
+});
+
+test('OpenAI-compatible billing errors reported as HTTP 400 are not mislabeled as model overload', async () => {
+  const local = await server(async (_request, response) => {
+    response.writeHead(400, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'wallet balance is insufficient; try the model again during high demand.' } }));
+  });
+  try {
+    await assert.rejects(createProvider(config(local.baseURL), undefined, 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, 'The provider rejected this request because its account balance or billing allowance is insufficient (HTTP 400). Check the provider dashboard; this error will not be retried automatically.');
+      assert.equal((error as Error & { statusCode?: number }).statusCode, 400);
       assert.equal(isRetryableProviderError(error), false);
       return true;
     });
@@ -229,6 +245,7 @@ test('provider retry policy waits ten seconds and retries only transient failure
   assert.equal(isRetryableProviderError(Object.assign(new Error('Service unavailable'), { statusCode: 503 })), true);
   assert.equal(isRetryableProviderError(new Error('The selected provider is temporarily busy.')), true);
   assert.equal(isRetryableProviderError(Object.assign(new Error('The selected provider is temporarily busy (HTTP 402).'), { statusCode: 402 })), false);
+  assert.equal(isRetryableProviderError(Object.assign(new Error('Wallet balance is insufficient, even with high demand.'), { statusCode: 400 })), false);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Bad request'), { statusCode: 400 })), false);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Unauthorized'), { statusCode: 401 })), false);
   assert.equal(isRetryableProviderError(new DOMException('Request cancelled.', 'AbortError')), false);
