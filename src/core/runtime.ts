@@ -89,7 +89,7 @@ function appendTeamMessages(target: Message[], incoming: AgentTeamMessage[]): vo
   if (steering.length) target.push({ role: 'user', name: 'agent_team_user', content: teamMessageContext(steering, 'user') });
 }
 
-export interface RunBudget { usage: Usage; reserved: number; reservedCost: number; calls: number; agents: number; active: number }
+export interface RunBudget { usage: Usage; reserved: number; reservedCost: number; calls: number; agents: number; active: number; webSearchCalls: number }
 const emptyUsage = (): Usage => ({ input: 0, output: 0, cached: 0, cost: 0, costKnown: true });
 const desktopIntent = /\b(?:computer\s*use|desktop|screen|screenshot|mouse|cursor|click\w*|open app|control (?:the )?computer|task\s*bar|taskbar|pc|komputer\w*|pasek\s+zada\w*|pasku\s+zada\w*|pulpit\w*|ekran\w*|zrzut ekranu|mysz\w*|kurs\w*|klik\w*|sterow\w*|steruj\w*|kontrol\w*|otw[oó]rz (?:aplikacj\w*|okn\w*)|okn\w*|aplikacj\w*|discord\w*|przeglądark\w*)(?=$|[^A-Za-z0-9_])/i;
 const taskbarIntent = /\b(?:task\s*bar|taskbar|pasek\s+zada\w*|pasku\s+zada\w*|ikona\w*\s+(?:na\s+)?pasku)(?=$|[^A-Za-z0-9_])/i;
@@ -150,7 +150,7 @@ export class AgentRuntime {
 
   async run(session: string, task: string, signal: AbortSignal, images?: ImageAttachment[]): Promise<string> {
     this.agents.splice(0);
-    const budget: RunBudget = { usage: emptyUsage(), reserved: 0, reservedCost: 0, calls: 0, agents: 0, active: 0 };
+    const budget: RunBudget = { usage: emptyUsage(), reserved: 0, reservedCost: 0, calls: 0, agents: 0, active: 0, webSearchCalls: 0 };
     const messages = this.store.context(session);
     this.repairInterrupted(session, messages);
     const user: Message = { role: 'user', content: redact(task) + (images?.length ? '\n[Attached: ' + images.map(image => image.name ?? 'Image').join(', ') + ']' : ''), ...(images?.length ? { images } : {}) }; messages.push(user); this.store.append(session, user);
@@ -268,7 +268,7 @@ ${skills.join('\n')}`;
     let repeatedReadOnlyCalls = 0;
     let stopForRepeatedRead = false;
     const factualResearch = research && /czym|what is|informacj|facts|opisz|describe|wyjaśn|explain|summari|podsumuj/i.test(task);
-    let searchedWeb = false, attemptedWebRead = false, readableWebSource = false, webSearchCalls = 0;
+    let searchedWeb = false, attemptedWebRead = false, readableWebSource = false;
     let finalText = '';
     for (let step = 0; step < steps; step++) {
       signal.throwIfAborted();
@@ -479,8 +479,8 @@ ${skills.join('\n')}`;
       // Reads may be parallelized by delegate; mutations here keep deterministic order.
       for (const call of reply.toolCalls) {
         signal.throwIfAborted();
-        const skipWebSearch = call.name === 'web_search' && webSearchCalls >= 2;
-        if (call.name === 'web_search' && !skipWebSearch) webSearchCalls++;
+        const skipWebSearch = call.name === 'web_search' && budget.webSearchCalls >= 2;
+        if (call.name === 'web_search' && !skipWebSearch) budget.webSearchCalls++;
         const toolStartedAt = Date.now();
         this.emit({ type: 'tool', id: call.id, name: call.name, toolDetail: describeToolCall(call.name, call.arguments), state: 'running', agentRole: depth ? role : undefined });
         let result = ''; let isError = false;

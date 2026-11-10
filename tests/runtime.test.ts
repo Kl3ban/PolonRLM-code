@@ -385,6 +385,57 @@ test('web research executes at most two searches and feeds a clear stop signal f
   assert.equal(calls, 2);
 });
 
+test('parallel subagents share the task-wide two-search limit', async t => {
+  const previousWebPython = process.env.POLONRLM_WEB_PYTHON;
+  // If a regression lets a child execute a real search, fail locally without
+  // preparing Python or contacting a search engine.
+  process.env.POLONRLM_WEB_PYTHON = process.execPath;
+  t.after(() => {
+    if (previousWebPython === undefined) delete process.env.POLONRLM_WEB_PYTHON;
+    else process.env.POLONRLM_WEB_PYTHON = previousWebPython;
+  });
+  let parentCalls = 0, parentSearches = 0;
+  const childCalls = new Map<string, number>();
+  const h = await harness(t, async (messages, specs) => {
+    const role = /Role: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
+    if (role === 'orchestrator') {
+      if (++parentCalls === 1) {
+        assert.ok(specs.some(spec => spec.name === 'delegate'));
+        return reply('', [
+          { id: 'search-one', name: 'web_search', arguments: { query: 'first source' } },
+          { id: 'search-two', name: 'web_search', arguments: { query: 'second source' } },
+          { id: 'delegate-research', name: 'delegate', arguments: { tasks: [
+            { role: 'researcher', task: 'Search the web for official docs about topic alpha.' },
+            { role: 'reviewer', task: 'Search the web for official docs about topic beta.' },
+          ] } },
+        ]);
+      }
+      const outputs = JSON.parse(messages.at(-1)?.content ?? '[]') as { output?: string }[];
+      assert.equal(outputs.length, 2);
+      assert.ok(outputs.every(output => /shared search limit/.test(output.output ?? '')), JSON.stringify(outputs));
+      return reply('Search limit was shared across the team.');
+    }
+    const count = (childCalls.get(role) ?? 0) + 1; childCalls.set(role, count);
+    if (count === 1) {
+      assert.ok(specs.some(spec => spec.name === 'web_search'));
+      return reply('', [{ id: `${role}-search`, name: 'web_search', arguments: { query: role } }]);
+    }
+    const skipped = messages.findLast(message => message.role === 'tool' && message.name === 'web_search');
+    assert.match(skipped?.content ?? '', /two-search limit/);
+    return reply(`${role} stopped at the shared search limit.`);
+  }, { maxAgents: 2, maxDepth: 1 });
+  const { z } = await import('zod');
+  h.tools.add('web_search', 'Fixture local search', z.object({ query: z.string() }), true, async args => {
+    parentSearches++;
+    return [{ title: String(args.query), url: `https://example.org/${args.query}`, snippet: 'fixture result' }];
+  });
+  assert.equal(await h.runtime.run(h.session, 'Search the web for reliable documentation and delegate independent checks.', new AbortController().signal), 'Search limit was shared across the team.');
+  assert.equal(parentSearches, 2, 'no more than two searches run for the complete parent and subagent task');
+  assert.equal(parentCalls, 2);
+  assert.equal(childCalls.get('researcher'), 2);
+  assert.equal(childCalls.get('reviewer'), 2);
+});
+
 test('ordinary web research cannot re-enable browser tools through discovery or schema repair', async t => {
   let calls = 0, browserExecutions = 0;
   const h = await harness(t, async messages => {
