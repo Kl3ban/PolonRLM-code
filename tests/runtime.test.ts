@@ -1137,6 +1137,23 @@ test('compaction summarizes an oversized historical user requirement and keeps t
   assert.ok(estimateTokens(compacted.messages) <= 1_800);
 });
 
+test('local compaction keeps a Polish historical requirement and the latest request verbatim', () => {
+  const marker = 'POLSKIE_WYMAGANIE_5837';
+  const latest = 'Kontynuuj implementację i sprawdź wynik.';
+  const messages: Message[] = [{ role: 'user', content: `Wymaganie trwałe: zawsze zachowaj plik źródłowy, marker ${marker}, i nigdy nie zmieniaj tej decyzji. ${'Zwykły kontekst historyczny projektu. '.repeat(300)}` }];
+  for (let index = 0; index < 50; index++) {
+    messages.push({ role: 'user', content: `Poprzednie zadanie ${index}: sprawdź zwykły moduł. ${'Zwykły szczegół techniczny. '.repeat(48)}` });
+    messages.push({ role: 'assistant', content: `Wynik ${index}: zwykła kontrola została zakończona. ${'Rutynowa obserwacja. '.repeat(48)}` });
+  }
+  messages.push({ role: 'user', content: latest });
+  const compacted = compactMessages(messages, 1_800);
+  const summary = compacted.messages.find(message => message.name === 'polonrlm_context')?.content ?? '';
+  assert.ok(compacted.removed > 0);
+  assert.ok(summary.includes(marker), 'the Polish requirement should survive in the local summary');
+  assert.ok(compacted.messages.some(message => message.role === 'user' && message.content === latest));
+  assert.ok(estimateTokens(compacted.messages) <= 1_800);
+});
+
 test('automatic compaction persists structured context and can retrieve exact older details on demand', async t => {
   const needle = 'immutable-ancient-constraint-token';
   let calls = 0;
