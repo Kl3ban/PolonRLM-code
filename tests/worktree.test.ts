@@ -32,9 +32,11 @@ test('subagent overlays omit Git-ignored local files from copies and change repo
   t.after(async () => { if (overlay) await overlay.remove(); await rm(source, { recursive: true, force: true }); });
   await writeFile(path.join(source, '.gitignore'), 'private-cache/\n*.local\n');
   await mkdir(path.join(source, 'src'));
+  await writeFile(path.join(source, 'src', '.gitignore'), 'nested-ignored.dat\n');
   await writeFile(path.join(source, 'src', '.ignore'), 'ignored.dat\n');
   await writeFile(path.join(source, 'main.ts'), 'export const main = true;');
   await writeFile(path.join(source, 'src', 'visible.ts'), 'export const visible = true;');
+  await writeFile(path.join(source, 'src', 'nested-ignored.dat'), 'dummy nested git-ignored data');
   await writeFile(path.join(source, 'src', 'ignored.dat'), 'dummy nested ignored data');
   await mkdir(path.join(source, 'private-cache'));
   await writeFile(path.join(source, 'private-cache', 'api-key-screenshot.png'), 'dummy local screenshot');
@@ -43,6 +45,7 @@ test('subagent overlays omit Git-ignored local files from copies and change repo
   overlay = await AgentWorktree.create(source);
   assert.equal(await readFile(path.join(overlay.root, 'main.ts'), 'utf8'), 'export const main = true;');
   assert.equal(await readFile(path.join(overlay.root, 'src', 'visible.ts'), 'utf8'), 'export const visible = true;');
+  await assert.rejects(readFile(path.join(overlay.root, 'src', 'nested-ignored.dat')));
   await assert.rejects(readFile(path.join(overlay.root, 'src', 'ignored.dat')));
   await assert.rejects(readFile(path.join(overlay.root, 'private-cache', 'api-key-screenshot.png')));
   await assert.rejects(readFile(path.join(overlay.root, 'session.local')));

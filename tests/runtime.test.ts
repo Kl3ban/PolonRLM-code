@@ -785,6 +785,8 @@ test('global agent count rejects oversized delegation without spawning children'
 test('unlimited agent setting runs a 32-agent batch concurrently', { timeout: 20_000 }, async t => {
   const tasks = Array.from({ length: 32 }, (_, index) => ({ role: 'reviewer' as const, task: `Inspect independent fixture ${index} and report any issue found.` }));
   let parentCalls = 0, childCalls = 0, activeChildren = 0, peakActiveChildren = 0;
+  let releaseChildren!: () => void;
+  const allChildrenStarted = new Promise<void>(resolve => { releaseChildren = resolve; });
   const h = await harness(t, async (messages, tools) => {
     if (messages[0]!.content.includes('Role: orchestrator.')) {
       if (++parentCalls === 1) {
@@ -797,7 +799,8 @@ test('unlimited agent setting runs a 32-agent batch concurrently', { timeout: 20
       return reply('All 32 reviewers completed.');
     }
     childCalls++; activeChildren++; peakActiveChildren = Math.max(peakActiveChildren, activeChildren);
-    await setTimeout(25);
+    if (childCalls === tasks.length) releaseChildren();
+    await allChildrenStarted;
     activeChildren--;
     return reply('Review complete.');
   }, { maxAgents: 0, maxDepth: -1, maxSteps: 0, tokenBudget: 0, dollarBudget: 0, maxInputTokens: 0, maxOutputTokens: 0, timeoutMs: 0, toolOutputLimit: 0 });
