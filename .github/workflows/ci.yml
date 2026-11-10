@@ -24,6 +24,8 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scripts/local-web-requirements.lock.txt
       - name: Install dependencies
         run: npm ci
       - name: Install local web test runtime
