@@ -6,12 +6,31 @@ import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
 import { subprocessEnvironment } from '../core/secrets.js';
 
+const actions = ['hover', 'definition', 'implementation', 'type_definition', 'references', 'symbols', 'workspace_symbols', 'prepare_call_hierarchy', 'incoming_calls', 'outgoing_calls', 'diagnostics'] as const;
+const positionActions = new Set(['hover', 'definition', 'implementation', 'type_definition', 'references', 'symbols', 'prepare_call_hierarchy', 'incoming_calls', 'outgoing_calls', 'diagnostics']);
+
 /** A bounded stdio LSP client. Server requests never execute edits, commands or UI actions. */
 export function registerLspTool(registry: ToolRegistry, workspace: Workspace): void {
-  registry.add('lsp_request', 'Use an installed stdio Language Server Protocol server for any supported language: hover, definition, references, document symbols or diagnostics. Starting a server follows the configured permission policy. Positions are 1-based UTF-16. No automatic installation or server-requested edits.', z.object({ command: z.string().min(1), args: z.array(z.string()).max(30).default([]), path: z.string(), languageId: z.string().min(1), action: z.enum(['hover', 'definition', 'references', 'symbols', 'diagnostics']), line: z.number().int().positive().default(1), column: z.number().int().positive().default(1), timeoutMs: z.number().int().min(1000).max(60000).default(15000) }), false, async (args, context) => {
-    const filename = await workspace.resolve(args.path), text = await workspace.readText(args.path);
-    await workspace.permissions.check('lsp_request', 'shell', 'Start the language server with your permissions.', JSON.stringify({ command: args.command, args: args.args }), context.mode, context.signal);
+  registry.add('lsp_request', 'Use an installed stdio language server for hover, definitions, implementations, type definitions, references, document/workspace symbols, call hierarchy or diagnostics. Call hierarchy actions prepare and inspect a symbol in one server session. Workspace symbol search needs a query; all other actions need a file path, language ID and 1-based UTF-16 position. Starting the server follows permissions. No automatic installation or server-requested edits.', z.object({
+    command: z.string().min(1),
+    args: z.array(z.string()).max(30).default([]),
+    path: z.string().optional(),
+    languageId: z.string().min(1).optional(),
+    action: z.enum(actions),
+    query: z.string().max(500).optional(),
+    line: z.number().int().positive().default(1),
+    column: z.number().int().positive().default(1),
+    timeoutMs: z.number().int().min(1000).max(60000).default(15000),
+  }), false, async (args, context) => {
+    if (positionActions.has(args.action) && (!args.path || !args.languageId)) throw new Error('This LSP action requires a workspace file path and language ID.');
+    if (args.action === 'workspace_symbols' && !args.query?.trim()) throw new Error('Provide a query for workspace symbol search.');
+
+    const needsDocument = positionActions.has(args.action);
+    const filename = needsDocument ? await workspace.resolve(args.path!) : workspace.root;
+    const text = needsDocument ? await workspace.readText(args.path!) : undefined;
+    await workspace.permissions.check('lsp_request', 'shell', `Start the language server for ${args.action}.`, JSON.stringify({ command: args.command, args: args.args, path: args.path, query: args.query }), context.mode, context.signal);
     context.signal.throwIfAborted();
+
     const abort = new AbortController(); const onAbort = () => abort.abort(); context.signal.addEventListener('abort', onAbort, { once: true });
     const child = execa(args.command, args.args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: args.timeoutMs, buffer: false, reject: false });
     let sequence = 0, buffer = Buffer.alloc(0); const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -39,18 +58,45 @@ export function registerLspTool(registry: ToolRegistry, workspace: Workspace): v
     const outcome = child.then(() => fail(new Error('LSP server exited.')), error => fail(new Error(error.message)));
     const request = (method: string, params: unknown) => new Promise<any>((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); send({ jsonrpc: '2.0', id, method, params }); });
     try {
-      const initialized = await request('initialize', { processId: process.pid, rootUri: pathToFileURL(workspace.root).href, workspaceFolders: [{ uri: pathToFileURL(workspace.root).href, name: path.basename(workspace.root) }], capabilities: { textDocument: { publishDiagnostics: {}, diagnostic: {} } } });
+      const initialized = await request('initialize', {
+        processId: process.pid,
+        rootUri: pathToFileURL(workspace.root).href,
+        workspaceFolders: [{ uri: pathToFileURL(workspace.root).href, name: path.basename(workspace.root) }],
+        capabilities: {
+          workspace: { symbol: {}, workspaceFolders: { supported: true, changeNotifications: false } },
+          textDocument: {
+            publishDiagnostics: {}, diagnostic: {},
+            implementation: { linkSupport: true }, typeDefinition: { linkSupport: true },
+            documentSymbol: { hierarchicalDocumentSymbolSupport: true }, callHierarchy: {},
+          },
+        },
+      });
       send({ jsonrpc: '2.0', method: 'initialized', params: {} });
       const uri = pathToFileURL(filename).href;
-      send({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: args.languageId, version: 1, text } } });
+      if (text !== undefined) send({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: args.languageId!, version: 1, text } } });
+
+      if (args.action === 'workspace_symbols') return await request('workspace/symbol', { query: args.query!.trim() });
       if (args.action === 'diagnostics' && !initialized?.capabilities?.diagnosticProvider) {
         const deadline = Date.now() + Math.min(args.timeoutMs, 3000);
         while (diagnostics === undefined && Date.now() < deadline) { context.signal.throwIfAborted(); await new Promise(resolve => setTimeout(resolve, 50)); }
         return { received: diagnostics !== undefined, diagnostics: diagnostics ?? [], note: diagnostics === undefined ? 'The server did not publish diagnostics before the timeout. This does not mean there are no errors.' : undefined };
       }
-      const methods: Record<string, string> = { hover: 'textDocument/hover', definition: 'textDocument/definition', references: 'textDocument/references', symbols: 'textDocument/documentSymbol', diagnostics: 'textDocument/diagnostic' };
-      const method = methods[args.action]!;
-      return await request(method, { textDocument: { uri }, position: { line: args.line - 1, character: args.column - 1 }, ...(args.action === 'references' ? { context: { includeDeclaration: true } } : {}) });
+
+      const position = { textDocument: { uri }, position: { line: args.line - 1, character: args.column - 1 } };
+      if (args.action === 'incoming_calls' || args.action === 'outgoing_calls') {
+        const items = await request('textDocument/prepareCallHierarchy', position);
+        if (!Array.isArray(items) || items.length === 0) return { items: [], truncated: false };
+        const selected = items.slice(0, 10), method = args.action === 'incoming_calls' ? 'callHierarchy/incomingCalls' : 'callHierarchy/outgoingCalls';
+        const calls = await Promise.all(selected.map(item => request(method, { item })));
+        return { items: selected.map((item, index) => ({ item, calls: calls[index] })), truncated: items.length > selected.length };
+      }
+
+      const methods: Record<string, string> = {
+        hover: 'textDocument/hover', definition: 'textDocument/definition', implementation: 'textDocument/implementation',
+        type_definition: 'textDocument/typeDefinition', references: 'textDocument/references', symbols: 'textDocument/documentSymbol',
+        prepare_call_hierarchy: 'textDocument/prepareCallHierarchy', diagnostics: 'textDocument/diagnostic',
+      };
+      return await request(methods[args.action]!, { ...position, ...(args.action === 'references' ? { context: { includeDeclaration: true } } : {}) });
     } finally { abort.abort(); await outcome; context.signal.removeEventListener('abort', onAbort); }
   });
 }

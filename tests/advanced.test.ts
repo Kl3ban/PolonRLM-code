@@ -119,6 +119,27 @@ test('stdio LSP performs real framing, initialize and request, then stops its se
   const result = await f.run('lsp_request', { command: process.execPath, args: ['-e', source], path: 'test.py', languageId: 'python', action: 'hover', timeoutMs: 5000 }); assert.equal(result.contents, 'fixture-hover');
 });
 
+test('LSP supports workspace symbols, implementations and call hierarchy', async t => {
+  const f = await fixture(t); await writeFile(path.join(f.root, 'test.py'), 'target = 1');
+  const item = { name: 'target', kind: 13, uri: 'file:///fixture.py', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } }, selectionRange: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } } };
+  const source = `let buffer=Buffer.alloc(0);const item=${JSON.stringify(item)};process.stdin.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);while(true){const end=buffer.indexOf('\\r\\n\\r\\n');if(end<0)return;const n=Number(/Content-Length: (\\d+)/i.exec(buffer.subarray(0,end).toString())[1]);if(buffer.length<end+4+n)return;const m=JSON.parse(buffer.subarray(end+4,end+4+n));buffer=buffer.subarray(end+4+n);if(m.id===undefined)continue;const result=m.method==='initialize'?{capabilities:{workspaceSymbolProvider:true,implementationProvider:true}}:m.method==='textDocument/prepareCallHierarchy'?[item]:{method:m.method,params:m.params};const body=JSON.stringify({jsonrpc:'2.0',id:m.id,result});process.stdout.write('Content-Length: '+Buffer.byteLength(body)+'\\r\\n\\r\\n'+body)}});`;
+  const base = { command: process.execPath, args: ['-e', source], timeoutMs: 5000 };
+  await assert.rejects(f.run('lsp_request', { ...base, action: 'workspace_symbols' }), /Provide a query/);
+  await assert.rejects(f.run('lsp_request', { ...base, action: 'incoming_calls' }), /requires a workspace file path/);
+  const symbols = await f.run('lsp_request', { ...base, action: 'workspace_symbols', query: 'target' });
+  assert.equal(symbols.method, 'workspace/symbol'); assert.equal(symbols.params.query, 'target');
+  const implementation = await f.run('lsp_request', { ...base, path: 'test.py', languageId: 'python', action: 'implementation', line: 1, column: 2 });
+  assert.equal(implementation.method, 'textDocument/implementation'); assert.deepEqual(implementation.params.position, { line: 0, character: 1 });
+  const typeDefinition = await f.run('lsp_request', { ...base, path: 'test.py', languageId: 'python', action: 'type_definition', line: 1, column: 2 });
+  assert.equal(typeDefinition.method, 'textDocument/typeDefinition');
+  const prepared = await f.run('lsp_request', { ...base, path: 'test.py', languageId: 'python', action: 'prepare_call_hierarchy', line: 1, column: 2 });
+  assert.equal(prepared[0].name, 'target');
+  const incoming = await f.run('lsp_request', { ...base, path: 'test.py', languageId: 'python', action: 'incoming_calls', line: 1, column: 2 });
+  assert.equal(incoming.items[0].calls.method, 'callHierarchy/incomingCalls'); assert.equal(incoming.items[0].calls.params.item.name, 'target');
+  const outgoing = await f.run('lsp_request', { ...base, path: 'test.py', languageId: 'python', action: 'outgoing_calls', line: 1, column: 2 });
+  assert.equal(outgoing.items[0].calls.method, 'callHierarchy/outgoingCalls');
+});
+
 test('background stop and registry shutdown terminate owned jobs', async t => {
   const f = await fixture(t);
   const command = 'node -e "setTimeout(function(){},30000)"';
