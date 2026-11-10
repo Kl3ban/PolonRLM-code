@@ -34,7 +34,7 @@ export async function setupNetworkRuntime(signal?: AbortSignal): Promise<string>
     signal?.throwIfAborted();
     try { await execa(command, [...prefix, '-c', 'import sys; assert sys.version_info >= (3,11)'], { timeout: 5000, windowsHide: true, cancelSignal: signal }); }
     catch { signal?.throwIfAborted(); continue; }
-    await execa(command, [...prefix, setup], { timeout: 180_000, windowsHide: true, maxBuffer: 4_000_000, cancelSignal: signal });
+    await execa(command, [...prefix, setup], { timeout: 180_000, windowsHide: true, maxBuffer: 4_000_000, cancelSignal: signal, killDescendants: true, forceKillAfterDelay: 1000, cleanup: true });
     signal?.throwIfAborted();
     return networkPython();
   }
