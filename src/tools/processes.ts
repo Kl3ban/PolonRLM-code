@@ -8,29 +8,34 @@ import type { Workspace } from './workspace.js';
 
 export class ProcessOutputBuffer {
   private readonly decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
-  output = '';
+  private contents = '';
   truncated = false;
-  constructor(private readonly maximum = 0) {}
+  constructor(private readonly maximum: number | (() => number) = 0) {}
+  get output(): string { this.trim(); return this.contents; }
   write(stream: 'stdout' | 'stderr', chunk: Buffer | string): void { this.append(this.decoders[stream].write(Buffer.from(chunk))); }
   end(stream: 'stdout' | 'stderr'): void { this.append(this.decoders[stream].end()); }
   private append(text: string): void {
     if (!text) return;
-    this.output += text;
-    if (this.maximum > 0 && this.output.length > this.maximum) {
-      let start = this.output.length - this.maximum;
-      const first = this.output.charCodeAt(start);
+    this.contents += text;
+    this.trim();
+  }
+  private trim(): void {
+    const maximum = typeof this.maximum === 'number' ? this.maximum : this.maximum();
+    if (maximum > 0 && this.contents.length > maximum) {
+      let start = this.contents.length - maximum;
+      const first = this.contents.charCodeAt(start);
       if (first >= 0xdc00 && first <= 0xdfff) start++;
-      this.output = this.output.slice(start);
+      this.contents = this.contents.slice(start);
       this.truncated = true;
     }
   }
 }
 
 export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0): void {
-  type Job = { id: string; command: string; interactive: boolean; stdin?: NodeJS.WritableStream; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
+  type Job = { id: string; command: string; interactive: boolean; stdin?: NodeJS.WritableStream; buffer: ProcessOutputBuffer; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
   const jobs = new Map<string, Job>();
   const find = (id: string) => { const job = jobs.get(id); if (!job) throw new Error('Unknown process for this run.'); return job; };
-  const snapshot = (job: Job) => ({ id: job.id, command: job.command, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated });
+  const snapshot = (job: Job) => { job.output = job.buffer.output; job.truncated = job.buffer.truncated; return { id: job.id, command: job.command, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated }; };
   registry.onClose(async () => { jobs.forEach(job => job.abort.abort()); await Promise.all([...jobs.values()].map(job => job.done)); });
   registry.add('process_start', 'Start an approved shell command in the background. Timeout and output are unlimited by default; configured global limits apply. Only owned jobs can be stopped. Jobs stop on task cancellation, timeout or app exit.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
     await workspace.permissions.check('process_start', 'shell', 'Run a command in the background outside a sandbox.', args.command, context.mode, context.signal);
@@ -45,14 +50,14 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
     const configuredTimeout = globalTimeoutMs();
     const timeoutMs = configuredTimeout > 0 ? (args.timeoutMs > 0 ? Math.min(configuredTimeout, args.timeoutMs) : configuredTimeout) : args.timeoutMs;
     const child = execa(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoLogo', '-NoProfile', ...(args.interactive ? [] : ['-NonInteractive']), '-Command', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + args.command] : ['-c', args.command], { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' });
-    const job: Job = { id, command: safeText(args.command), interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
-     const output = new ProcessOutputBuffer(outputLimit());
-     const publishOutput = () => { job.output = output.output; job.truncated = output.truncated; job.waiters.forEach(wake => wake()); };
-     child.stdout?.on('data', (chunk: Buffer) => { output.write('stdout', chunk); publishOutput(); });
-     child.stderr?.on('data', (chunk: Buffer) => { output.write('stderr', chunk); publishOutput(); });
-     child.stdout?.on('end', () => { output.end('stdout'); publishOutput(); });
-     child.stderr?.on('end', () => { output.end('stderr'); publishOutput(); });
-    job.done = child.then(result => { job.exitCode = result.exitCode; if (result.timedOut) job.error = 'Timeout'; if (result.isCanceled) job.error = 'Cancelled'; }, error => { job.error = safeText(error.message); }).finally(() => { job.running = false; job.output = safeText(job.output); job.waiters.forEach(wake => wake()); job.cleanup(); });
+    const buffer = new ProcessOutputBuffer(outputLimit);
+    const job: Job = { id, command: safeText(args.command), interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), buffer, output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
+    const publishOutput = () => { job.output = buffer.output; job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); };
+    child.stdout?.on('data', (chunk: Buffer) => { buffer.write('stdout', chunk); publishOutput(); });
+    child.stderr?.on('data', (chunk: Buffer) => { buffer.write('stderr', chunk); publishOutput(); });
+    child.stdout?.on('end', () => { buffer.end('stdout'); publishOutput(); });
+    child.stderr?.on('end', () => { buffer.end('stderr'); publishOutput(); });
+    job.done = child.then(result => { job.exitCode = result.exitCode; if (result.timedOut) job.error = 'Timeout'; if (result.isCanceled) job.error = 'Cancelled'; }, error => { job.error = safeText(error.message); }).finally(() => { job.running = false; job.output = safeText(buffer.output); job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); job.cleanup(); });
     jobs.set(id, job); return { id, running: true, interactive: job.interactive };
   });
   registry.add('process_list', 'List background jobs started by this agent.', z.object({}), true, async () => [...jobs.values()].map(job => ({ ...snapshot(job), output: undefined })));
@@ -68,6 +73,7 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
   });
   registry.add('process_wait', 'Wait until a background process writes a literal marker, exits, is cancelled or reaches a timeout.', z.object({ id: z.string(), text: z.string().min(1).max(1000), timeoutMs: z.number().int().min(1).max(60000).default(15000) }), true, async (args, context) => {
     const job = find(args.id);
+    job.output = job.buffer.output; job.truncated = job.buffer.truncated;
     if (!job.output.includes(args.text) && job.running) await new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = () => { if (settled) return; settled = true; clearTimeout(timer); job.waiters.delete(check); context.signal.removeEventListener('abort', onAbort); resolve(); };
