@@ -207,18 +207,18 @@ test('overloaded model errors recommend retrying the selected model without sugg
   } finally { await local.close(); }
 });
 
-test('provider keeps unusual overload status codes visible without exposing provider details', async () => {
+test('HTTP 402 reports a billing requirement and is not treated as transient provider overload', async () => {
   const local = await server(async (_request, response) => {
     response.writeHead(402, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify({ error: { message: 'deepseek-v4-flash-free is experiencing high demand. Secret token must not appear.' } }));
+    response.end(JSON.stringify({ error: { message: 'wallet balance is insufficient. Secret token must not appear.' } }));
   });
   try {
     await assert.rejects(createProvider(config(local.baseURL), 'secret-token', 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
       assert.ok(error instanceof Error);
-      assert.equal(error.message, 'The selected provider is temporarily busy (HTTP 402). Wait briefly, then retry the selected model.');
-      assert.ok(!error.message.includes('deepseek-v4-flash'));
+      assert.equal(error.message, 'The provider returned HTTP 402 (payment required). Check its account balance or billing requirements; this error will not be retried automatically.');
       assert.ok(!error.message.includes('secret-token'));
       assert.equal((error as Error & { statusCode?: number }).statusCode, 402);
+      assert.equal(isRetryableProviderError(error), false);
       return true;
     });
   } finally { await local.close(); }
@@ -228,7 +228,7 @@ test('provider retry policy waits ten seconds and retries only transient failure
   assert.equal(PROVIDER_RETRY_DELAY_MS, 10_000);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Service unavailable'), { statusCode: 503 })), true);
   assert.equal(isRetryableProviderError(new Error('The selected provider is temporarily busy.')), true);
-  assert.equal(isRetryableProviderError(Object.assign(new Error('The selected provider is temporarily busy (HTTP 402).'), { statusCode: 402 })), true);
+  assert.equal(isRetryableProviderError(Object.assign(new Error('The selected provider is temporarily busy (HTTP 402).'), { statusCode: 402 })), false);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Bad request'), { statusCode: 400 })), false);
   assert.equal(isRetryableProviderError(Object.assign(new Error('Unauthorized'), { statusCode: 401 })), false);
   assert.equal(isRetryableProviderError(new DOMException('Request cancelled.', 'AbortError')), false);

@@ -140,7 +140,9 @@ function cleanError(error: unknown, secret: string | undefined): Error {
   const statusCode = typeof rawStatusCode === 'number' && Number.isInteger(rawStatusCode) ? rawStatusCode : undefined;
   const statusAlreadyShown = statusCode !== undefined && new RegExp(`\\b(?:HTTP|status)\\s*[:=]?\\s*${statusCode}\\b`, 'i').test(safeMessage);
   const statusLabel = statusCode !== undefined && !statusAlreadyShown ? ` (HTTP ${statusCode})` : '';
-  const message = /\bhigh demand\b|rate.?limit|too many requests|overloaded|HTTP\s*429/i.test(safeMessage)
+  const message = statusCode === 402
+    ? 'The provider returned HTTP 402 (payment required). Check its account balance or billing requirements; this error will not be retried automatically.'
+    : /\bhigh demand\b|rate.?limit|too many requests|overloaded|HTTP\s*429/i.test(safeMessage)
     ? `The selected provider is temporarily busy${statusLabel}. Wait briefly, then retry the selected model.`
     : `${safeMessage}${statusLabel}`;
   const result = new Error(message);

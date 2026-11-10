@@ -21,6 +21,9 @@ export function isRetryableProviderError(error: unknown): boolean {
     const response = record(item.response);
     const metadata = record(item.$metadata);
     const statusCode = Number(item.statusCode ?? item.status ?? response.status ?? metadata.httpStatusCode);
+    // HTTP 402 indicates a billing/payment requirement for providers such as TeamoRouter.
+    // Do not let a vague upstream "busy" message turn it into a ten-second retry loop.
+    if (statusCode === 402) return false;
     if ([408, 425, 429, 500, 502, 503, 504, 529].includes(statusCode)) return true;
     const text = [item.name, item.message, item.code].filter(value => typeof value === 'string').join(' ');
     if (transient.test(text)) return true;

@@ -126,6 +126,17 @@ test('temporary provider errors retry the selected model and show the retry coun
   assert.equal(PROVIDER_RETRY_DELAY_MS, 10_000);
 });
 
+test('HTTP 402 payment errors never enter the retry loop even when the message says busy', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    throw Object.assign(new Error('The selected provider is temporarily busy (HTTP 402).'), { statusCode: 402 });
+  }, { maxSteps: 2 }, 0);
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /HTTP 402/);
+  assert.equal(calls, 1);
+  assert.ok(!h.events.some(event => event.type === 'status' && /Retrying/.test(event.text ?? '')));
+});
+
 test('request timeout retries with a fresh timeout signal', async t => {
   let calls = 0;
   const h = await harness(t, async (_messages, _specs, _onDelta, signal) => {
