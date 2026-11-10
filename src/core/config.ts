@@ -8,6 +8,9 @@ import type { Settings } from './types.js';
 import { PROVIDER_PRESETS } from '../providers/provider.js';
 import { isSecretEnvironmentName } from './secrets.js';
 
+// Node timers accept delays up to 2^32 - 1 ms; zero continues to mean no timeout.
+const MAX_TIMER_DELAY_MS = 0xffff_ffff;
+
 const mcpServerSchema = z.object({
   type: z.enum(['stdio', 'http']), command: z.string().optional(), args: z.array(z.string()).optional(), url: z.url().optional(),
   env: z.record(z.string(), z.string()).optional(), headersEnv: z.record(z.string(), z.string()).optional(), timeoutMs: z.number().int().positive().optional(),
@@ -43,16 +46,16 @@ const providerSchema = z.object({
   reasoningEfforts: z.array(z.string().min(1).max(32).regex(/^[A-Za-z0-9][A-Za-z0-9_. -]*$/)).max(16).optional(),
   temperature: z.number().min(0).max(2).optional(), inputPrice: z.number().nonnegative().optional(), outputPrice: z.number().nonnegative().optional(),
   contextWindow: z.number().int().positive().optional(), maxOutputTokens: z.number().int().positive().optional(), reasoningSupported: z.boolean().optional(), toolCalling: z.boolean().optional(), vision: z.boolean().optional(),
-  requestTimeoutMs: z.number().int().min(1000).max(600000).optional()
+  requestTimeoutMs: z.number().int().min(1000).max(MAX_TIMER_DELAY_MS).optional()
 });
 export const settingsSchema = z.object({
   provider: z.string(), providers: z.record(z.string(), providerSchema), fallback: z.array(z.string()),
   mode: z.enum(['PLAN', 'BUILD', 'REVIEW']), cortex: z.number().int().min(0).max(5),
-  maxSteps: z.number().int().nonnegative().max(200), maxInputTokens: z.number().int().nonnegative().max(1_000_000),
-  maxOutputTokens: z.number().int().nonnegative().max(128_000), tokenBudget: z.preprocess(value => value === null ? 0 : value, z.number().int().nonnegative().safe().refine(value => value === 0 || value >= 1000, 'Minimum 1,000 or 0 for unlimited')),
-  dollarBudget: z.number().nonnegative(), maxAgents: z.number().int().nonnegative().max(8), maxDepth: z.number().int().min(-1).max(2),
+  maxSteps: z.number().int().nonnegative().safe(), maxInputTokens: z.number().int().nonnegative().safe(),
+  maxOutputTokens: z.number().int().nonnegative().safe(), tokenBudget: z.preprocess(value => value === null ? 0 : value, z.number().int().nonnegative().safe().refine(value => value === 0 || value >= 1000, 'Minimum 1,000 or 0 for unlimited')),
+  dollarBudget: z.number().nonnegative(), maxAgents: z.number().int().nonnegative().safe(), maxDepth: z.number().int().min(-1).safe(),
   permissions: z.enum(['ask', 'workspace', 'readonly', 'all']), toolPermissions: z.record(z.string(), z.enum(['ask', 'auto', 'off'])).default({}), allowTools: z.array(z.string()), denyTools: z.array(z.string()),
-  theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().nonnegative().max(100_000), timeoutMs: z.number().int().nonnegative().max(600_000),
+  theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().nonnegative().safe(), timeoutMs: z.number().int().nonnegative().max(MAX_TIMER_DELAY_MS),
   webSearchMode: z.preprocess(value => value === 'duckduckgo' ? 'auto' : value, z.enum(['auto', 'bing', 'brave', 'yahoo']).default('auto')),
   browserEngine: z.enum(['auto', 'chromium', 'chrome', 'edge', 'brave', 'firefox']).default('auto'),
   mcp: z.record(z.string(), mcpServerSchema)

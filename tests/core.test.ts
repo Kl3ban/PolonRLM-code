@@ -170,9 +170,25 @@ test('session search treats SQL wildcards literally and first-message titles are
 
 test('configuration persists validated settings and rejects malformed data', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'janusz-config-')); const config = new ConfigManager(home);
-  await config.load(); config.settings.maxAgents = 2; await config.save(); const reloaded = new ConfigManager(home); await reloaded.load();
-  assert.equal(reloaded.settings.maxAgents, 2);
-  await writeFile(path.join(home, 'config.json'), '{"maxAgents":500}'); await assert.rejects(reloaded.load(), /Invalid configuration/);
+  await config.load(); config.settings.maxAgents = 500; await config.save(); const reloaded = new ConfigManager(home); await reloaded.load();
+  assert.equal(reloaded.settings.maxAgents, 500);
+  await writeFile(path.join(home, 'config.json'), '{"maxAgents":"many"}'); await assert.rejects(reloaded.load(), /Invalid configuration/);
+});
+
+test('configurable limits have no arbitrary app ceiling beyond the native timer range', () => {
+  const settings = defaultSettings();
+  const parsed = settingsSchema.parse({ ...settings,
+    maxSteps: 201, maxInputTokens: 1_000_001, maxOutputTokens: 128_001,
+    maxAgents: 9, maxDepth: 3, toolOutputLimit: 100_001, timeoutMs: 600_001,
+    providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 600_001 } },
+  });
+  assert.equal(parsed.maxAgents, 9);
+  assert.equal(parsed.maxDepth, 3);
+  assert.equal(parsed.timeoutMs, 600_001);
+  assert.throws(() => settingsSchema.parse({ ...settings, timeoutMs: 0x1_0000_0000 }));
+  assert.throws(() => settingsSchema.parse({ ...settings,
+    providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 0x1_0000_0000 } },
+  }));
 });
 
 test('Windows vault roundtrips through DPAPI without plaintext credentials on disk', { skip: process.platform !== 'win32' }, async () => {
