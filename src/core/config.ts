@@ -8,8 +8,8 @@ import type { Settings } from './types.js';
 import { PROVIDER_PRESETS } from '../providers/provider.js';
 import { isSecretEnvironmentName } from './secrets.js';
 
-// Node timers accept delays up to 2^32 - 1 ms; zero continues to mean no timeout.
-const MAX_TIMER_DELAY_MS = 0xffff_ffff;
+// Node timers clamp larger delays to 1 ms; zero continues to mean no timeout.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 const mcpServerSchema = z.object({
   type: z.enum(['stdio', 'http']), command: z.string().optional(), args: z.array(z.string()).optional(), url: z.url().optional(),

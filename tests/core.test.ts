@@ -185,9 +185,10 @@ test('configurable limits have no arbitrary app ceiling beyond the native timer 
   assert.equal(parsed.maxAgents, 9);
   assert.equal(parsed.maxDepth, 3);
   assert.equal(parsed.timeoutMs, 600_001);
-  assert.throws(() => settingsSchema.parse({ ...settings, timeoutMs: 0x1_0000_0000 }));
+  assert.equal(settingsSchema.parse({ ...settings, timeoutMs: 2_147_483_647 }).timeoutMs, 2_147_483_647);
+  assert.throws(() => settingsSchema.parse({ ...settings, timeoutMs: 2_147_483_648 }));
   assert.throws(() => settingsSchema.parse({ ...settings,
-    providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 0x1_0000_0000 } },
+    providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 2_147_483_648 } },
   }));
 });
 
