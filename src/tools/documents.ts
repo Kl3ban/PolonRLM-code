@@ -79,7 +79,7 @@ export function registerDocumentTools(registry: ToolRegistry, workspace: Workspa
       const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(data as any);
       const sheets = workbook.worksheets.slice(0, 20); let output = '';
       for (const sheet of sheets) {
-        output += `\n## Arkusz: ${sheet.name}\n`;
+        output += `\n## Sheet: ${sheet.name}\n`;
         const start = Math.max(1, args.from); const end = Math.min(sheet.rowCount, start + args.count - 1, 2000);
         for (let row = start; row <= end; row++) {
           const cells = sheet.getRow(row).values as ExcelJS.CellValue[];

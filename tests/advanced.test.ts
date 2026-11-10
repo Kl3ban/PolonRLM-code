@@ -90,7 +90,7 @@ test('read_document extracts XLSX values and does not evaluate formula cells', a
   await workbook.xlsx.writeFile(path.join(f.root, 'report.xlsx'));
 
   const result = await f.run('read_document', { path: 'report.xlsx', from: 1, count: 3 });
-  assert.match(result, /## Arkusz: Summary/);
+  assert.match(result, /## Sheet: Summary/);
   assert.match(result, /2:\s*Count\t3/);
   assert.match(result, /3:\s*\t\[formula\]/);
 });
