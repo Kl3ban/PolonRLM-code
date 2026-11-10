@@ -6,11 +6,31 @@ import { redact, safeText } from './secrets.js';
 import { clip } from './context.js';
 import type { WorkflowState } from './workflows.js';
 
+function execWithBusyRetry(db: DatabaseSync, sql: string): void {
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      db.exec(sql);
+      return;
+    } catch (error) {
+      const code = (error as { errcode?: number }).errcode;
+      const primaryCode = typeof code === 'number' ? code & 0xff : 0;
+      if ((primaryCode !== 5 && primaryCode !== 6) || Date.now() >= deadline) throw error;
+      Atomics.wait(waitCell, 0, 0, Math.min(25, deadline - Date.now()));
+    }
+  }
+}
+
 export class SessionStore {
   private db: DatabaseSync;
   constructor(home: string) {
     this.db = new DatabaseSync(path.join(home, 'sessions.sqlite'));
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+    // Configure the busy handler before WAL/schema setup. WAL changes and DDL
+    // may still report SQLITE_BUSY immediately on simultaneous cold starts, so
+    // retry the idempotent setup batch while another process initializes it.
+    this.db.exec('PRAGMA busy_timeout=5000');
+    execWithBusyRetry(this.db, `PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, title TEXT NOT NULL, updated INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, session TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session);
