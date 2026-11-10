@@ -64,6 +64,18 @@ test('migrates the former 200000-token factory budget but preserves a customized
   assert.equal(customized.settings.maxInputTokens, 0);
 });
 
+test('fresh settings start with no application-imposed resource limits', () => {
+  const settings = defaultSettings();
+  assert.deepEqual({
+    maxSteps: settings.maxSteps, maxInputTokens: settings.maxInputTokens, maxOutputTokens: settings.maxOutputTokens,
+    tokenBudget: settings.tokenBudget, dollarBudget: settings.dollarBudget, maxAgents: settings.maxAgents,
+    maxDepth: settings.maxDepth, toolOutputLimit: settings.toolOutputLimit, timeoutMs: settings.timeoutMs,
+  }, {
+    maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
+    maxAgents: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
+  });
+});
+
 test('existing configuration gains the provider catalog while retaining custom settings', async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-catalog-'));
   t.after(() => rm(home, { recursive: true, force: true }));
