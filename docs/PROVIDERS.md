@@ -10,6 +10,8 @@ NVIDIA NIM uses a longer default request timeout because free inference can take
 
 Temporary network failures, request timeouts, provider overloads, rate limits, and empty replies are retried on the same model after 10 seconds. The status line shows each retry. Cancel or Ctrl+C stops the wait. A response that already streamed text is never replayed. Retries count toward the shared model-call, token, and cost limits.
 
+Payment and insufficient-balance errors are shown immediately and are not retried. TeamoRouter documents an insufficient wallet balance as HTTP 402, or HTTP 400 for its OpenAI-compatible format; check the [TeamoRouter API guide](https://teamorouter.com/docs/api-integration) for account billing requirements.
+
 Select **Provider**, press Alt+D, or use `/connect` to choose a provider. TeamRouter is available as a built-in OpenAI-compatible preset at `https://api.teamorouter.com/v1`; select `/connect teamorouter`, enter the key with `/key`, and use `/models` to discover available models. Enter a key or press Tab to keep the key or environment variable already configured. Model discovery is requested from the selected provider. If it is unavailable, press Ctrl+N in the model picker to enter an exact model ID.
 
 The custom endpoint form accepts an OpenAI-compatible base URL, a model ID, and an optional API key. Keys are stored in the existing DPAPI vault on Windows. Preset files do not contain credentials.
