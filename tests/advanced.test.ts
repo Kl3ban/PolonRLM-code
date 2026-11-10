@@ -10,6 +10,7 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { registerBuiltins } from '../src/tools/builtin.js';
 import { ProcessOutputBuffer } from '../src/tools/processes.js';
 import ExcelJS from 'exceljs';
+import { z } from 'zod';
 
 async function fixture(t: test.TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'polon-advanced-')); const settings = defaultSettings(); settings.permissions = 'workspace'; settings.toolOutputLimit = 100000;
@@ -26,6 +27,21 @@ test('batch tools preserve independent results and filesystem boundaries', async
   assert.equal(result[0].content, '2: world'); assert.match(result[1].error, /outside the workspace/);
   const found = await f.run('search_batch', { queries: [{ pattern: 'world' }, { pattern: '*.txt', files: true }] });
   assert.match(found[0].content, /a.txt:2:world/); assert.match(found[1].content, /a.txt/);
+});
+
+test('search_batch runs independent searches concurrently and preserves input order', async t => {
+  const f = await fixture(t);
+  let active = 0, peak = 0;
+  f.registry.add('search_content', 'Fixture search.', z.object({ pattern: z.string() }), true, async args => {
+    active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    active--;
+    return `result:${args.pattern}`;
+  });
+  const queries = Array.from({ length: 8 }, (_, index) => ({ pattern: String(index) }));
+  const results = await f.run('search_batch', { queries });
+  assert.equal(peak, 4, 'searches are processed by a four-worker pool');
+  assert.deepEqual(results.map((result: any) => result.content), queries.map(query => `result:${query.pattern}`));
 });
 
 test('read_document extracts XLSX values and does not evaluate formula cells', async t => {
