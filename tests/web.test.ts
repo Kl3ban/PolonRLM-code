@@ -99,6 +99,7 @@ test('new browser tabs validate destinations first and discard failed navigation
       isClosed: () => closed,
       title: async () => currentUrl === 'about:blank' ? 'Blank' : 'Fixture',
       setDefaultTimeout: () => {},
+      on: () => {},
       goto: async (url: string) => { if (url === 'https://fail.example/') throw new Error('navigation failed'); currentUrl = url; },
       close: async () => { closed = true; closedPages++; },
     } as unknown as Page;
@@ -130,6 +131,94 @@ test('new browser tabs validate destinations first and discard failed navigation
   const tab = JSON.parse(await registry.execute('browser', { action: 'new_tab', sessionId: opened.sessionId, url: 'https://success.example/' }, context));
   assert.match(tab.title, /Fixture/);
   assert.equal(await countTabs(), 2);
+});
+
+test('expired browser sessions are closed before enforcing the session limit', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'polon-browser-expiry-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = { ...defaultSettings(), permissions: 'all' as const };
+  const permissions = new Permissions(settings), workspace = await Workspace.open(root, permissions);
+  const registry = new ToolRegistry(permissions, 20000);
+  t.after(() => registry.close());
+
+  const originalNow = Date.now;
+  let now = originalNow(), browserCloses = 0, proxyCloses = 0;
+  Date.now = () => now;
+  t.after(() => { Date.now = originalNow; });
+  const makePage = (): Page => {
+    let url = 'about:blank';
+    return { url: () => url, isClosed: () => false, title: async () => 'Fixture', setDefaultTimeout: () => {}, goto: async (next: string) => { url = next; }, on: () => {} } as unknown as Page;
+  };
+  const makeBrowser = (): Browser => {
+    const context = { routeWebSocket: async () => {}, route: async () => {}, newPage: async () => makePage() } as unknown as BrowserContext;
+    return { newContext: async () => context, close: async () => { browserCloses++; } } as unknown as Browser;
+  };
+  registerBrowserSessionTools(registry, workspace, () => 'chromium', {
+    launchBrowser: async () => ({ browser: makeBrowser(), engine: 'chromium' }),
+    createSafeEgressProxy: async () => ({ url: 'http://127.0.0.1:0', close: async () => { proxyCloses++; } }),
+    publicURL: async () => {},
+  });
+  const context = { mode: 'BUILD' as const, signal: new AbortController().signal };
+  const launch = async () => JSON.parse(await registry.execute('browser', { action: 'launch', url: 'https://public.example/' }, context));
+  await launch(); await launch(); await launch();
+  now += 30 * 60_000 + 1;
+
+  const fourth = await launch();
+  assert.ok(fourth.sessionId);
+  assert.equal(browserCloses, 3);
+  assert.equal(proxyCloses, 3);
+});
+
+test('browser console and network diagnostics are bounded, redacted, and read-only', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'polon-browser-diagnostics-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = { ...defaultSettings(), permissions: 'all' as const };
+  const permissions = new Permissions(settings), workspace = await Workspace.open(root, permissions);
+  const registry = new ToolRegistry(permissions, 20000);
+  const events = new Map<string, (event: any) => void>();
+  let currentUrl = 'about:blank';
+  const page = {
+    url: () => currentUrl, isClosed: () => false, title: async () => 'Fixture', setDefaultTimeout: () => {},
+    goto: async (url: string) => { currentUrl = url; },
+    on: (name: string, listener: (event: any) => void) => { events.set(name, listener); return page; },
+  } as unknown as Page;
+  const browserContext = { routeWebSocket: async () => {}, route: async () => {}, newPage: async () => page } as unknown as BrowserContext;
+  const browser = { newContext: async () => browserContext, close: async () => {} } as unknown as Browser;
+  const proxy = { url: 'http://127.0.0.1:0', close: async () => {} };
+  registerBrowserSessionTools(registry, workspace, () => 'chromium', {
+    launchBrowser: async () => ({ browser, engine: 'chromium' }),
+    createSafeEgressProxy: async () => proxy,
+    publicURL: async () => {},
+  });
+  t.after(() => registry.close());
+  const context = { mode: 'REVIEW' as const, signal: new AbortController().signal };
+  const opened = JSON.parse(await registry.execute('browser', { action: 'launch', url: 'https://public.example/' }, context));
+  events.get('console')!({ type: () => 'error', text: () => 'api_key=page-secret', location: () => ({ url: 'https://public.example/app.js?token=private', lineNumber: 8 }) });
+  events.get('pageerror')!(new Error('Script crashed with nvapi-' + 'x'.repeat(24)));
+  const failedRequest = { method: () => 'GET', url: () => 'https://public.example/asset.js?access_token=private' };
+  events.get('response')!({ status: () => 503, request: () => failedRequest, url: () => failedRequest.url() });
+  events.get('requestfailed')!({ ...failedRequest, failure: () => ({ errorText: 'net::ERR_CONNECTION_RESET' }) });
+
+  const logs = JSON.parse(await registry.execute('browser', { action: 'console', sessionId: opened.sessionId, limit: 1 }, context));
+  const network = JSON.parse(await registry.execute('browser', { action: 'network', sessionId: opened.sessionId, limit: 10 }, context));
+  assert.equal(logs.total, 2);
+  assert.equal(logs.entries.length, 1);
+  assert.equal(logs.truncated, true);
+  assert.match(JSON.stringify(logs.entries), /\[REDACTED\]/);
+  assert.doesNotMatch(JSON.stringify(logs), /page-secret|token=private|nvapi-x/);
+  assert.equal(network.total, 2);
+  assert.equal(network.entries[0].status, 503);
+  assert.equal(network.entries[1].error, 'net::ERR_CONNECTION_RESET');
+  assert.doesNotMatch(JSON.stringify(network), /access_token=private/);
+  assert.equal(registry.isReadOnly('browser', { action: 'network' }), true);
+  assert.ok(registry.specs('REVIEW').some(tool => tool.name === 'browser'));
+
+  for (let index = 0; index < 205; index++) events.get('console')!({ type: () => 'log', text: () => `overflow ${index}`, location: () => ({ url: '', lineNumber: 0 }) });
+  const bounded = JSON.parse(await registry.execute('browser', { action: 'console', sessionId: opened.sessionId, limit: 50 }, context));
+  assert.equal(bounded.total, 200);
+  assert.equal(bounded.entries.length, 50);
+  assert.equal(bounded.entries[0].text, 'overflow 155');
+  assert.equal(bounded.entries.at(-1).text, 'overflow 204');
 });
 
 test('a closed browser tab does not prevent the remaining tabs from being summarized', async () => {
