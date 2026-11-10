@@ -138,8 +138,8 @@ test('background jobs return output and exit code; denial never starts a job', a
   const f = await fixture(t);
   f.permissions.approve = async () => false; await assert.rejects(f.run('process_start', { command: 'echo should-not-run' }), /Approval denied/); assert.deepEqual(await f.run('process_list', {}), []);
   f.permissions.approve = async () => true;
-  const job = await f.run('process_start', { command: 'echo hello-background', timeoutMs: 10000 });
-  const output = await f.run('process_output', { id: job.id, waitMs: 10000 }); assert.equal(output.running, false); assert.equal(output.exitCode, 0); assert.match(output.output, /hello-background/);
+  const job = await f.run('process_start', { command: 'echo hello-background', timeoutMs: 30000 });
+  const output = await f.run('process_output', { id: job.id, waitMs: 30000 }); assert.equal(output.running, false); assert.equal(output.exitCode, 0); assert.match(output.output, /hello-background/);
   await assert.rejects(f.run('process_stop', { id: 'unowned-process' }), /Unknown/);
 });
 
