@@ -14,6 +14,8 @@ Payment and insufficient-balance errors are shown immediately and are not retrie
 
 Select **Provider**, press Alt+D, or use `/connect` to choose a provider. TeamRouter is available as a built-in OpenAI-compatible preset at `https://api.teamorouter.com/v1`; select `/connect teamorouter`, enter the key with `/key`, and use `/models` to discover available models. Enter a key or press Tab to keep the key or environment variable already configured. Model discovery is requested from the selected provider. If it is unavailable, press Ctrl+N in the model picker to enter an exact model ID.
 
+Model discovery only lists model IDs. Some providers expose a public catalog, so a successful `/models` request does not prove that the saved key can generate responses or access every listed model. A real request is the final check; authentication, access, and balance errors are reported separately.
+
 The custom endpoint form accepts an OpenAI-compatible base URL, a model ID, and an optional API key. Keys are stored in the existing DPAPI vault on Windows. Preset files do not contain credentials.
 
 Live inference has not been verified against every provider. Availability, credits, tool calling, and supported models depend on the provider and account.
