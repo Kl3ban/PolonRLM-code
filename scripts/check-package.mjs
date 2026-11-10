@@ -14,6 +14,19 @@ const output = execFileSync(process.execPath, [npmCli, 'pack', '--dry-run', '--j
 const [pack] = JSON.parse(output);
 assert.ok(pack?.files?.length, 'npm pack returned no file list.');
 
+const runtimePackages = new Set();
+for (const file of pack.files) {
+  if (!file.path.startsWith('dist/') || !file.path.endsWith('.js')) continue;
+  const source = await readFile(path.resolve(file.path), 'utf8');
+  for (const match of source.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"]+)['"]/g)) {
+    const specifier = match[1];
+    if (specifier.startsWith('.') || specifier.startsWith('node:') || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+(?:\/[^?#]+)?$/i.test(specifier)) continue;
+    runtimePackages.add(specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0]);
+  }
+}
+const missingRuntimeDependencies = [...runtimePackages].filter(name => !manifest.dependencies?.[name]);
+assert.deepEqual(missingRuntimeDependencies, [], `Runtime imports missing from dependencies:\n${missingRuntimeDependencies.join('\n')}`);
+
 const unexpected = pack.files
   .map(file => file.path)
   .filter(file => /(?:^|\/)__pycache__(?:\/|$)|\.py[co]$|^docs\/(?:tool-review-live|web-live-check|audit-progress|STATUS)(?:\.|\/|$)|\.log$|(?:^|\/)\.env(?:\.|\/|$)|(?:^|\/)credentials(?:\/|$)|\.(?:sqlite(?:-[^/]+)?|db(?:-[^/]+)?|pem|p12|key|dpapi)$/i.test(file));
