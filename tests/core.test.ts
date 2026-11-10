@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, mkdir, readdir, rm, access } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ConfigManager, defaultSettings, secureMcpServerSchema, settingsSchema } from '../src/core/config.js';
 import { SessionStore } from '../src/core/store.js';
 import { redact, registerSecret, SecretVault, StreamRedactor, safeText } from '../src/core/secrets.js';
@@ -142,6 +144,47 @@ test('SQLite persists separate workspace sessions, redacts secrets and keeps arc
   assert.equal(store.usage(a).costKnown, false);
   assert.throws(() => store.forget(a, 'workspace-b'));
   store.forget(a, 'workspace-a'); assert.deepEqual(store.messages(a), []); assert.deepEqual(store.context(a), []); store.close();
+});
+
+test('concurrent PolonRLM processes preserve SQLite sessions and messages', { timeout: 30000 }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-store-concurrency-'));
+  t.after(async () => {
+    assert.equal(path.dirname(home), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(home).startsWith('polon-store-concurrency-'));
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const storeUrl = pathToFileURL(path.resolve('src/core/store.ts')).href;
+  const workerSource = [
+    `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+    'const store = new SessionStore(process.env.POLON_STRESS_HOME);',
+    "const id = store.create('worker-' + process.env.POLON_STRESS_ID);",
+    "for (let i = 0; i < 50; i++) store.append(id, { role: 'assistant', content: 'worker-' + process.env.POLON_STRESS_ID + '-' + i });",
+    'store.close();',
+    'process.stdout.write(JSON.stringify({ id, count: 50 }));',
+  ].join('\n');
+  const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+  const runWorker = (id: number) => new Promise<{ id: string; count: number }>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', workerSource], {
+      cwd: process.cwd(), windowsHide: true,
+      env: { ...inherited, POLON_STRESS_HOME: home, POLON_STRESS_ID: String(id) }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '', stderr = '';
+    child.stdout.setEncoding('utf8').on('data', chunk => stdout += chunk);
+    child.stderr.setEncoding('utf8').on('data', chunk => stderr += chunk);
+    child.once('error', reject);
+    child.once('close', code => {
+      if (code !== 0) { reject(new Error(`SQLite worker ${id} exited ${code}: ${stderr.slice(-500)}`)); return; }
+      try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+    });
+  });
+
+  const workers = await Promise.all([1, 2, 3, 4].map(runWorker));
+  const store = new SessionStore(home);
+  try {
+    assert.equal(store.integrityCheck(), 'ok');
+    assert.equal(workers.reduce((total, worker) => total + store.messages(worker.id).length, 0), 200);
+  } finally { store.close(); }
 });
 
 test('history search retrieves a short exact excerpt from the full transcript', async t => {
