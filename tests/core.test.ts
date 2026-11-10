@@ -76,6 +76,16 @@ test('fresh settings start with no application-imposed resource limits', () => {
   });
 });
 
+test('older configs without a process cap gain the unlimited default', async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-process-limit-migration-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const legacy = { ...defaultSettings() } as Record<string, unknown>;
+  delete legacy.maxProcesses;
+  await writeFile(path.join(home, 'config.json'), JSON.stringify(legacy));
+  const config = new ConfigManager(home); await config.load();
+  assert.equal(config.settings.maxProcesses, 0);
+});
+
 test('existing configuration gains the provider catalog while retaining custom settings', async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-catalog-'));
   t.after(() => rm(home, { recursive: true, force: true }));
