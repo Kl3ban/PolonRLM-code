@@ -18,7 +18,7 @@ async function fixture(t: test.TestContext) {
   const workspace = await Workspace.open(root, permissions); const registry = new ToolRegistry(permissions, 100000); registerBuiltins(registry, workspace, settings);
   t.after(async () => { await registry.close(); assert.equal(path.dirname(root), path.resolve(os.tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const run = async (name: string, args: Record<string, unknown>) => { const text = await registry.execute(name, args, { mode: 'BUILD', signal: new AbortController().signal }); try { return JSON.parse(text); } catch { return text; } };
-  return { root, workspace, registry, permissions, run };
+  return { root, workspace, registry, permissions, settings, run };
 }
 
 test('batch tools preserve independent results and filesystem boundaries', async t => {
@@ -42,6 +42,24 @@ test('search_batch runs independent searches concurrently and preserves input or
   const results = await f.run('search_batch', { queries });
   assert.equal(peak, 4, 'searches are processed by a four-worker pool');
   assert.deepEqual(results.map((result: any) => result.content), queries.map(query => `result:${query.pattern}`));
+});
+
+test('search_batch keeps explicit approval prompts sequential', async t => {
+  const f = await fixture(t);
+  f.settings.toolPermissions.search_content = 'ask';
+  let active = 0, peak = 0, approvals = 0;
+  f.permissions.approve = async () => {
+    active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    active--; approvals++;
+    return true;
+  };
+  f.registry.add('search_content', 'Fixture search.', z.object({ pattern: z.string() }), true, async args => `result:${args.pattern}`);
+  const queries = Array.from({ length: 8 }, (_, index) => ({ pattern: String(index) }));
+  const results = await f.run('search_batch', { queries });
+  assert.equal(approvals, queries.length);
+  assert.equal(peak, 1, 'explicit approval prompts should not open concurrently');
+  assert.equal(results.length, queries.length);
 });
 
 test('read_files uses bounded concurrency and preserves input order', async t => {

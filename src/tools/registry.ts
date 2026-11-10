@@ -15,6 +15,7 @@ export class ToolRegistry {
   constructor(private permissions: Permissions, private limit: number | (() => number)) {}
   getSpec(name: string): ToolSpec | undefined { return this.entries.get(name)?.spec; }
   isReadOnly(name: string, args?: unknown): boolean { const entry = this.entries.get(name); return !!entry && !this.mutatesInMode(entry, args); }
+  requiresApproval(name: string): boolean { return this.permissions.requiresApproval(name); }
   parseArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
     const entry = this.entries.get(name); if (!entry) throw new Error(`Unknown tool: ${name}`);
     const parsed = entry.schema.safeParse(args);

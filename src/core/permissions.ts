@@ -9,6 +9,7 @@ export class Permissions {
   settingsDeny(tool: string): boolean { return this.settings.denyTools.includes(tool); }
   settingsAllowlistExcludes(tool: string): boolean { return !!this.settings.allowTools.length && !this.settings.allowTools.includes(tool); }
   explicitlyDisabled(tool: string): boolean { return this.settings.toolPermissions[tool] === 'off'; }
+  requiresApproval(tool: string): boolean { return !this.approvedToolCall.getStore() && this.settings.toolPermissions[tool] === 'ask'; }
   get readonly(): boolean { return this.settings.permissions === 'readonly'; }
   unavailableReason(tool: string, mutating = false, mode: Mode = this.settings.mode): string | undefined {
     if (this.approvedToolCall.getStore()) return undefined;

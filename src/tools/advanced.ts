@@ -44,9 +44,10 @@ export function registerAdvancedTools(registry: ToolRegistry, workspace: Workspa
       return { path: entry.path, content, truncated: content.length !== text.length };
     });
   });
-  registry.add('search_batch', 'Run up to 10 independent local searches in parallel (4 at a time); preserve input order and bound combined output to 20,000 characters.', z.object({ queries: z.array(z.object({ pattern: z.string().max(500), path: z.string().default('.'), files: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(20) })).min(1).max(10) }), true, async (args, context) => {
+  registry.add('search_batch', 'Run up to 10 independent local searches (up to 4 at once; serial when a search needs approval). Preserve input order and bound combined output to 20,000 characters.', z.object({ queries: z.array(z.object({ pattern: z.string().max(500), path: z.string().default('.'), files: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(20) })).min(1).max(10) }), true, async (args, context) => {
     const queries = args.queries as { pattern: string; path: string; files: boolean; limit: number }[];
-    const searched = await mapConcurrent(queries, 4, async query => {
+    const concurrency = queries.some(query => registry.requiresApproval(query.files ? 'search_files' : 'search_content')) ? 1 : 4;
+    const searched = await mapConcurrent(queries, concurrency, async query => {
       context.signal.throwIfAborted();
       try { return { query: query.pattern, result: await registry.execute(query.files ? 'search_files' : 'search_content', query, context) }; }
       catch (error: any) { context.signal.throwIfAborted(); return { query: query.pattern, error: error.message }; }
