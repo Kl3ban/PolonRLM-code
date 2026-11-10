@@ -58,7 +58,7 @@ function fixture(initial: Partial<UIState> = {}, inputs: { mouseEvents?: EventEm
     async listModels() { if (services.failModels) throw new Error('HTTP 401: set an API key'); return [{ id: 'acme/fast', contextWindow: 32000 }, { id: 'acme/deep', contextWindow: 64000 }]; },
     listEfforts() { return [{ id: 'auto', label: 'Automatic' }, { id: 'low', label: 'Low' }, { id: 'high', label: 'High' }]; },
     async setEffort(id) { effortsChosen.push(id); },
-    listProviders() { return [{ id: 'custom', url: 'http://localhost/v1', model: 'test-model' }, ...['google', 'nvidia', 'mistral', 'openai'].map(id => ({ id, url: 'https://example.com', model: 'test-model' }))]; },
+    listProviders() { return [{ id: 'custom', url: 'http://localhost/v1', model: 'test-model' }, ...['google', 'nvidia', 'mistral', 'openai', 'teamorouter'].map(id => ({ id, url: id === 'teamorouter' ? 'https://api.teamorouter.com/v1' : 'https://example.com', model: 'test-model' }))]; },
     async configureProvider(provider, apiKey) { endpointsSaved.push({ provider, apiKey }); update({ provider: provider.id, model: provider.model }); },
     async setModel(id, persist) { modelsChosen.push({ id, persist }); update({ model: id }); },
     async selectProvider(id) { providersChosen.push(id); update({ provider: id }); },
@@ -562,9 +562,9 @@ test('idle home stays still and preserves draft without background timers', asyn
   assert.match(view.app.lastFrame()!, /Nie przeszkadzaj podczas pisania/);
 });
 
-test('provider wizard selects Google, NVIDIA, Mistral and OpenAI and permits keeping an existing key', async t => {
+test('provider wizard selects Google, NVIDIA, Mistral, OpenAI and TeamRouter and permits keeping an existing key', async t => {
   const view = fixture(); t.after(() => view.dispose()); await view.ready();
-  for (const id of ['google', 'nvidia', 'mistral', 'openai']) {
+  for (const id of ['google', 'nvidia', 'mistral', 'openai', 'teamorouter']) {
     view.app.stdin.write('\u000f');
     await until(() => /API providers/.test(view.app.lastFrame() || ''), 'open provider picker');
     await view.type(id); view.app.stdin.write('\r');
@@ -574,7 +574,7 @@ test('provider wizard selects Google, NVIDIA, Mistral and OpenAI and permits kee
     view.app.stdin.write('\u001b');
     await until(() => !/Models \/ ENGINE/.test(view.app.lastFrame() || ''), 'close picker');
   }
-  assert.deepEqual(view.providersChosen, ['google', 'nvidia', 'mistral', 'openai']);
+  assert.deepEqual(view.providersChosen, ['google', 'nvidia', 'mistral', 'openai', 'teamorouter']);
 });
 
 test('custom endpoint wizard saves URL, model and a masked pasted key', async t => {
