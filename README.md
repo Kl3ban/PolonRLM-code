@@ -1,30 +1,32 @@
-﻿# PolonRLM
+# PolonRLM
 
-A terminal coding agent for working in an existing project. It can inspect code, use a language model, call local tools, edit files, and run commands with your approval settings.
+A coding agent that runs in your terminal and works in the project you open.
 
-PolonRLM is written in TypeScript and runs on Node.js 24 or newer. The workflow takes inspiration from OpenCode, while the codebase and interface are its own.
+[![Checks](https://github.com/Kl3ban/PolonRLM-code/actions/workflows/ci.yml/badge.svg)](https://github.com/Kl3ban/PolonRLM-code/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-5b7773.svg)](LICENSE)
 
-## What it can do
+<p align="center">
+  <img src="assets/screenshots/polonrlm-home.png" alt="PolonRLM running in a terminal" width="900">
+</p>
 
-- Connect to Google, OpenAI, Anthropic, OpenRouter, NVIDIA, Mistral, DeepSeek, TeamRouter, Groq, Ollama, LM Studio, vLLM, and custom OpenAI-compatible endpoints.
-- Read and edit files, search code, inspect Git, run tests, and use shell tools.
-- Find TypeScript/JavaScript definitions, references, and AST nodes; use installed language servers for other languages, including workspace symbols and call hierarchy.
-- Delegate focused work to subagents that share the task budget.
-- Keep conversation history in a local SQLite database and compact old context without another model call.
-- Start with no global task caps for tokens, cost, calls, context, agents, or tool output. Configure caps in `/settings` or `/budget` if you need them; model and provider limits still apply. NVIDIA keeps a provider-specific long timeout for slow inference startup.
-- Search the web through ordinary public search pages, without a search API key.
-- Automate a headless browser with Playwright. Missing Chromium or Firefox builds are downloaded only when first needed.
-- Attach images when the selected model supports vision.
-- Control the Windows desktop through the `computer_use` tool.
-- Load local skills and connect MCP servers.
+PolonRLM is written in TypeScript and runs on Node.js 24 or newer. It takes inspiration from OpenCode, but has its own code and interface.
 
-The model chooses when to use tools. File edits, shell commands, browser actions, and other operations follow the configured permission rules.
+## What it does
 
-## Quick start
+- Reads and searches project files, checks Git, edits code, and runs commands.
+- Uses TypeScript and JavaScript symbol tools, AST tools, and language servers.
+- Hands separate tasks to subagents that share the task budget.
+- Searches the web, controls a headless browser, connects to MCP servers, and can use the Windows desktop.
+- Saves chat history locally and can compact old context without another model call.
+- Connects to hosted APIs, local model servers, or a custom OpenAI-compatible endpoint.
+
+The model chooses when to use tools. Writes, shell commands, and other actions follow the permission settings. By default, PolonRLM asks before sensitive actions. Shell commands run with your Windows or terminal account permissions.
+
+## Install
 
 You need Node.js 24 or newer.
 
-~~~sh
+```sh
 git clone https://github.com/Kl3ban/PolonRLM-code.git
 cd PolonRLM-code
 npm ci
@@ -32,96 +34,81 @@ npm run build
 npm link
 PolonRLM setup
 PolonRLM
-~~~
+```
 
-On Windows, you can also run the PowerShell installer:
+On Windows, the setup script can install the command for you:
 
-~~~powershell
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 PolonRLM setup
 PolonRLM
-~~~
+```
 
-The setup wizard helps choose a provider and model. API keys are entered locally and are not stored in the repository. On Windows, keys are encrypted with DPAPI. On other systems, use the environment variable shown for your provider.
+The setup screen helps you choose a provider and model. Enter API keys locally; they are not part of the repository. Windows stores keys encrypted with DPAPI. On other systems, use the environment variable for your provider.
 
-Local web search uses a small Python helper and needs Python 3.11 or newer. Its dependencies are installed automatically on first use. You can also prepare them with `PolonRLM setup web`. Browser engines are installed only when the chosen engine needs them.
+## Providers and models
 
-## A few commands
+Built-in providers include Google, OpenAI, Anthropic, OpenRouter, NVIDIA, Mistral, DeepSeek, TeamRouter, Groq, Ollama, LM Studio, and vLLM. You can also add a custom OpenAI-compatible endpoint.
 
-~~~text
-/connect google
-/key <your-api-key>
-/models
-/model gemini-3.5-flash-lite
-/plan Explain how this project is structured
-/build Fix the failing settings code
-/review Look for unsafe file handling
-/settings
-/permissions
-/goal Add a config export command
-/image C:/Pictures/diagram.png
-/undo
-~~~
-
-The models available to you depend on the provider and your account. A model may appear in a provider catalog but still be unavailable to your account. Use `/help` for the full list, or see [docs/COMMANDS.md](docs/COMMANDS.md).
-
-## Run without the interactive UI
-
-~~~sh
-PolonRLM run "Review this project and list the main risks" --mode PLAN
-PolonRLM run "Add a README section" --permission workspace
-PolonRLM run "Check the current setup" --json
-PolonRLM doctor
-~~~
-
-The default permission mode asks before sensitive actions. `workspace` allows normal file changes in the project. `readonly` blocks writes and shell actions. Shell commands run with your account and are not sandboxed, so read approval prompts before accepting them.
-
-## Providers
-
-Built-in presets cover hosted APIs and local model servers. Local endpoints such as Ollama and LM Studio can be used without a hosted API key.
-
-~~~text
-/connect nvidia
-/connect teamorouter
-/connect ollama
-/connect custom https://host.example/v1
+```text
+/connect
+/key <api-key>
 /models
 /model <model-id>
-/effort
-/effort high
-/settings provider.reasoning low
-~~~
+```
 
-Provider catalogs may not report prices or every model capability. When the information is unknown, PolonRLM leaves it marked as unknown. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for more detail.
+`/models` shows models listed by the provider. It does not confirm that your account can use every model shown. See [provider notes](docs/PROVIDERS.md).
 
-## Browser and web tools
+## Commands
 
-The settings panel lets you choose a browser engine:
+| Command | Use |
+| --- | --- |
+| `/plan <task>` | Inspect the project and suggest a plan without changing files. |
+| `/build <task>` | Work on a task. File changes still follow your permission settings. |
+| `/review <task>` | Review code without making edits. |
+| `/settings` | Change budgets, browser, model, search, and other options. |
+| `/permissions` | View or change which tools can run automatically. |
+| `/image <path>` | Attach an image to the next request. The model must support images. |
+| `/agents` | See active subagents. |
+| `/sessions` | Find saved chats for the current project. |
+| `/help` | Show the full command list. |
 
-- `auto` tries available Playwright Chromium, Chrome, Edge, Brave, and Firefox engines.
-- `chromium` and `firefox` use Playwright browser builds. Missing builds are downloaded on first use, not during startup.
-- `chrome`, `edge`, and `brave` use an installed system browser.
+More commands are in [docs/COMMANDS.md](docs/COMMANDS.md).
 
-Browser automation runs headless and does not read your regular browser profile or cookies. The network layer blocks local and private destinations. Brave is detected in common locations or can be selected with `POLONRLM_BRAVE_PATH`.
+## Web and browser tools
 
-Local web search reads ordinary HTML result pages from Bing, Brave, and Yahoo. It does not use a paid search API or a search key. See [docs/LOCAL-WEB.md](docs/LOCAL-WEB.md).
+Web search uses public search pages and does not need a search API key. Its local helper needs Python 3.11 or newer; setup installs its dependencies when they are needed. Run `PolonRLM setup web` to prepare it in advance.
+
+Browser automation runs headless and does not use your regular browser profile or cookies. Playwright browser builds are downloaded only when first needed. Choose the browser in `/settings`.
+
+## Limits and permissions
+
+Token, cost, call, context, agent, process, and tool-output limits start unlimited in PolonRLM. Set limits in `/settings` or `/budget` if you want them. Your provider still applies its own limits and billing.
+
+The `workspace` permission allows normal changes in the current project. `readonly` blocks writes and shell actions. Read each approval prompt before accepting it; shell commands are not sandboxed.
 
 ## Development
 
-~~~sh
+```sh
 npm ci
 npm run check
 npm test
 npm run build
 npm run bench
-~~~
+```
 
-The regular tests use local fixtures and do not need an AI API key. `npm run test:live` calls a real provider and may spend API credits, so it is separate from the regular test command.
+These tests run locally and do not need a model API key. Live tests use a real provider and may use its tokens or credits, so they are separate commands.
 
-GitHub Actions runs checks on Windows, macOS, and Linux for pushes and pull requests.
+## More information
 
-More background is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/TOOLS.md](docs/TOOLS.md), and [docs/COMPUTER-USE.md](docs/COMPUTER-USE.md).
+- [Architecture](docs/ARCHITECTURE.md)
+- [Commands](docs/COMMANDS.md)
+- [Providers](docs/PROVIDERS.md)
+- [Tools](docs/TOOLS.md)
+- [Local web search](docs/LOCAL-WEB.md)
+- [Browser and desktop control](docs/COMPUTER-USE.md)
+- [License](LICENSE)
 
 ## License
 
-PolonRLM is released under the MIT License. See [LICENSE](LICENSE).
+MIT
