@@ -782,9 +782,9 @@ test('global agent count rejects oversized delegation without spawning children'
   assert.equal(h.runtime.agents.length, 0);
 });
 
-test('unlimited agent setting accepts a batch larger than the former default', { timeout: 20_000 }, async t => {
-  const tasks = Array.from({ length: 9 }, (_, index) => ({ role: 'reviewer' as const, task: `Inspect independent fixture ${index} and report any issue found.` }));
-  let parentCalls = 0, childCalls = 0;
+test('unlimited agent setting runs a 32-agent batch concurrently', { timeout: 20_000 }, async t => {
+  const tasks = Array.from({ length: 32 }, (_, index) => ({ role: 'reviewer' as const, task: `Inspect independent fixture ${index} and report any issue found.` }));
+  let parentCalls = 0, childCalls = 0, activeChildren = 0, peakActiveChildren = 0;
   const h = await harness(t, async (messages, tools) => {
     if (messages[0]!.content.includes('Role: orchestrator.')) {
       if (++parentCalls === 1) {
@@ -792,16 +792,19 @@ test('unlimited agent setting accepts a batch larger than the former default', {
         assert.ok(delegate);
         const parameters = delegate.parameters.properties as Record<string, { items?: { maxItems?: number } }>;
         assert.equal(parameters.tasks?.items?.maxItems, undefined, 'unlimited defaults do not impose the former fixed parallel cap');
-        return reply('', [{ id: 'nine-reviewers', name: 'delegate', arguments: { tasks } }]);
+        return reply('', [{ id: 'thirty-two-reviewers', name: 'delegate', arguments: { tasks } }]);
       }
-      return reply('All reviewers completed.');
+      return reply('All 32 reviewers completed.');
     }
-    childCalls++;
+    childCalls++; activeChildren++; peakActiveChildren = Math.max(peakActiveChildren, activeChildren);
+    await setTimeout(25);
+    activeChildren--;
     return reply('Review complete.');
   }, { maxAgents: 0, maxDepth: -1, maxSteps: 0, tokenBudget: 0, dollarBudget: 0, maxInputTokens: 0, maxOutputTokens: 0, timeoutMs: 0, toolOutputLimit: 0 });
-  assert.equal(await h.runtime.run(h.session, 'Run nine independent reviews.', new AbortController().signal), 'All reviewers completed.');
-  assert.equal(childCalls, 9);
-  assert.equal(h.runtime.agents.length, 9);
+  assert.equal(await h.runtime.run(h.session, 'Run thirty-two independent reviews.', new AbortController().signal), 'All 32 reviewers completed.');
+  assert.equal(childCalls, 32);
+  assert.ok(peakActiveChildren > 1, 'independent subagents should overlap instead of running serially');
+  assert.equal(h.runtime.agents.length, 32);
   assert.ok(h.runtime.agents.every(agent => agent.status === 'done'));
 });
 
