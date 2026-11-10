@@ -10,13 +10,13 @@ export class ProcessOutputBuffer {
   private readonly decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
   output = '';
   truncated = false;
-  constructor(private readonly maximum = 64000) {}
+  constructor(private readonly maximum = 0) {}
   write(stream: 'stdout' | 'stderr', chunk: Buffer | string): void { this.append(this.decoders[stream].write(Buffer.from(chunk))); }
   end(stream: 'stdout' | 'stderr'): void { this.append(this.decoders[stream].end()); }
   private append(text: string): void {
     if (!text) return;
     this.output += text;
-    if (this.output.length > this.maximum) {
+    if (this.maximum > 0 && this.output.length > this.maximum) {
       let start = this.output.length - this.maximum;
       const first = this.output.charCodeAt(start);
       if (first >= 0xdc00 && first <= 0xdfff) start++;
@@ -26,13 +26,13 @@ export class ProcessOutputBuffer {
   }
 }
 
-export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0): void {
+export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0): void {
   type Job = { id: string; command: string; interactive: boolean; stdin?: NodeJS.WritableStream; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
   const jobs = new Map<string, Job>();
   const find = (id: string) => { const job = jobs.get(id); if (!job) throw new Error('Unknown process for this run.'); return job; };
   const snapshot = (job: Job) => ({ id: job.id, command: job.command, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated });
   registry.onClose(async () => { jobs.forEach(job => job.abort.abort()); await Promise.all([...jobs.values()].map(job => job.done)); });
-  registry.add('process_start', 'Start an approved shell command in the background. Timeout defaults to none; a global timeout or the optional timeoutMs argument can limit it. Output is kept to 64 KB. Only owned jobs can be stopped. Jobs stop on task cancellation, timeout or app exit.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
+  registry.add('process_start', 'Start an approved shell command in the background. Timeout and output are unlimited by default; configured global limits apply. Only owned jobs can be stopped. Jobs stop on task cancellation, timeout or app exit.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
     await workspace.permissions.check('process_start', 'shell', 'Run a command in the background outside a sandbox.', args.command, context.mode, context.signal);
     context.signal.throwIfAborted();
     const processLimit = maxProcesses();
@@ -46,7 +46,7 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
     const timeoutMs = configuredTimeout > 0 ? (args.timeoutMs > 0 ? Math.min(configuredTimeout, args.timeoutMs) : configuredTimeout) : args.timeoutMs;
     const child = execa(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoLogo', '-NoProfile', ...(args.interactive ? [] : ['-NonInteractive']), '-Command', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + args.command] : ['-c', args.command], { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' });
     const job: Job = { id, command: safeText(args.command), interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
-     const output = new ProcessOutputBuffer();
+     const output = new ProcessOutputBuffer(outputLimit());
      const publishOutput = () => { job.output = output.output; job.truncated = output.truncated; job.waiters.forEach(wake => wake()); };
      child.stdout?.on('data', (chunk: Buffer) => { output.write('stdout', chunk); publishOutput(); });
      child.stderr?.on('data', (chunk: Buffer) => { output.write('stderr', chunk); publishOutput(); });
@@ -56,7 +56,7 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
     jobs.set(id, job); return { id, running: true, interactive: job.interactive };
   });
   registry.add('process_list', 'List background jobs started by this agent.', z.object({}), true, async () => [...jobs.values()].map(job => ({ ...snapshot(job), output: undefined })));
-  registry.add('process_output', 'Read recent bounded output and actual status of a background job.', z.object({ id: z.string(), waitMs: z.number().int().min(0).max(30000).default(0) }), true, async (args, context) => {
+  registry.add('process_output', 'Read retained output and actual status of a background job. Output is trimmed only when Tool output is configured.', z.object({ id: z.string(), waitMs: z.number().int().min(0).max(30000).default(0) }), true, async (args, context) => {
     const job = find(args.id);
     if (args.waitMs && job.running) {
       let timer: ReturnType<typeof setTimeout> | undefined;

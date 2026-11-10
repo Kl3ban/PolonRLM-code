@@ -16,7 +16,7 @@ import { resolvePythonCommand } from './python-runtime.js';
 
 export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean } = {}): void {
   if (options.computer !== false) registerComputerTool(registry, workspace);
-  registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs);
+  registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit);
   registerBrowserSessionTools(registry, workspace, () => settings.browserEngine);
   const file = z.object({ path: z.string().min(1) });
   registry.add('read_file', 'Read numbered text lines. Request targeted ranges.', file.extend({ start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(1000).default(200) }), true, async args => workspace.read(args.path, args.start, args.lines));
@@ -49,10 +49,9 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
   async function processRun(tool: string, command: string, args: string[], context: ToolContext, approved = false): Promise<unknown> {
     if (!approved) await workspace.permissions.check(tool, 'shell', 'Command runs with your permissions, outside a sandbox. Approve only trusted code.', `${command} ${args.join(' ')}`, context.mode, context.signal);
     context.signal.throwIfAborted();
-    const result = await execa(command, args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), reject: false, timeout: settings.timeoutMs > 0 ? settings.timeoutMs : undefined, cancelSignal: context.signal, killDescendants: true, forceKillAfterDelay: 1000, maxBuffer: 2_000_000, windowsHide: true, cleanup: true });
+    const result = await execa(command, args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), reject: false, timeout: settings.timeoutMs > 0 ? settings.timeoutMs : undefined, cancelSignal: context.signal, killDescendants: true, forceKillAfterDelay: 1000, maxBuffer: Number.POSITIVE_INFINITY, windowsHide: true, cleanup: true });
     context.signal.throwIfAborted();
     if (result.timedOut) throw new Error(`Command timed out after ${settings.timeoutMs} ms.`);
-    if (result.isMaxBuffer) throw new Error('Command output exceeds the 2 MB limit. Narrow the command.');
     if (result.exitCode === undefined) throw new Error(`Command was not started: ${result.shortMessage ?? result.stderr}`);
     return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr };
   }

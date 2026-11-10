@@ -19,11 +19,11 @@ async function mapConcurrent<T, R>(items: readonly T[], concurrency: number, wor
   return results;
 }
 
-export function registerAdvancedTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0): void {
+export function registerAdvancedTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0): void {
   let plan: { step: string; status: 'pending' | 'in_progress' | 'done' }[] = [];
   registry.add('plan_update', 'Maintain a compact in-memory task plan (not proof of completion). At most one step in progress. Does not edit project files.', z.object({ steps: z.array(z.object({ step: z.string().min(1).max(300), status: z.enum(['pending', 'in_progress', 'done']) })).max(30) }), true, async args => { if (args.steps.filter((step: any) => step.status === 'in_progress').length > 1) throw new Error('Only one plan step can be active at a time.'); plan = args.steps; return plan; });
   registry.add('plan_status', 'Read the current in-memory task plan.', z.object({}), true, async () => plan);
-  registerProcessTools(registry, workspace, maxProcesses, globalTimeoutMs); registerCheckpointTools(registry, workspace); registerCodeTools(registry, workspace); registerLspTool(registry, workspace);
+  registerProcessTools(registry, workspace, maxProcesses, globalTimeoutMs, outputLimit); registerCheckpointTools(registry, workspace); registerCodeTools(registry, workspace); registerLspTool(registry, workspace);
   registerDocumentTools(registry, workspace);
   registry.add('transaction_begin', 'Start one in-memory file change transaction. Later writes can be committed or rolled back together.', z.object({ name: z.string().min(1).max(100) }), false, async args => workspace.beginTransaction(args.name));
   registry.add('transaction_status', 'Show the active file change transaction and its touched paths.', z.object({}), true, async () => workspace.transactionStatus() ?? { active: false });

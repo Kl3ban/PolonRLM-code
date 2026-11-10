@@ -15,7 +15,7 @@ import { z } from 'zod';
 async function fixture(t: test.TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'polon-advanced-')); const settings = defaultSettings(); settings.permissions = 'workspace'; settings.toolOutputLimit = 100000;
   const permissions = new Permissions(settings); permissions.approve = async () => true;
-  const workspace = await Workspace.open(root, permissions); const registry = new ToolRegistry(permissions, 100000); registerBuiltins(registry, workspace, settings);
+  const workspace = await Workspace.open(root, permissions); const registry = new ToolRegistry(permissions, () => settings.toolOutputLimit); registerBuiltins(registry, workspace, settings);
   t.after(async () => { await registry.close(); assert.equal(path.dirname(root), path.resolve(os.tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const run = async (name: string, args: Record<string, unknown>) => { const text = await registry.execute(name, args, { mode: 'BUILD', signal: new AbortController().signal }); try { return JSON.parse(text); } catch { return text; } };
   return { root, workspace, registry, permissions, settings, run };
@@ -174,11 +174,34 @@ test('background process decoding preserves split UTF-8 and truncates on Unicode
   assert.equal(split.output, '');
   split.write('stdout', Buffer.from([0x82, 0xac])); split.end('stdout');
   assert.equal(split.output, '€');
-  const bounded = new ProcessOutputBuffer();
+  const unbounded = new ProcessOutputBuffer();
+  unbounded.write('stdout', Buffer.from('x'.repeat(70000))); unbounded.end('stdout');
+  assert.equal(unbounded.output.length, 70000);
+  assert.equal(unbounded.truncated, false);
+  const bounded = new ProcessOutputBuffer(64000);
   bounded.write('stdout', Buffer.from('😀' + 'x'.repeat(63999))); bounded.end('stdout');
   assert.equal(bounded.output.length, 63999);
   assert.equal(bounded.output, 'x'.repeat(63999));
   assert.equal(bounded.truncated, true);
+});
+
+test('foreground shell output has no hidden 2 MB cap when tool output is unlimited', async t => {
+  const f = await fixture(t);
+  f.settings.toolOutputLimit = 0;
+  const result = await f.run('execute_command', { command: `node -e "process.stdout.write('x'.repeat(2100000))"` });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.length, 2100000);
+  assert.equal(result.stderr, '');
+});
+
+test('background process output has no hidden 64 KB cap when tool output is unlimited', async t => {
+  const f = await fixture(t);
+  f.settings.toolOutputLimit = 0;
+  const job = await f.run('process_start', { command: `node -e "process.stdout.write('x'.repeat(70000))"`, timeoutMs: 5000 });
+  const result = await f.run('process_output', { id: job.id, waitMs: 5000 });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.output, 'x'.repeat(70000));
+  assert.equal(result.truncated, false);
 });
 
 test('background process output preserves a multibyte character split across real stream chunks', async t => {
