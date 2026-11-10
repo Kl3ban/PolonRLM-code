@@ -187,6 +187,23 @@ test('authentication errors do not retry or leak API key', async () => {
   } finally { await local.close(); }
 });
 
+test('HTTP 403 explains model access restrictions without exposing credentials', async () => {
+  const local = await server((_request, response) => {
+    response.writeHead(403, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'Authorization failed. private-key' } }));
+  });
+  try {
+    await assert.rejects(createProvider(config(local.baseURL), 'private-key', 100).complete([{ role: 'user', content: 'hello' }], [], () => {}, new AbortController().signal), error => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, 'The provider denied access to this model or endpoint (HTTP 403). Check the API key permissions and whether the provider allows this model.');
+      assert.ok(!error.message.includes('private-key'));
+      assert.equal((error as Error & { statusCode?: number }).statusCode, 403);
+      assert.equal(isRetryableProviderError(error), false);
+      return true;
+    });
+  } finally { await local.close(); }
+});
+
 test('overloaded model errors recommend retrying the selected model without suggesting a switch', async () => {
   const models: string[] = [];
   const local = await server(async (request, response) => {
