@@ -269,11 +269,11 @@ test('secret masking spans arbitrary stream chunks, including overlapping secret
 });
 
 test('common provider and cloud credentials are redacted even before they are registered', () => {
-  const credentials = ['gsk_' + 'a'.repeat(32), 'nvapi-' + 'b'.repeat(32), 'xai-' + 'c'.repeat(32), 'ya29.' + 'd'.repeat(32), 'AKIA' + 'E'.repeat(16), 'xoxb-' + 'f'.repeat(28), 'sk_live_' + 'g'.repeat(24)];
+  const qwenCloudKey = 'sk-ws-' + 'abcdefghijklmnop' + '.' + 'qrstuvwxyz1234567890';
+  const credentials = ['gsk_' + 'a'.repeat(32), 'nvapi-' + 'b'.repeat(32), 'xai-' + 'c'.repeat(32), 'ya29.' + 'd'.repeat(32), 'AKIA' + 'E'.repeat(16), 'xoxb-' + 'f'.repeat(28), 'sk_live_' + 'g'.repeat(24), qwenCloudKey];
   for (const credential of credentials) {
     const output = redact(`credential=${credential}`);
-    assert.ok(!output.includes(credential), `credential leaked: ${credential.slice(0, 8)}`);
-    assert.match(output, /REDACTED/);
+    assert.equal(output, 'credential=[REDACTED]', `credential was only partially redacted: ${credential.slice(0, 8)}`);
   }
 });
 

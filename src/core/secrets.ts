@@ -13,7 +13,7 @@ export function redact(text: string): string {
   let result = text;
   for (const secret of secrets) result = result.split(secret).join('[REDACTED]');
   return result
-    .replace(/\b(?:sk-[\w-]{12,}|sk_(?:live|test)_[\w-]{16,}|rk_(?:live|test)_[\w-]{16,}|AIza[\w-]{20,}|gh[pousr]_[\w]{20,}|gsk_[\w-]{20,}|nvapi-[\w-]{20,}|xai-[\w-]{20,}|ya29\.[\w-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{20,})\b/g, '[REDACTED]')
+    .replace(/\b(?:sk-ws-[\w.-]{20,}|sk-[\w-]{12,}|sk_(?:live|test)_[\w-]{16,}|rk_(?:live|test)_[\w-]{16,}|AIza[\w-]{20,}|gh[pousr]_[\w]{20,}|gsk_[\w-]{20,}|nvapi-[\w-]{20,}|xai-[\w-]{20,}|ya29\.[\w-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{20,})\b/g, '[REDACTED]')
     .replace(/((?:api[_-]?key|authorization|password|secret|access[_-]?token)\s*[=:]\s*["']?)(?:Bearer\s+)?[^\s"',;}]+/gi, '$1[REDACTED]');
 }
 export function safeText(text: string): string {

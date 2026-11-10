@@ -32,8 +32,9 @@ const unexpected = pack.files
   .filter(file => /(?:^|\/)__pycache__(?:\/|$)|\.py[co]$|^docs\/(?:tool-review-live|web-live-check|audit-progress|STATUS)(?:\.|\/|$)|\.log$|(?:^|\/)\.env(?:\.|\/|$)|(?:^|\/)credentials(?:\/|$)|\.(?:sqlite(?:-[^/]+)?|db(?:-[^/]+)?|pem|p12|key|dpapi)$/i.test(file));
 
 assert.deepEqual(unexpected, [], `Unexpected local or secret-bearing files in npm package:\n${unexpected.join('\n')}`);
-const credentialPattern = /AQ\.[A-Za-z0-9_-]{30,}|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|nvapi-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{30,}/;
+const credentialPattern = /AQ\.[A-Za-z0-9_-]{30,}|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|nvapi-[A-Za-z0-9_-]{20,}|sk-ws-[A-Za-z0-9_.-]{20,}|sk-[A-Za-z0-9_-]{30,}/;
 assert.ok(credentialPattern.test(`nvapi-${'n'.repeat(32)}`), 'NVIDIA API keys must be recognized by the package scan.');
+assert.ok(credentialPattern.test(`sk-ws-${'q'.repeat(16)}.${'r'.repeat(20)}`), 'Qwen Cloud API keys with dot-separated segments must be recognized by the package scan.');
 const embeddedCredentials = [];
 for (const file of pack.files) {
   const contents = await readFile(path.resolve(file.path), 'utf8');
