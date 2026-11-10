@@ -24,6 +24,12 @@ function safeBrowserUrl(value: string): string {
   try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return safeText(url.href); }
   catch { return ''; }
 }
+function safeDiagnosticText(value: string): string {
+  return safeText(value)
+    .replace(/\b(Bearer\s+)[^\s"'<>]+/gi, '$1[REDACTED]')
+    .replace(/\b([\w.-]*(?:api[_-]?key|access[_-]?token|token|secret|password|cookie|credential)[\w.-]*\s*[=:]\s*)["']?[^\s"'&,;<>]+/gi, '$1[REDACTED]')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, safeBrowserUrl);
+}
 function pushBounded<T>(items: T[], item: T): void { items.push(item); if (items.length > 200) items.splice(0, items.length - 200); }
 function observePage(page: Page, diagnostics: WeakMap<Page, PageDiagnostics>): void {
   const current: PageDiagnostics = { console: [], network: [] };
@@ -31,12 +37,12 @@ function observePage(page: Page, diagnostics: WeakMap<Page, PageDiagnostics>): v
   page.on('console', message => {
     const location = message.location();
     pushBounded(current.console, {
-      type: message.type(), text: safeText(message.text()).slice(0, 500),
+      type: message.type(), text: safeDiagnosticText(message.text()).slice(0, 500),
       ...(location.url ? { url: safeBrowserUrl(location.url) } : {}),
       ...(location.lineNumber > 0 ? { line: location.lineNumber } : {}),
     });
   });
-  page.on('pageerror', error => pushBounded(current.console, { type: 'pageerror', text: safeText(error.message).slice(0, 500) }));
+  page.on('pageerror', error => pushBounded(current.console, { type: 'pageerror', text: safeDiagnosticText(error.message).slice(0, 500) }));
   page.on('response', response => {
     const status = response.status();
     if (status < 400) return;

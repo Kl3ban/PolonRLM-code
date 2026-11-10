@@ -193,25 +193,29 @@ test('browser console and network diagnostics are bounded, redacted, and read-on
   t.after(() => registry.close());
   const context = { mode: 'REVIEW' as const, signal: new AbortController().signal };
   const opened = JSON.parse(await registry.execute('browser', { action: 'launch', url: 'https://public.example/' }, context));
-  events.get('console')!({ type: () => 'error', text: () => 'api_key=page-secret', location: () => ({ url: 'https://public.example/app.js?token=private', lineNumber: 8 }) });
+  events.get('console')!({ type: () => 'error', text: () => 'api_key=page-secret; fetch failed at https://public.example/api?token=console-secret&debug=yes', location: () => ({ url: 'https://public.example/app.js?token=private', lineNumber: 8 }) });
   events.get('pageerror')!(new Error('Script crashed with nvapi-' + 'x'.repeat(24)));
   const failedRequest = { method: () => 'GET', url: () => 'https://public.example/asset.js?access_token=private' };
   events.get('response')!({ status: () => 503, request: () => failedRequest, url: () => failedRequest.url() });
   events.get('requestfailed')!({ ...failedRequest, failure: () => ({ errorText: 'net::ERR_CONNECTION_RESET' }) });
 
-  const logs = JSON.parse(await registry.execute('browser', { action: 'console', sessionId: opened.sessionId, limit: 1 }, context));
+  const logs = JSON.parse(await registry.execute('browser', { action: 'console', sessionId: opened.sessionId, limit: 10 }, context));
   const network = JSON.parse(await registry.execute('browser', { action: 'network', sessionId: opened.sessionId, limit: 10 }, context));
   assert.equal(logs.total, 2);
-  assert.equal(logs.entries.length, 1);
-  assert.equal(logs.truncated, true);
+  assert.equal(logs.entries.length, 2);
+  assert.equal(logs.truncated, false);
   assert.match(JSON.stringify(logs.entries), /\[REDACTED\]/);
-  assert.doesNotMatch(JSON.stringify(logs), /page-secret|token=private|nvapi-x/);
+  assert.doesNotMatch(JSON.stringify(logs), /page-secret|token=(?:private|console-secret)|debug=yes|nvapi-x/);
   assert.equal(network.total, 2);
   assert.equal(network.entries[0].status, 503);
   assert.equal(network.entries[1].error, 'net::ERR_CONNECTION_RESET');
   assert.doesNotMatch(JSON.stringify(network), /access_token=private/);
   assert.equal(registry.isReadOnly('browser', { action: 'network' }), true);
   assert.ok(registry.specs('REVIEW').some(tool => tool.name === 'browser'));
+
+  const limited = JSON.parse(await registry.execute('browser', { action: 'console', sessionId: opened.sessionId, limit: 1 }, context));
+  assert.equal(limited.entries.length, 1);
+  assert.equal(limited.truncated, true);
 
   for (let index = 0; index < 205; index++) events.get('console')!({ type: () => 'log', text: () => `overflow ${index}`, location: () => ({ url: '', lineNumber: 0 }) });
   const bounded = JSON.parse(await registry.execute('browser', { action: 'console', sessionId: opened.sessionId, limit: 50 }, context));
