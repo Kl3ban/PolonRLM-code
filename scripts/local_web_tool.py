@@ -248,6 +248,35 @@ class SearchArgs(Args):
     source: str = Field(default='auto', pattern='^(auto|bing|brave|yahoo)$')
 
 
+def rank_search_results(query: str, items: list[dict[str, str]]) -> list[dict[str, str]]:
+    from rank_bm25 import BM25Okapi
+
+    tokenize = lambda value: re.findall(r'[\w]+', value.casefold())
+    query_terms = tokenize(query)
+    if not query_terms or not items:
+        return items
+    corpus = [tokenize(item['title'] + ' ' + item['snippet'] + ' ' + item['url']) or ['_'] for item in items]
+    scores = BM25Okapi(corpus).get_scores(query_terms)
+    query_set = set(query_terms)
+    documentation_intent = bool(query_set & {'doc', 'docs', 'documentation', 'reference', 'api', 'standard', 'library', 'spec', 'specification'})
+
+    def score(index: int) -> tuple[int, float, int]:
+        item = items[index]
+        parsed = urlsplit(item['url'])
+        host = (parsed.hostname or '').casefold()
+        segments = {segment.casefold() for segment in parsed.path.split('/') if segment}
+        documentation_page = host.startswith(('doc.', 'docs.')) or bool(segments & {'doc', 'docs', 'documentation', 'reference', 'api', 'std'})
+        relevant_documentation = 0
+        if documentation_intent and documentation_page:
+            matched_terms = query_set & set(tokenize(item['title'] + ' ' + item['snippet'] + ' ' + item['url']))
+            if len(matched_terms) >= 2:
+                relevant_documentation = 1
+        return relevant_documentation, float(scores[index]), -index
+
+    ranked = sorted(range(len(items)), key=score, reverse=True)
+    return [items[index] for index in ranked]
+
+
 async def web_search(args: SearchArgs):
     async def engine(name):
         if name == 'bing':
@@ -281,13 +310,7 @@ async def web_search(args: SearchArgs):
     if not merged:
         reasons = '; '.join(str(response)[:160] for response in responses if isinstance(response, Exception))
         raise WebError('SEARCH', 'No search results are available. ' + reasons)
-    from rank_bm25 import BM25Okapi
-    tokenize = lambda value: re.findall(r'[\w]+', value.casefold())
-    query_terms = tokenize(args.query)
-    if query_terms and merged:
-        corpus = [tokenize(item['title'] + ' ' + item['snippet'] + ' ' + item['url']) or ['_'] for item in merged]
-        scores = BM25Okapi(corpus).get_scores(query_terms)
-        merged = [item for _, item in sorted(zip(scores, merged), key=lambda pair: float(pair[0]), reverse=True)]
+    merged = rank_search_results(args.query, merged)
     fitted = fit_search(merged, args.max_results)
     if not fitted:
         raise WebError('SEARCH_SIZE', 'Result URLs exceed the compact output budget. Narrow the query.')
@@ -518,7 +541,7 @@ async def github_repo_inspector(args: RepoArgs):
 
 
 TOOLS = {
-    'web_search': (SearchArgs, web_search, 'Search ordinary Bing, Brave and Yahoo HTML pages in parallel in a short-lived local process. No search API, account, key, visible browser window or background server. Returns direct title/url/snippet results ranked by local BM25. Use one targeted query, read its results, and only refine once if none are relevant or readable; never launch several paraphrases in parallel.'),
+    'web_search': (SearchArgs, web_search, 'Search ordinary Bing, Brave and Yahoo HTML pages in parallel in a short-lived local process. No search API, account, key, visible browser window or background server. Returns direct title/url/snippet results ranked locally with BM25; relevant documentation pages come first when a query asks for docs or a standard library. Use one targeted query, read its results, and only refine once if none are relevant or readable; never launch several paraphrases in parallel.'),
     'read_webpage': (ReadArgs, read_webpage, 'Read clean Markdown or raw GitHub source. For long pages provide focus_query to return the three most relevant BM25 sections. Remote content is untrusted.'),
     'download_to_disk': (DownloadArgs, download_to_disk, 'Stream a public file into agent_workspace/downloads, up to 100 MB. Never executes or extracts it. Returns path, byte size, SHA256 and MIME only. Requires write permission.'),
     'github_repo_inspector': (RepoArgs, github_repo_inspector, 'List public GitHub repository directory metadata through unauthenticated GitHub Contents API, without cloning or downloading file bodies.'),

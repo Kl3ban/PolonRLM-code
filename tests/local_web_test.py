@@ -108,6 +108,19 @@ class LocalWebTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(web.ValidationError):
             web.SearchArgs(query='local search', source='duckduckgo')
 
+    def test_documentation_intent_promotes_relevant_reference_pages(self):
+        results = [
+            {'title': 'Rust Standard Library: Vec - by Will - Rusting', 'url': 'https://rusting.substack.com/p/rust-standard-library-vec', 'snippet': 'Vec is a powerful tool in Rust for handling collections dynamically.'},
+            {'title': 'std::vec - Rust', 'url': 'https://doc.rust-lang.org/std/vec/index.html', 'snippet': 'A contiguous growable array type with heap-allocated contents.'},
+            {'title': 'rust - Vec push vs append and extend', 'url': 'https://stackoverflow.com/questions/75154715/vec-push', 'snippet': 'Which is the right way to use push, append and extend.'},
+            {'title': 'Documentation index', 'url': 'https://docs.example.net/start', 'snippet': 'Library documentation for unrelated packages.'},
+        ]
+        ranked = web.rank_search_results('Rust Vec push standard library', results)
+        self.assertEqual(ranked[0]['url'], 'https://doc.rust-lang.org/std/vec/index.html')
+        self.assertNotEqual(ranked[0]['url'], 'https://docs.example.net/start')
+        ordinary_query = web.rank_search_results('Rust Vec push', results)
+        self.assertEqual(ordinary_query[0]['url'], results[2]['url'])
+
     def test_compact_results_keep_valid_complete_urls(self):
         source = [{'title': 'Polski tytuł ' * 4, 'url': 'https://example.org/' + str(i), 'snippet': 'ą' * 180} for i in range(10)]
         result = web.fit_search(source, 6)
