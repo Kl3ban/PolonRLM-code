@@ -6,6 +6,10 @@ import path from 'node:path';
 const npmCli = process.env.npm_execpath;
 assert.ok(npmCli, 'Run this check through npm so npm_execpath is available.');
 
+const manifest = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
+assert.ok(manifest.dependencies?.['typescript-api'], 'The code intelligence tools need the TypeScript API at runtime.');
+assert.equal(manifest.devDependencies?.['typescript-api'], undefined, 'The TypeScript API must not be omitted by production installs.');
+
 const output = execFileSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' });
 const [pack] = JSON.parse(output);
 assert.ok(pack?.files?.length, 'npm pack returned no file list.');
