@@ -12,7 +12,7 @@ Use `/permissions` to manage tool access. With no argument, it shows effective r
 
 | Use | Tools |
 | --- | --- |
-| Batch file reading and search | `read_files`, `search_batch` (`search_batch` runs up to four independent searches at once and preserves query order) |
+| Batch file reading and search | `read_files`, `search_batch` (both run up to four independent operations at once and preserve input order) |
 | Background processes and stdin | `process_start`, `process_list`, `process_output`, `process_wait`, `process_input`, `process_stop` |
 | File checkpoints | `checkpoint_create`, `checkpoint_list`, `checkpoint_diff`, `checkpoint_restore`, `checkpoint_drop` |
 | TypeScript and JavaScript analysis | `code_diagnostics`, `code_outline`, `symbol_definition`, `symbol_references`, `symbol_hover`, `rename_symbol` |

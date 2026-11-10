@@ -18,7 +18,7 @@ async function fixture(t: test.TestContext) {
   const workspace = await Workspace.open(root, permissions); const registry = new ToolRegistry(permissions, 100000); registerBuiltins(registry, workspace, settings);
   t.after(async () => { await registry.close(); assert.equal(path.dirname(root), path.resolve(os.tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const run = async (name: string, args: Record<string, unknown>) => { const text = await registry.execute(name, args, { mode: 'BUILD', signal: new AbortController().signal }); try { return JSON.parse(text); } catch { return text; } };
-  return { root, registry, permissions, run };
+  return { root, workspace, registry, permissions, run };
 }
 
 test('batch tools preserve independent results and filesystem boundaries', async t => {
@@ -42,6 +42,24 @@ test('search_batch runs independent searches concurrently and preserves input or
   const results = await f.run('search_batch', { queries });
   assert.equal(peak, 4, 'searches are processed by a four-worker pool');
   assert.deepEqual(results.map((result: any) => result.content), queries.map(query => `result:${query.pattern}`));
+});
+
+test('read_files uses bounded concurrency and preserves input order', async t => {
+  const f = await fixture(t);
+  const files = Array.from({ length: 8 }, (_, index) => ({ path: `${index}.txt` }));
+  await Promise.all(files.map(file => writeFile(path.join(f.root, file.path), `file:${file.path}`)));
+  const read = f.workspace.read.bind(f.workspace);
+  let active = 0, peak = 0;
+  f.workspace.read = async (...args) => {
+    active++; peak = Math.max(peak, active);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return await read(...args);
+    } finally { active--; }
+  };
+  const results = await f.run('read_files', { files });
+  assert.equal(peak, 4, 'file reads are processed by a four-worker pool');
+  assert.deepEqual(results.map((result: any) => result.content), files.map(file => `1: file:${file.path}`));
 });
 
 test('read_document extracts XLSX values and does not evaluate formula cells', async t => {
