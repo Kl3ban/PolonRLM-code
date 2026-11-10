@@ -16,7 +16,8 @@ export const SETTINGS_FIELDS: SettingField[] = [
   { key: 'maxOutputTokens', label: 'Response length', section: 'limits', help: 'No app output cap by default. The model or provider can still enforce its own output limit.', unit: 'tokens' },
   { key: 'maxSteps', label: 'Model calls', section: 'limits', help: 'Unlimited by default. Set a maximum shared across the task and its subagents.' },
   { key: 'maxAgents', label: 'Parallel subagents', section: 'limits', help: 'No configured parallel-agent cap by default. The operating system and provider still have resource limits.' },
+  { key: 'maxProcesses', label: 'Parallel processes', section: 'limits', help: 'No configured background process cap by default. Set a positive count to limit active process jobs.' },
   { key: 'maxDepth', label: 'Delegation depth', section: 'limits', help: 'Unlimited by default. Enter 0 to disable delegation or a number to cap its nesting depth.' },
-  { key: 'timeoutMs', label: 'Request timeout', section: 'limits', help: 'No global app timeout by default. NVIDIA keeps a provider-specific timeout for slow inference startup. Cancel a request with Esc or Ctrl+C.', unit: 'ms' },
+  { key: 'timeoutMs', label: 'Request timeout', section: 'limits', help: 'No global app timeout by default. A configured value also caps background processes. NVIDIA keeps a provider-specific timeout for slow inference startup. Cancel a request with Esc or Ctrl+C.', unit: 'ms' },
   { key: 'toolOutputLimit', label: 'Tool output', section: 'limits', help: 'No app character cap by default. Large results may exceed the selected model context.', unit: 'characters' },
 ];

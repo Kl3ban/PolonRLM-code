@@ -53,7 +53,7 @@ export const settingsSchema = z.object({
   mode: z.enum(['PLAN', 'BUILD', 'REVIEW']), cortex: z.number().int().min(0).max(5),
   maxSteps: z.number().int().nonnegative().safe(), maxInputTokens: z.number().int().nonnegative().safe(),
   maxOutputTokens: z.number().int().nonnegative().safe(), tokenBudget: z.preprocess(value => value === null ? 0 : value, z.number().int().nonnegative().safe().refine(value => value === 0 || value >= 1000, 'Minimum 1,000 or 0 for unlimited')),
-  dollarBudget: z.number().nonnegative(), maxAgents: z.number().int().nonnegative().safe(), maxDepth: z.number().int().min(-1).safe(),
+  dollarBudget: z.number().nonnegative(), maxAgents: z.number().int().nonnegative().safe(), maxProcesses: z.number().int().nonnegative().safe(), maxDepth: z.number().int().min(-1).safe(),
   permissions: z.enum(['ask', 'workspace', 'readonly', 'all']), toolPermissions: z.record(z.string(), z.enum(['ask', 'auto', 'off'])).default({}), allowTools: z.array(z.string()), denyTools: z.array(z.string()),
   theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().nonnegative().safe(), timeoutMs: z.number().int().nonnegative().max(MAX_TIMER_DELAY_MS),
   webSearchMode: z.preprocess(value => value === 'duckduckgo' ? 'auto' : value, z.enum(['auto', 'bing', 'brave', 'yahoo']).default('auto')),
@@ -68,7 +68,7 @@ export const settingsSchema = z.object({
 export function defaultSettings(): Settings {
   return { provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1,
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };

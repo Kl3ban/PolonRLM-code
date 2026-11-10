@@ -26,21 +26,25 @@ export class ProcessOutputBuffer {
   }
 }
 
-export function registerProcessTools(registry: ToolRegistry, workspace: Workspace): void {
+export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0): void {
   type Job = { id: string; command: string; interactive: boolean; stdin?: NodeJS.WritableStream; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
   const jobs = new Map<string, Job>();
   const find = (id: string) => { const job = jobs.get(id); if (!job) throw new Error('Unknown process for this run.'); return job; };
   const snapshot = (job: Job) => ({ id: job.id, command: job.command, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated });
   registry.onClose(async () => { jobs.forEach(job => job.abort.abort()); await Promise.all([...jobs.values()].map(job => job.done)); });
-  registry.add('process_start', 'Start an approved shell command in background. Optional piped stdin supports REPLs and prompts. Returns job ID. Output bounded to 64 KB; only owned jobs can be stopped. Jobs stop on task cancellation, timeout or app exit.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().min(100).max(600000).default(120000), interactive: z.boolean().default(false) }), false, async (args, context) => {
+  registry.add('process_start', 'Start an approved shell command in the background. Timeout defaults to none; a global timeout or the optional timeoutMs argument can limit it. Output is kept to 64 KB. Only owned jobs can be stopped. Jobs stop on task cancellation, timeout or app exit.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
     await workspace.permissions.check('process_start', 'shell', 'Run a command in the background outside a sandbox.', args.command, context.mode, context.signal);
     context.signal.throwIfAborted();
-    if ([...jobs.values()].filter(job => job.running).length >= 8) throw new Error('Limit of 8 active processes reached.');
+    const processLimit = maxProcesses();
+    const active = [...jobs.values()].filter(job => job.running).length;
+    if (processLimit > 0 && active >= processLimit) throw new Error(`Configured limit of ${processLimit} active processes reached. Increase maxProcesses or stop a running job.`);
     if (jobs.size >= 50) { const old = [...jobs.values()].find(job => !job.running); if (old) jobs.delete(old.id); }
     const abort = new AbortController(); const cancel = () => abort.abort();
     context.signal.addEventListener('abort', cancel, { once: true });
     const id = randomUUID();
-    const child = execa(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoLogo', '-NoProfile', ...(args.interactive ? [] : ['-NonInteractive']), '-Command', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + args.command] : ['-c', args.command], { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: args.timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' });
+    const configuredTimeout = globalTimeoutMs();
+    const timeoutMs = configuredTimeout > 0 ? (args.timeoutMs > 0 ? Math.min(configuredTimeout, args.timeoutMs) : configuredTimeout) : args.timeoutMs;
+    const child = execa(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoLogo', '-NoProfile', ...(args.interactive ? [] : ['-NonInteractive']), '-Command', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + args.command] : ['-c', args.command], { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' });
     const job: Job = { id, command: safeText(args.command), interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
      const output = new ProcessOutputBuffer();
      const publishOutput = () => { job.output = output.output; job.truncated = output.truncated; job.waiters.forEach(wake => wake()); };

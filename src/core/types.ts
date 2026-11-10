@@ -33,7 +33,7 @@ export interface LLMProvider {
 export interface Settings {
   provider: string; providers: Record<string, ProviderConfig>; fallback: string[];
   mode: Mode; cortex: number; maxSteps: number; maxInputTokens: number; maxOutputTokens: number;
-  tokenBudget: number; dollarBudget: number; maxAgents: number; maxDepth: number;
+  tokenBudget: number; dollarBudget: number; maxAgents: number; maxProcesses: number; maxDepth: number;
   permissions: 'ask' | 'workspace' | 'readonly' | 'all'; toolPermissions: Record<string, 'ask' | 'auto' | 'off'>; allowTools: string[]; denyTools: string[];
   theme: 'dark' | 'light'; toolOutputLimit: number; timeoutMs: number; webSearchMode: 'auto' | 'bing' | 'brave' | 'yahoo'; browserEngine: 'auto' | 'chromium' | 'chrome' | 'edge' | 'brave' | 'firefox';
   mcp: Record<string, MCPConfig>;

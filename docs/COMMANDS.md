@@ -81,7 +81,7 @@ The built in search reads ordinary public search result pages. It does not use a
 | `/goal pause` | Pauses the saved goal. |
 | `/goal resume` | Continues a paused goal. |
 
-Subagents share the configured task budget. Token, cost, call, context, output, global-timeout, tool-output, and parallel-agent caps start unlimited in the app and can be set in `/settings` or `/budget`. NVIDIA NIM has a separate long request timeout because its free inference can take several minutes to start. Providers still enforce their own context and output limits, rate limits, and billing. Subagents receive a focused task and project instructions rather than the full conversation history.
+Subagents share the configured task budget. Token, cost, call, context, output, global-timeout, tool-output, parallel-agent, and background-process caps start unlimited in the app and can be set in `/settings` or `/budget`. Background processes have no default timeout; the global timeout or a per-call timeout can limit them. NVIDIA NIM has a separate long request timeout because its free inference can take several minutes to start. Providers still enforce their own context and output limits, rate limits, and billing. Subagents receive a focused task and project instructions rather than the full conversation history.
 
 ## Skills and MCP
 

@@ -49,11 +49,11 @@ test('migrates the former 200000-token factory budget but preserves a customized
   const migrated = new ConfigManager(directory); await migrated.load();
   assert.deepEqual({
     maxSteps: migrated.settings.maxSteps, maxInputTokens: migrated.settings.maxInputTokens, maxOutputTokens: migrated.settings.maxOutputTokens,
-    tokenBudget: migrated.settings.tokenBudget, dollarBudget: migrated.settings.dollarBudget, maxAgents: migrated.settings.maxAgents,
+    tokenBudget: migrated.settings.tokenBudget, dollarBudget: migrated.settings.dollarBudget, maxAgents: migrated.settings.maxAgents, maxProcesses: migrated.settings.maxProcesses,
     maxDepth: migrated.settings.maxDepth, toolOutputLimit: migrated.settings.toolOutputLimit, timeoutMs: migrated.settings.timeoutMs,
   }, {
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
   });
 
   const customizedDirectory = await mkdtemp(path.join(os.tmpdir(), 'polon-custom-budget-'));
@@ -68,11 +68,11 @@ test('fresh settings start with no application-imposed resource limits', () => {
   const settings = defaultSettings();
   assert.deepEqual({
     maxSteps: settings.maxSteps, maxInputTokens: settings.maxInputTokens, maxOutputTokens: settings.maxOutputTokens,
-    tokenBudget: settings.tokenBudget, dollarBudget: settings.dollarBudget, maxAgents: settings.maxAgents,
+    tokenBudget: settings.tokenBudget, dollarBudget: settings.dollarBudget, maxAgents: settings.maxAgents, maxProcesses: settings.maxProcesses,
     maxDepth: settings.maxDepth, toolOutputLimit: settings.toolOutputLimit, timeoutMs: settings.timeoutMs,
   }, {
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
   });
 });
 
@@ -170,8 +170,9 @@ test('session search treats SQL wildcards literally and first-message titles are
 
 test('configuration persists validated settings and rejects malformed data', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'janusz-config-')); const config = new ConfigManager(home);
-  await config.load(); config.settings.maxAgents = 500; await config.save(); const reloaded = new ConfigManager(home); await reloaded.load();
+  await config.load(); config.settings.maxAgents = 500; config.settings.maxProcesses = 500; await config.save(); const reloaded = new ConfigManager(home); await reloaded.load();
   assert.equal(reloaded.settings.maxAgents, 500);
+  assert.equal(reloaded.settings.maxProcesses, 500);
   await writeFile(path.join(home, 'config.json'), '{"maxAgents":"many"}'); await assert.rejects(reloaded.load(), /Invalid configuration/);
 });
 
@@ -179,10 +180,11 @@ test('configurable limits have no arbitrary app ceiling beyond the native timer 
   const settings = defaultSettings();
   const parsed = settingsSchema.parse({ ...settings,
     maxSteps: 201, maxInputTokens: 1_000_001, maxOutputTokens: 128_001,
-    maxAgents: 9, maxDepth: 3, toolOutputLimit: 100_001, timeoutMs: 600_001,
+    maxAgents: 9, maxProcesses: 9, maxDepth: 3, toolOutputLimit: 100_001, timeoutMs: 600_001,
     providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 600_001 } },
   });
   assert.equal(parsed.maxAgents, 9);
+  assert.equal(parsed.maxProcesses, 9);
   assert.equal(parsed.maxDepth, 3);
   assert.equal(parsed.timeoutMs, 600_001);
   assert.equal(settingsSchema.parse({ ...settings, timeoutMs: 2_147_483_647 }).timeoutMs, 2_147_483_647);

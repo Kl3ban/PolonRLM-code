@@ -16,7 +16,7 @@ import { resolvePythonCommand } from './python-runtime.js';
 
 export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean } = {}): void {
   if (options.computer !== false) registerComputerTool(registry, workspace);
-  registerAdvancedTools(registry, workspace);
+  registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs);
   registerBrowserSessionTools(registry, workspace, () => settings.browserEngine);
   const file = z.object({ path: z.string().min(1) });
   registry.add('read_file', 'Read numbered text lines. Request targeted ranges.', file.extend({ start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(1000).default(200) }), true, async args => workspace.read(args.path, args.start, args.lines));
