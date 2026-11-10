@@ -44,7 +44,8 @@ async function sourceSkill(root: string, name: string, license = true): Promise<
 test('skills create, disable, enable, task match, load and remove persist', async t => {
   const root = await temporary(t);
   const manager = new SkillsManager(join(root, 'home'), join(root, 'workspace'));
-  await manager.create('regression-tests', 'Diagnose regression failures and verify focused tests.', 'Inspect actual failures. Run focused tests.');
+  const created = await manager.create('regression-tests', 'Diagnose regression failures and verify focused tests.', 'Inspect actual failures. Run focused tests.');
+  assert.match(created, /^Created skill regression-tests:/);
   assert.match(await manager.load('regression-tests'), /Inspect actual failures/);
   assert.ok((await manager.match('Diagnose regression failures')).includes('regression-tests'));
   await manager.enable('regression-tests', false);

@@ -161,7 +161,7 @@ export class SkillsManager {
       const registry = await this.registry();
       registry.records[name] = { enabled: true, license: 'MIT' };
       await this.save(registry);
-      return `Utworzono skill ${name}: ${target}`;
+      return `Created skill ${name}: ${target}`;
     } catch (error) { await rm(target, { recursive: true, force: true }); throw error; }
   }
 
