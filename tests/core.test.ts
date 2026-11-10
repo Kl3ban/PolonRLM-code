@@ -41,6 +41,24 @@ test('separate PolonRLM processes merge changes to different settings fields', a
   assert.deepEqual((await readdir(home)).sort(), ['config.json']);
 });
 
+test('migrates the former 200000-token factory budget but preserves a customized budget', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'polon-unlimited-migration-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const oldSettings = { ...defaultSettings(), maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
+  await writeFile(path.join(directory, 'config.json'), JSON.stringify(oldSettings));
+  const migrated = new ConfigManager(directory); await migrated.load();
+  assert.equal(migrated.settings.tokenBudget, 0);
+  assert.equal(migrated.settings.maxInputTokens, 0);
+  assert.equal(migrated.settings.dollarBudget, 0);
+
+  const customizedDirectory = await mkdtemp(path.join(os.tmpdir(), 'polon-custom-budget-'));
+  t.after(() => rm(customizedDirectory, { recursive: true, force: true }));
+  await writeFile(path.join(customizedDirectory, 'config.json'), JSON.stringify({ ...oldSettings, tokenBudget: 250000 }));
+  const customized = new ConfigManager(customizedDirectory); await customized.load();
+  assert.equal(customized.settings.tokenBudget, 250000);
+  assert.equal(customized.settings.maxInputTokens, 0);
+});
+
 test('existing configuration gains the provider catalog while retaining custom settings', async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-catalog-'));
   t.after(() => rm(home, { recursive: true, force: true }));

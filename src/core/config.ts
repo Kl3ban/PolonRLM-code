@@ -68,7 +68,7 @@ export function defaultSettings(): Settings {
     maxAgents: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
-const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
+const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
 function migrateDefaultLimits(saved: unknown): unknown {
   if (!isRecord(saved)) return saved;
   const migrated = { ...saved };
