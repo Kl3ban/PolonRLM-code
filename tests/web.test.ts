@@ -9,6 +9,7 @@ import { defaultSettings } from '../src/core/config.js';
 import { Permissions } from '../src/core/permissions.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { Workspace } from '../src/tools/workspace.js';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { checkboxStatus, registerBrowserSessionTools, summarizeBrowserTab } from '../src/tools/browser-session.js';
 
 const publicResolver: PublicResolver = async () => [{ address: '8.8.8.8', family: 4 }];
@@ -82,6 +83,53 @@ test('browser reading is discoverable in review while page interactions remain b
   await assert.rejects(registry.execute('browser', { action: 'launch', url: 'https://public.example' }, context), /Approval denied/);
   await assert.rejects(registry.execute('browser', { action: 'click', sessionId: 'fixture', selector: '#button' }, context), /mode REVIEW/);
   await assert.rejects(registry.execute('browser', { action: 'launch' }, context), /url.*requires url/);
+});
+
+test('new browser tabs validate destinations first and discard failed navigations', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'polon-browser-tabs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = { ...defaultSettings(), permissions: 'all' as const };
+  const permissions = new Permissions(settings), workspace = await Workspace.open(root, permissions);
+  const registry = new ToolRegistry(permissions, 20000);
+  let createdPages = 0, closedPages = 0;
+  const makePage = (): Page => {
+    let currentUrl = 'about:blank', closed = false;
+    return {
+      url: () => currentUrl,
+      isClosed: () => closed,
+      title: async () => currentUrl === 'about:blank' ? 'Blank' : 'Fixture',
+      setDefaultTimeout: () => {},
+      goto: async (url: string) => { if (url === 'https://fail.example/') throw new Error('navigation failed'); currentUrl = url; },
+      close: async () => { closed = true; closedPages++; },
+    } as unknown as Page;
+  };
+  const browserContext = {
+    routeWebSocket: async () => {}, route: async () => {},
+    newPage: async () => { createdPages++; return makePage(); },
+  } as unknown as BrowserContext;
+  const browser = { newContext: async () => browserContext, close: async () => {} } as unknown as Browser;
+  const proxy = { url: 'http://127.0.0.1:0', close: async () => {} };
+  registerBrowserSessionTools(registry, workspace, () => 'chromium', {
+    launchBrowser: async () => ({ browser, engine: 'chromium' }),
+    createSafeEgressProxy: async () => proxy,
+    publicURL: async (url: string) => { if (url.startsWith('http://127.0.0.1')) throw new Error('Private address blocked.'); },
+  });
+  t.after(() => registry.close());
+  const context = { mode: 'BUILD' as const, signal: new AbortController().signal };
+  const opened = JSON.parse(await registry.execute('browser', { action: 'launch', url: 'https://public.example/' }, context));
+  const countTabs = async () => JSON.parse(await registry.execute('browser', { action: 'tabs', sessionId: opened.sessionId }, context)).length;
+
+  await assert.rejects(registry.execute('browser', { action: 'new_tab', sessionId: opened.sessionId, url: 'http://127.0.0.1/private' }, context), /Private address blocked/);
+  assert.equal(createdPages, 1, 'private destinations are rejected before opening a page');
+  await assert.rejects(registry.execute('browser', { action: 'new_tab', sessionId: opened.sessionId, url: 'https://fail.example/' }, context), /navigation failed/);
+  assert.equal(closedPages, 1, 'a page is closed if its initial navigation fails');
+  assert.equal(await countTabs(), 1, 'failed pages are not retained in the session');
+  const session = JSON.parse(await registry.execute('browser_sessions', {}, context))[0];
+  assert.equal(session.activeTab, opened.tabId, 'failed tabs do not change the active tab');
+
+  const tab = JSON.parse(await registry.execute('browser', { action: 'new_tab', sessionId: opened.sessionId, url: 'https://success.example/' }, context));
+  assert.match(tab.title, /Fixture/);
+  assert.equal(await countTabs(), 2);
 });
 
 test('a closed browser tab does not prevent the remaining tabs from being summarized', async () => {

@@ -7,6 +7,11 @@ import type { Workspace } from './workspace.js';
 import { createSafeEgressProxy, publicURL, type SafeEgressProxy } from './web.js';
 
 type Session = { id: string; engine: Exclude<BrowserEngine, 'auto'>; browser: Browser; proxy: SafeEgressProxy; context: BrowserContext; pages: Map<string, Page>; active: string; created: number; touched: number };
+export interface BrowserSessionDependencies {
+  launchBrowser: typeof launchBrowser;
+  createSafeEgressProxy: typeof createSafeEgressProxy;
+  publicURL: typeof publicURL;
+}
 const maxSessions = 3;
 const maxTabs = 8;
 const maxAge = 30 * 60_000;
@@ -20,7 +25,10 @@ export function checkboxStatus(action: 'check' | 'uncheck'): string {
   return action === 'check' ? 'Checkbox selected.' : 'Checkbox cleared.';
 }
 
-export function registerBrowserSessionTools(registry: ToolRegistry, workspace: Workspace, engine: () => BrowserEngine = () => 'auto'): void {
+export function registerBrowserSessionTools(registry: ToolRegistry, workspace: Workspace, engine: () => BrowserEngine = () => 'auto', dependencies: Partial<BrowserSessionDependencies> = {}): void {
+  const openBrowser = dependencies.launchBrowser ?? launchBrowser;
+  const createProxy = dependencies.createSafeEgressProxy ?? createSafeEgressProxy;
+  const checkPublicURL = dependencies.publicURL ?? publicURL;
   const sessions = new Map<string, Session>();
   const close = async (id: string) => { const session = sessions.get(id); if (!session) return; sessions.delete(id); session.pages.clear(); try { await session.browser.close(); } finally { await session.proxy.close(); } };
   const get = (id: string) => { const session = sessions.get(id); if (!session) throw new Error('Browser session not found. Run browser launch.'); if (Date.now() - session.touched > maxAge) { void close(id).catch(() => {}); throw new Error('Browser session expired after 30 minutes of inactivity.'); } session.touched = Date.now(); return session; };
@@ -51,11 +59,11 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
     await workspace.permissions.check('browser', 'external', description, action === 'fill' || action === 'type' ? '[field input hidden]' : undefined, context.mode, context.signal, ["click", "fill", "type", "press", "select", "check", "uncheck"].includes(action));
     if (action === 'launch') {
       if (!args.url) throw new Error('Provide a public URL.');
-      await publicURL(args.url);
+      await checkPublicURL(args.url);
       if (sessions.size >= maxSessions) throw new Error(`Browser session limit reached (${maxSessions}).`);
-       const proxy = await createSafeEgressProxy();
+       const proxy = await createProxy();
        let browser: Browser; let selectedEngine: Exclude<BrowserEngine, 'auto'>;
-       try { ({ browser, engine: selectedEngine } = await launchBrowser(engine(), proxy.url, context.signal)); }
+       try { ({ browser, engine: selectedEngine } = await openBrowser(engine(), proxy.url, context.signal)); }
        catch (error) { await proxy.close(); throw error; }
       try {
         const browserContext = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block', viewport: { width: 1365, height: 900 } });
@@ -64,7 +72,7 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
           try {
             const requestUrl = route.request().url();
             if (/^(data|blob|about):/i.test(requestUrl)) { await route.continue(); return; }
-            await publicURL(requestUrl); await route.continue();
+            await checkPublicURL(requestUrl); await route.continue();
           } catch { await route.abort(); }
         });
         const first = await browserContext.newPage(); first.setDefaultTimeout(10000);
@@ -81,14 +89,19 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
     if (action === 'tabs') return JSON.stringify(await Promise.all([...session.pages].map(([id, p]) => summarizeBrowserTab(id, p, id === session.active))));
     if (action === 'new_tab') {
       if (session.pages.size >= maxTabs) throw new Error(`Tab limit reached for this session (${maxTabs}).`);
-      const next = await session.context.newPage(); next.setDefaultTimeout(10000); const id = randomUUID().slice(0, 8); session.pages.set(id, next); session.active = id;
-      if (args.url) { await publicURL(args.url); await next.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 20000 }); }
-      return JSON.stringify({ tabId: id, url: visibleUrl(next.url()), title: await next.title() });
+      if (args.url) await checkPublicURL(args.url);
+      const next = await session.context.newPage(); next.setDefaultTimeout(10000);
+      try {
+        if (args.url) await next.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        const url = visibleUrl(next.url()), title = await next.title(), id = randomUUID().slice(0, 8);
+        session.pages.set(id, next); session.active = id;
+        return JSON.stringify({ tabId: id, url, title });
+      } catch (error) { await next.close().catch(() => {}); throw error; }
     }
     if (action === 'activate_tab') { page(session, args.tabId); return `Active tab: ${session.active}`; }
     if (action === 'close_tab') { const active = page(session, args.tabId); await active.close(); session.pages.delete(args.tabId ?? session.active); if (!session.pages.size) { await close(session.id); return 'Last tab closed; session ended.'; } session.active = session.pages.keys().next().value!; return `Tab closed. Active: ${session.active}`; }
     const current = page(session, args.tabId);
-    if (action === 'navigate') { if (!args.url) throw new Error('Provide a URL.'); await publicURL(args.url); await current.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 20000 }); return JSON.stringify({ url: visibleUrl(current.url()), title: await current.title() }); }
+    if (action === 'navigate') { if (!args.url) throw new Error('Provide a URL.'); await checkPublicURL(args.url); await current.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 20000 }); return JSON.stringify({ url: visibleUrl(current.url()), title: await current.title() }); }
     if (action === 'back') { await current.goBack({ waitUntil: 'domcontentloaded', timeout: 20000 }); return JSON.stringify({ url: visibleUrl(current.url()), title: await current.title() }); }
     if (action === 'forward') { await current.goForward({ waitUntil: 'domcontentloaded', timeout: 20000 }); return JSON.stringify({ url: visibleUrl(current.url()), title: await current.title() }); }
     if (action === 'reload') { await current.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }); return JSON.stringify({ url: visibleUrl(current.url()), title: await current.title() }); }
