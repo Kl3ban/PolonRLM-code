@@ -96,9 +96,9 @@ const taskbarIntent = /\b(?:task\s*bar|taskbar|pasek\s+zada\w*|pasku\s+zada\w*|i
 function auditArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
   const safe = structuredClone(args);
   if (name === 'request_tool' && typeof safe.tool === 'string' && safe.arguments && typeof safe.arguments === 'object' && !Array.isArray(safe.arguments)) safe.arguments = auditArguments(safe.tool, safe.arguments as Record<string, unknown>);
-  if (name === 'browser' && ['fill', 'type'].includes(String(safe.action)) && typeof safe.text === 'string') safe.text = `[ukryto ${safe.text.length} characters]`;
-  if (name === 'process_input' && typeof safe.input === 'string') safe.input = `[ukryto ${safe.input.length} characters]`;
-  if (name === 'computer_use' && ['type', 'fill'].includes(String(safe.action)) && typeof safe.text === 'string') safe.text = `[ukryto ${safe.text.length} characters]`;
+  if (name === 'browser' && ['fill', 'type'].includes(String(safe.action)) && typeof safe.text === 'string') safe.text = `[hidden ${safe.text.length} characters]`;
+  if (name === 'process_input' && typeof safe.input === 'string') safe.input = `[hidden ${safe.input.length} characters]`;
+  if (name === 'computer_use' && ['type', 'fill'].includes(String(safe.action)) && typeof safe.text === 'string') safe.text = `[hidden ${safe.text.length} characters]`;
   return safe;
 }
 export class AgentRuntime {

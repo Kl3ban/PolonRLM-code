@@ -548,6 +548,42 @@ test('sensitive computer fill waits for a user decision and never persists the f
   assert.equal(JSON.stringify(audit).includes(secret), false);
 });
 
+test('interactive process input stays hidden in approval, transcript and audit', async t => {
+  const secret = 'private-process-input-value';
+  let calls = 0, approvals = 0;
+  const h = await harness(t, async (messages, specs) => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'discover-input', name: 'discover_tools', arguments: { query: 'process_input' } }]);
+    if (calls === 2) {
+      assert.ok(specs.some(spec => spec.name === 'process_input'));
+      return reply('', [{ id: 'send-input', name: 'process_input', arguments: { id: 'job-fixture', input: secret, closeStdin: false } }]);
+    }
+    assert.equal(JSON.stringify(messages).includes(secret), false);
+    return reply('Input sent.');
+  }, { mode: 'BUILD', permissions: 'ask' });
+  h.workspace.permissions.approve = async request => {
+    approvals++;
+    assert.equal(request.tool, 'process_input');
+    assert.equal(request.preview, '[input content hidden]');
+    return true;
+  };
+  const { z } = await import('zod');
+  h.tools.add('process_input', 'Fixture process input.', z.object({ id: z.string(), input: z.string(), closeStdin: z.boolean().default(false) }), false, async (args, context) => {
+    await h.workspace.permissions.check('process_input', 'external', 'Input to interactive process; exact content is hidden.', '[input content hidden]', context.mode, context.signal);
+    assert.equal(args.input, secret);
+    return { id: args.id, sent: args.input.length, closed: args.closeStdin };
+  });
+
+  assert.equal(await h.runtime.run(h.session, 'Use process_input to send the private value.', new AbortController().signal), 'Input sent.');
+  assert.equal(calls, 3);
+  assert.equal(approvals, 1);
+  const transcript = JSON.stringify(h.store.messages(h.session));
+  assert.equal(transcript.includes(secret), false);
+  assert.match(transcript, /\[hidden \d+ characters\]/);
+  const audit = (h.store as any).db.prepare('SELECT data FROM audit').all();
+  assert.equal(JSON.stringify(audit).includes(secret), false);
+});
+
 test('Polish taskbar requests expose computer_use directly and stop empty tool-search loops', async t => {
   let calls = 0;
   const computerSpecCounts: number[] = [];
