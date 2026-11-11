@@ -856,6 +856,64 @@ test('rejected approval pauses repeated calls to that tool until the run ends', 
   assert.equal(approvals, 1);
 });
 
+test('agent_apply rolls back earlier files when a later write is denied', async t => {
+  let calls = 0;
+  let approvals = 0;
+  let mergeResult = '';
+  const h = await harness(t, async messages => {
+    if (++calls === 1) return reply('', [{ id: 'atomic-apply', name: 'agent_apply', arguments: { agentId: 'worker', paths: ['first.txt', 'second.txt'] } }]);
+    mergeResult = messages.at(-1)?.content ?? '';
+    return reply('The merge was rolled back safely.');
+  }, { permissions: 'ask' });
+  await writeFile(path.join(h.workspace.root, 'first.txt'), 'before first');
+  await writeFile(path.join(h.workspace.root, 'second.txt'), 'before second');
+  (h.runtime as any).agentChanges.set('worker', [
+    { path: 'first.txt', before: 'before first', after: 'after first', diff: '', binary: false },
+    { path: 'second.txt', before: 'before second', after: 'after second', diff: '', binary: false },
+  ]);
+  h.workspace.permissions.approve = async request => { approvals++; assert.equal(request.tool, 'agent_apply'); return approvals === 1; };
+
+  assert.equal(await h.runtime.run(h.session, 'Apply the worker changes.', new AbortController().signal), 'The merge was rolled back safely.');
+  assert.equal(approvals, 2);
+  assert.equal(await readFile(path.join(h.workspace.root, 'first.txt'), 'utf8'), 'before first');
+  assert.equal(await readFile(path.join(h.workspace.root, 'second.txt'), 'utf8'), 'before second');
+  assert.match(mergeResult, /"applied":\[\]/);
+  assert.match(mergeResult, /"rolledBack":\["first\.txt"\]/);
+  assert.match(mergeResult, /"changesRetained":true/);
+  assert.equal((h.runtime as any).agentChanges.get('worker').length, 2);
+});
+
+test('agent_apply rollback preserves an external change and reports the unfinished merge', async t => {
+  let calls = 0;
+  let approvals = 0;
+  let mergeResult = '';
+  const h = await harness(t, async messages => {
+    if (++calls === 1) return reply('', [{ id: 'atomic-apply-conflict', name: 'agent_apply', arguments: { agentId: 'worker', paths: ['first.txt', 'second.txt'] } }]);
+    mergeResult = messages.at(-1)?.content ?? '';
+    return reply('An external edit was preserved.');
+  }, { permissions: 'ask' });
+  await writeFile(path.join(h.workspace.root, 'first.txt'), 'before first');
+  await writeFile(path.join(h.workspace.root, 'second.txt'), 'before second');
+  (h.runtime as any).agentChanges.set('worker', [
+    { path: 'first.txt', before: 'before first', after: 'after first', diff: '', binary: false },
+    { path: 'second.txt', before: 'before second', after: 'after second', diff: '', binary: false },
+  ]);
+  h.workspace.permissions.approve = async request => {
+    approvals++;
+    assert.equal(request.tool, 'agent_apply');
+    if (approvals === 2) { await writeFile(path.join(h.workspace.root, 'first.txt'), 'external edit'); return false; }
+    return true;
+  };
+
+  assert.equal(await h.runtime.run(h.session, 'Apply the worker changes.', new AbortController().signal), 'An external edit was preserved.');
+  assert.equal(approvals, 2);
+  assert.equal(await readFile(path.join(h.workspace.root, 'first.txt'), 'utf8'), 'external edit');
+  assert.equal(await readFile(path.join(h.workspace.root, 'second.txt'), 'utf8'), 'before second');
+  assert.match(mergeResult, /"applied":\["first\.txt"\]/);
+  assert.match(mergeResult, /"rollbackFailures":\[\{"path":"first\.txt"/);
+  assert.match(mergeResult, /"changesRetained":true/);
+});
+
 test('parallel delegates share tools and budget while reviewer remains read-only', { timeout: 10_000 }, async t => {
   let release!: () => void;
   const bothStarted = new Promise<void>(resolve => { release = resolve; });

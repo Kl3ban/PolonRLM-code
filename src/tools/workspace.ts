@@ -110,6 +110,44 @@ export class Workspace {
       this.transaction = undefined; return result;
     });
   }
+  async applyChangesAtomically(tool: string, requested: Array<{ path: string; before: string | null; after: string | null }>, mode: Mode, signal?: AbortSignal): Promise<{ applied: string[]; rolledBack: string[]; error?: string; rollbackFailures?: Array<{ path: string; error: string }> }> {
+    return this.exclusive(async () => {
+      const applied: Array<{ path: string; change: Change }> = [];
+      for (const item of requested) {
+        try {
+          signal?.throwIfAborted();
+          await this.applyChange(tool, item.path, current => {
+            if (current !== item.before) throw new Error('File changed during merge.');
+            return item.after;
+          }, mode, true, signal);
+          if (item.before !== item.after) {
+            const change = this.changes.at(-1);
+            if (!change || change.path !== item.path || change.before !== item.before || change.after !== item.after) throw new Error('Could not record the applied file change.');
+            applied.push({ path: item.path, change });
+          }
+        } catch (error: any) {
+          const rolledBack: string[] = [];
+          const rollbackFailures: Array<{ path: string; error: string }> = [];
+          for (const entry of [...applied].reverse()) {
+            try {
+              await this.permissions.withOneTimeToolApproval(() => this.applyChange('transaction_rollback', entry.path, (current, encoding) => {
+                if (current !== entry.change.after || (current !== null && encoding !== entry.change.encoding)) throw new Error('File changed outside the atomic operation.');
+                return entry.change.before;
+              }, mode, false, undefined, entry.change.encoding));
+              const index = this.changes.lastIndexOf(entry.change);
+              if (index >= 0) this.changes.splice(index, 1);
+              rolledBack.push(entry.path);
+            } catch (rollbackError: any) {
+              rollbackFailures.push({ path: entry.path, error: rollbackError.message ?? String(rollbackError) });
+            }
+          }
+          const stillApplied = applied.filter(entry => !rolledBack.includes(entry.path)).map(entry => entry.path);
+          return { applied: stillApplied, rolledBack, error: error.message ?? String(error), ...(rollbackFailures.length ? { rollbackFailures } : {}) };
+        }
+      }
+      return { applied: applied.map(entry => entry.path), rolledBack: [] };
+    });
+  }
   async rollbackTransaction(id: string, mode: Mode, signal?: AbortSignal): Promise<{ restored: string[]; failed?: string; error?: string }> {
     return this.exclusive(async () => {
       const transaction = this.transaction; if (!transaction || transaction.id !== id) throw new Error('No open transaction was found.');

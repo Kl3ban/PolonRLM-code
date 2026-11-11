@@ -687,15 +687,14 @@ ${skills.join('\n')}`;
               try { current = await workspace.readText(change.path); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
               if (current !== change.before) throw new Error(`Conflict in ${change.path}: file changed since the branch was created. Review the diff and resolve the conflict separately.`);
             }
-            const applied: string[] = []; let failed: { path: string; error: string } | undefined;
-            for (const change of chosen) {
-              signal.throwIfAborted();
-              try { await workspace.change('agent_apply', change.path, current => { if (current !== change.before) throw new Error('File changed during merge.'); return change.after; }, mode, signal); applied.push(change.path); }
-              catch (error: any) { failed = { path: change.path, error: error.message }; break; }
+            const merge = await workspace.applyChangesAtomically('agent_apply', chosen, mode, signal);
+            if (merge.error) {
+              result = JSON.stringify({ ...merge, changesRetained: true });
+            } else {
+              const remaining = changes.filter(item => !merge.applied.includes(item.path));
+              if (remaining.length) this.agentChanges.set(agentId, remaining); else this.agentChanges.delete(agentId);
+              result = JSON.stringify({ applied: merge.applied });
             }
-            const remaining = changes.filter(item => !applied.includes(item.path));
-            if (remaining.length) this.agentChanges.set(agentId, remaining); else this.agentChanges.delete(agentId);
-            result = JSON.stringify({ applied, ...(failed ?? {}) });
           } else if (call.name === 'delegate' && canDelegate) {
             let taskBatchSchema = z.array(z.object({ role: z.enum(['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger']), task: z.string().min(10).max(12000) })).min(1);
             const { tasks } = z.object({ tasks: taskBatchSchema }).parse(call.arguments);
