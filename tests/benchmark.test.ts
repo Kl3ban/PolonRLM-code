@@ -364,7 +364,7 @@ test('every task with a reference solution passes its hidden grader', async () =
       assert.equal(result?.passed, true, `${task.id} reference solution failed: ${result?.summary}`);
       checked++;
     }
-    assert.ok(checked >= 36, `expected at least 36 reference-backed tasks, found ${checked}`);
+    assert.ok(checked >= 50, `expected at least 50 reference-backed tasks, found ${checked}`);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

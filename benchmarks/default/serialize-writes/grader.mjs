@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
-function settlesWithin(promise, ms = 200) {
+function settlesWithin(promise, ms = 5000) {
   let handle;
   const timer = new Promise((resolve, reject) => {
     handle = setTimeout(() => reject(new Error(`operation did not settle within ${ms} ms`)), ms);

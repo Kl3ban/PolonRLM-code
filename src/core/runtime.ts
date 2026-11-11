@@ -160,6 +160,7 @@ export function createRunBudget(): RunBudget {
   return { usage: emptyUsage(), reserved: 0, reservedCost: 0, calls: 0, agents: 0, active: 0, webSearchCalls: 0, roles: new Map() };
 }
 const desktopIntent = /\b(?:computer\s*use|desktop|screen|screenshot|mouse|cursor|click\w*|open app|control (?:the )?computer|task\s*bar|taskbar|pc|komputer\w*|pasek\s+zada\w*|pasku\s+zada\w*|pulpit\w*|ekran\w*|zrzut ekranu|mysz\w*|kurs\w*|klik\w*|sterow\w*|steruj\w*|kontrol\w*|otw[oó]rz (?:aplikacj\w*|okn\w*)|okn\w*|aplikacj\w*|discord\w*|przeglądark\w*)(?=$|[^A-Za-z0-9_])/i;
+const EMPTY_RESPONSE_RECOVERY = 'Your previous response was empty. Continue the task now. If a tool is needed, call it; otherwise give the requested final answer. Do not return reasoning alone.';
 const taskbarIntent = /\b(?:task\s*bar|taskbar|pasek\s+zada\w*|pasku\s+zada\w*|ikona\w*\s+(?:na\s+)?pasku)(?=$|[^A-Za-z0-9_])/i;
 function auditArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
   const safe = structuredClone(args);
@@ -753,6 +754,10 @@ ${skills.join('\n')}`;
                 this.emit({ type: 'usage', usage: { ...budget.usage } });
                 budget.reserved -= reserve; budget.reservedCost -= reserveCost; roleUsage.reservedTokens -= reserve; roleUsage.reservedCost -= reserveCost; reservationCount--;
                 const error = new Error('The provider returned an empty response.'); error.name = 'EmptyProviderResponseError';
+                if (!messages.some(message => message.content === EMPTY_RESPONSE_RECOVERY)) {
+                  messages.push({ role: 'user', content: EMPTY_RESPONSE_RECOVERY });
+                  input.splice(0, input.length, system, ...messages);
+                }
                 throw error;
               }
               this.store.audit(session, 'model_request', { provider: attempt.id, model: candidate.model, agent: role, status: 'done', durationMs: Date.now() - requestStartedAt, usage: reply.usage });

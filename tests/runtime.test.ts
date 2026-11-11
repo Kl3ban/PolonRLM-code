@@ -365,9 +365,14 @@ test('cancel interrupts the retry wait before another provider request', async t
   assert.equal(calls, 1);
 });
 
-test('empty model replies retry and their reported token usage is retained', async t => {
+test('empty model replies retry with a recovery instruction and retain usage', async t => {
   let calls = 0;
-  const h = await harness(t, async () => ++calls === 1 ? reply('') : reply('Recovered from empty response.'), {}, 0);
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) return reply('');
+    assert.match(messages.at(-1)?.content ?? '', /previous response was empty/i);
+    return reply('Recovered from empty response.');
+  }, {}, 0);
   assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered from empty response.');
   assert.equal(calls, 2);
   assert.equal(h.store.usage(h.session).input, 20);

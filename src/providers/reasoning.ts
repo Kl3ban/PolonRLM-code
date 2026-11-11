@@ -67,6 +67,7 @@ function modelFamilyProfile(provider: ProviderConfig, modelId: string): EffortPr
     return { control: 'effort', values: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] };
   }
   if (glm && isDirectZai) return binary();
+  if (/gpt-oss/i.test(slug)) return { control: 'effort', values: ['low', 'medium', 'high'] };
 
   if (provider.kind === 'google' || /(?:^|[/_-])gemini[-/]?2\.5(?:[-/]|$)/.test(id)) {
     const isGemini25 = /gemini[-/]?2\.5/.test(id);

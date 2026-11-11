@@ -22,7 +22,7 @@ const opencodeBin = option('--opencode-bin', process.env.OPENCODE_BIN ?? (proces
 const key = process.env.GROQ_API_KEY;
 if (!key) throw new Error('Set GROQ_API_KEY for the live harness comparison.');
 
-const provider = { id: 'groq', kind: 'compatible', baseURL: 'https://api.groq.com/openai/v1', model, apiKeyEnv: 'GROQ_API_KEY', contextWindow: 131072, maxOutputTokens: 1024 };
+const provider = { id: 'groq', kind: 'compatible', baseURL: 'https://api.groq.com/openai/v1', model, apiKeyEnv: 'GROQ_API_KEY', contextWindow: 131072, maxOutputTokens: 1024, reasoning: 'low', reasoningControl: 'effort' };
 const taskPrompt = task => `${task.prompt}\n\nWork directly in this workspace now. Use the file tools to inspect and edit the project. Do not print the full solution instead of editing. Run a relevant local command if useful.`;
 
 async function gradeTask(task, workspace) {
@@ -43,11 +43,15 @@ async function runPolonRLM(task, workspace, home) {
       toolPermissions: { read_file: 'auto', write_file: 'auto', edit_file: 'auto', delete_file: 'auto', apply_patch: 'auto', execute_command: 'auto', run_tests: 'auto', list_directory: 'auto', search_files: 'auto', search_content: 'auto' },
     });
     controller.setApprover(async () => true);
+    const events = [];
+    controller.onEvent = event => {
+      if (event.type === 'status' || event.type === 'error') events.push(`${event.type}: ${event.text ?? ''}`.slice(0, 500));
+    };
     const started = Date.now();
     await controller.submit(taskPrompt(task));
     const snapshot = controller.snapshot();
     const usage = snapshot.taskUsage;
-    return { durationMs: Date.now() - started, usage, output: snapshot.messages.filter(message => message.role === 'assistant').at(-1)?.text ?? '', tools: snapshot.messages.filter(message => message.role === 'tool').map(message => ({ name: message.toolName, state: message.toolState })) };
+    return { durationMs: Date.now() - started, usage, output: snapshot.messages.filter(message => message.role === 'assistant').at(-1)?.text ?? '', tools: snapshot.messages.filter(message => message.role === 'tool').map(message => ({ name: message.toolName, state: message.toolState, output: (message.toolOutput ?? '').slice(0, 800) })), events: events.slice(-20) };
   } finally {
     if (controller) await controller.close().catch(() => {});
     if (saved) process.env.GROQ_API_KEY = saved;
@@ -65,8 +69,8 @@ async function runOpenCode(task, workspace) {
 async function runQwen(task, workspace) {
   const exclude = 'read_mcp_resource,zoom_image,cron_list,cron_delete,autofix_pr,tool_search,tool_call,list_agents,task_stop,enter_worktree,exit_worktree,record_artifact,get_goal,update_goal,send_message,report_findings,cron_create,loop_wakeup,manage_memory,search_memory,skill,web_fetch,notebook_edit,agent';
   const started = Date.now();
-  const result = await execa(qwenBin, ['-p', taskPrompt(task), '--model', model, '--auth-type', 'openai', '--safe-mode', '--output-format', 'json', '--approval-mode', 'auto-edit', '--max-wall-time', `${Math.ceil(timeoutMs / 1000)}s`, '--exclude-tools', exclude], {
-    cwd: workspace, env: { ...process.env, OPENAI_API_KEY: key, OPENAI_BASE_URL: 'https://api.groq.com/openai/v1' }, timeout: timeoutMs, reject: false, windowsHide: true,
+  const result = await execa(qwenBin, ['--model', model, '--auth-type', 'openai', '--safe-mode', '--output-format', 'json', '--approval-mode', 'auto-edit', '--max-wall-time', `${Math.ceil(timeoutMs / 1000)}s`, '--exclude-tools', exclude], {
+    cwd: workspace, env: { ...process.env, OPENAI_API_KEY: key, OPENAI_BASE_URL: 'https://api.groq.com/openai/v1' }, input: taskPrompt(task), timeout: timeoutMs, reject: false, windowsHide: true,
   });
   return { durationMs: Date.now() - started, exitCode: result.exitCode, timedOut: result.timedOut, output: `${result.stdout}\n${result.stderr}`.trim() };
 }
@@ -87,7 +91,7 @@ try {
         const started = Date.now();
         if (harness === 'polonrlm') {
           const run = await runPolonRLM(task, workspace, path.join(root, `${task.id}-${harness}-home`));
-          Object.assign(result, { durationMs: run.durationMs, usage: run.usage, tools: run.tools, output: run.output.slice(-2000) });
+          Object.assign(result, { durationMs: run.durationMs, usage: run.usage, tools: run.tools, events: run.events, output: run.output.slice(-2000) });
         } else if (harness === 'opencode') {
           const run = await runOpenCode(task, workspace);
           Object.assign(result, run, { output: run.output.slice(-2000) });

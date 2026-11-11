@@ -42,6 +42,12 @@ test('OpenAI model families expose only their supported effort values', () => {
   assert.deepEqual(providerEffortOptions(luna), { openai: { reasoningEffort: 'none' } });
 });
 
+test('Groq GPT-OSS exposes low, medium and high reasoning effort', () => {
+  const oss = provider({ id: 'groq', model: 'openai/gpt-oss-120b' });
+  assert.deepEqual(effortChoices(oss).map(option => option.id), ['auto', 'low', 'medium', 'high']);
+  assert.deepEqual(providerEffortOptions({ ...oss, reasoning: 'low' }), { groq: { reasoningEffort: 'low' } });
+});
+
 test('OpenRouter and Anthropic reasoning use their own supported request shapes', () => {
   const openrouter = provider({ id: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-v4-flash-free', reasoning: 'high' });
   assert.deepEqual(providerEffortOptions(openrouter), { openrouter: { reasoning: { effort: 'high' } } });

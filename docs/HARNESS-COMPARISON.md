@@ -38,19 +38,17 @@ Live results are stored in `docs/harness-live-report.json` (ignored by Git becau
 
 ### Live result — 2026-11-11
 
-Model: `openai/gpt-oss-120b` via Groq. One run per harness/task, same prompt and starter, hidden grader. This is a smoke test, not a ranking.
+Model: `openai/gpt-oss-20b` via Groq, `reasoning_effort=low`. One run per harness/task, same prompt and starter, hidden grader. This is a smoke test, not a ranking. The 120B run earlier hit Groq's 200,000 TPD limit; the 20B model has a separate allowance.
 
 | Task | PolonRLM | OpenCode v2.1.1 |
 | --- | --- | --- |
-| `retry-status` | FAIL — edited the file, but the hidden grader still failed one group; 222.7 s | PASS — 121.7 s |
-| `group-by` | FAIL — only directory listing calls, no completed edit; 41.8 s | PASS — 224.8 s |
-| `merge-intervals` | FAIL — inspection only, no completed edit; 72.0 s | FAIL — Groq daily token limit reached before the edit; 4.7 s |
+| `retry-status` | PASS — 35.3 s | PASS — 163.9 s |
+| `group-by` | FAIL — provider returned empty final responses and retried; no completed edit | PASS — 210.2 s |
+| `merge-intervals` | PASS — 125.8 s | PASS — 281.0 s |
 
-PolonRLM reported 25,033 input / 905 output tokens for `retry-status`, 4,693 / 82 for `group-by`, and 7,174 / 135 for `merge-intervals`; cached tokens were zero. Groq reported `costKnown=false`. After these runs the supplied Groq key hit the **200,000 tokens-per-day** limit, so no further benchmark tasks were run.
+PolonRLM: **2/3**. OpenCode: **3/3**. PolonRLM reported 9,959 input / 267 output tokens for `retry-status` and 14,626 / 628 for `merge-intervals`; `group-by` ended on an empty provider response with zero recorded usage. `costKnown=false` throughout. The result shows that the same model can behave differently in two harnesses, but three tasks and one run are far too little to claim a general advantage.
 
-Qwen Code 0.27.2 was installed in a temporary prefix and answered a text-only probe through Groq in safe mode (4,586 input / 41 output tokens). A non-safe-mode probe hit Groq's 8,000 TPM limit, and the Windows file watcher crashed one attempt with a libuv assertion. Qwen Code was therefore **not run** on the benchmark tasks; the table above must not be read as a Qwen result.
-
-The result is deliberately reported as-is. It shows that the same model can behave differently in two harnesses, but three tasks and one run are far too little to claim a general advantage.
+Qwen Code 0.27.2 was installed in a temporary prefix. A text-only probe through Groq passed in safe mode (4,586 input / 41 output tokens). The benchmark attempt failed at the provider boundary: Groq returned HTTP 400 because Qwen sent an assistant `reasoning_content` property that the endpoint rejects; earlier attempts also hit the 8,000 TPM limit and a Windows file-watcher crash. Qwen Code is therefore **not run** on the benchmark tasks; the table must not be read as a Qwen result.
 
 ## Real gaps after this work
 
