@@ -47,6 +47,7 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/settings verificationCommands ["npm test", "npm run check"]` | Sets project verification commands. Use `[]` to detect checks from the project manifest. |
 | `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token or cost cap. |
 | `/cortex 0..5` | Changes how much planning and subagent work is allowed. |
+| `/settings agentToolProfiles {"reviewer":["read_file","search_files"]}` | Restricts that subagent role to the listed tools. Omitted roles keep the normal tool set; an empty list disables tools for that role. |
 | `/verify` | Runs configured or detected checks, gathers diagnostics for changed TypeScript/JavaScript files, and records file hashes and exit codes. |
 | `/verify <command>` | Runs one explicit project command through the normal shell approval rules. |
 | `/verify history [count]` | Shows saved verification reports for this chat. |

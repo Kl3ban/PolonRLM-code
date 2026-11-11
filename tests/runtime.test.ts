@@ -959,6 +959,40 @@ test('parallel delegates share tools and budget while reviewer remains read-only
   assert.equal(h.store.usage(h.session).input, 70);
 });
 
+test('subagent tool profiles filter schemas and discovery, then reject forged calls', { timeout: 10_000 }, async t => {
+  let parentCalls = 0;
+  const childCalls = new Map<string, number>();
+  const h = await harness(t, async (messages, specs) => {
+    const role = /Role: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
+    if (role === 'orchestrator') {
+      if (++parentCalls === 1) return reply('', [{ id: 'profile-delegate', name: 'delegate', arguments: { tasks: [{ role: 'reviewer', task: 'Inspect one file and report whether the restricted profile works.' }] } }]);
+      return reply('The reviewer was limited to its configured tools.');
+    }
+    const count = (childCalls.get(role) ?? 0) + 1; childCalls.set(role, count);
+    if (count === 1) {
+      assert.ok(specs.some(spec => spec.name === 'read_file'));
+      assert.ok(specs.some(spec => spec.name === 'discover_tools'));
+      assert.ok(!specs.some(spec => spec.name === 'write_file'));
+      return reply('', [{ id: 'profile-discover', name: 'discover_tools', arguments: { query: 'write_file' } }]);
+    }
+    if (count === 2) {
+      const discovery = messages.findLast(message => message.name === 'discover_tools')?.content ?? '';
+      assert.doesNotMatch(discovery, /"name":"write_file"/);
+      return reply('', [{ id: 'profile-request-tool', name: 'request_tool', arguments: { tool: 'write_file', arguments: { path: 'blocked.txt', content: 'must not be written' }, reason: 'I need to write a file.' } }]);
+    }
+    if (count === 3) {
+      assert.match(messages.at(-1)?.content ?? '', /not allowed for subagent role reviewer/);
+      return reply('', [{ id: 'profile-forged-write', name: 'write_file', arguments: { path: 'blocked.txt', content: 'must not be written' } }]);
+    }
+    assert.match(messages.at(-1)?.content ?? '', /not allowed for subagent role reviewer/);
+    return reply('The restricted call was blocked.');
+  }, { maxAgents: 1, maxDepth: 1, agentToolProfiles: { reviewer: ['read_file', 'discover_tools', 'request_tool'] } });
+
+  assert.equal(await h.runtime.run(h.session, 'Ask a reviewer to inspect a file.', new AbortController().signal), 'The reviewer was limited to its configured tools.');
+  await assert.rejects(readFile(path.join(h.workspace.root, 'blocked.txt')), { code: 'ENOENT' });
+  assert.equal(childCalls.get('reviewer'), 4);
+});
+
 test('parallel subagents exchange a bounded direct note at a safe turn boundary', { timeout: 20_000 }, async t => {
   let h!: Awaited<ReturnType<typeof harness>>;
   let firstCalls = 0, messagesSent = 0;

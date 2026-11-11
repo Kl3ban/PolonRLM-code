@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execa } from 'execa';
 import { Controller } from '../src/core/controller.js';
-import { ConfigManager } from '../src/core/config.js';
+import { ConfigManager, defaultSettings, settingsSchema } from '../src/core/config.js';
 import { SessionStore } from '../src/core/store.js';
 import type { Message, RuntimeEvent } from '../src/core/types.js';
 
@@ -60,6 +60,18 @@ test('/goal continues work, tracks cumulative usage and persists completion', as
   assert.equal(goal.status, 'complete'); assert.equal(goal.usedTokens, 240);
   await controller.submit('/goal clear');
   assert.equal(store.workflow(controller.snapshot().sessionId).goal, undefined);
+});
+
+test('/settings persists validated subagent tool profiles', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/settings agentToolProfiles {"reviewer":["read_file","search_files"]}');
+  assert.deepEqual(controller.config.settings.agentToolProfiles, { reviewer: ['read_file', 'search_files'] });
+  const reopened = new ConfigManager(f.home); await reopened.load();
+  assert.deepEqual(reopened.settings.agentToolProfiles, { reviewer: ['read_file', 'search_files'] });
+  await controller.submit('/settings');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Subagent tool profiles: \{"reviewer":\["read_file","search_files"\]\}/);
+  assert.equal(settingsSchema.safeParse({ ...defaultSettings(), agentToolProfiles: { reviewer: ['read_file', 'read_file'] } }).success, false);
 });
 
 test('a corrupt unrelated DPAPI key leaves startup and provider switching available', { skip: process.platform !== 'win32' }, async t => {

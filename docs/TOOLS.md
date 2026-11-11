@@ -6,6 +6,8 @@ Run `/tools` or `/tools <filter>` in the terminal to see the current catalog for
 
 Task-relevant MCP schemas are preloaded when the request clearly names a connected server and matching tool. Other MCP schemas load only when `discover_tools` finds them by server or tool name. This keeps unrelated integrations out of provider requests without adding a discovery turn for obvious requests. MCP calls still use their normal permission checks and external-action approvals.
 
+Subagent roles can have strict tool allowlists with `/settings agentToolProfiles {"reviewer":["read_file","search_files"]}`. Unset roles keep the normal catalog. An empty list disables all tools for that role. The runtime filters advertised and discovered tools and rejects calls outside the profile. This controls tool access inside PolonRLM; it is not an operating-system sandbox.
+
 Use `/permissions` to manage tool access. With no argument, it shows effective rules. `/permissions <tool> ask|auto|off` sets a per-tool rule, and `default` removes that override. `/permissions all` permanently approves every tool without asking. This includes the terminal, desktop, browser, and MCP tools, and overrides PLAN, REVIEW, and readonly restrictions. `/permissions reset` restores the safer `ask` mode and removes overrides. A per-tool `auto` rule still respects PLAN, REVIEW, and readonly restrictions. A per-tool `off` rule also blocks one-time approval requests.
 
 ## Development and project tools
