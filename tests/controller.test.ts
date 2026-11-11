@@ -95,6 +95,7 @@ test('/sandbox on, off, and auto switch isolation and explain readiness', async 
   assert.match(status, /Ready: yes/);
   assert.match(status, /Execution: test-sandbox isolation is ready/);
   assert.match(status, /Network: sandboxed commands may reach no hosts/);
+  assert.match(status, /Coverage: shell, Python, background processes and LSP only/);
 
   await controller.submit('/sandbox off');
   assert.equal(controller.config.settings.sandboxMode, 'off');
