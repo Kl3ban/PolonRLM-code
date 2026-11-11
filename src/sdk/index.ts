@@ -40,6 +40,19 @@ export interface AgentToolInfo {
   policy: string;
 }
 
+export interface AgentHistoryMessage { role: string; text: string; name?: string }
+export interface AgentClientLike {
+  readonly sessionId: string;
+  describe(): AgentDescription;
+  tools(): AgentToolInfo[];
+  history(): AgentHistoryMessage[];
+  addImageData?(data: string, name?: string): void;
+  resumeSession?(sessionId: string): void;
+  run(prompt: string, onEvent?: (event: RuntimeEvent) => void): Promise<AgentRunResult>;
+  cancel(): void;
+  close(): Promise<void>;
+}
+
 /** Small typed wrapper around Controller for embedding and the HTTP server. */
 export class AgentClient {
   private constructor(private readonly controller: Controller) {}
@@ -80,6 +93,18 @@ export class AgentClient {
 
   tools(): AgentToolInfo[] {
     return this.controller.readSettings().tools;
+  }
+
+  history(): AgentHistoryMessage[] {
+    return this.controller.snapshot().messages.map(message => ({ role: message.role, text: message.text, ...(message.toolName ? { name: message.toolName } : {}) }));
+  }
+
+  addImageData(data: string, name = 'ACP image'): void {
+    this.controller.addImageData(data, name);
+  }
+
+  resumeSession(sessionId: string): void {
+    this.controller.resumeSession(sessionId);
   }
 
   setEventSink(sink?: (event: RuntimeEvent) => void): void {

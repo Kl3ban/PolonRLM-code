@@ -4,11 +4,11 @@ PolonRLM plugins are optional JavaScript modules stored in the user's PolonRLM c
 
 ## Trust and approval
 
-Plugin code runs inside the PolonRLM process with the same filesystem, network, process, and credential access as the current user. It is not sandboxed. A timeout limits how long PolonRLM waits for a hook, but JavaScript that has already started may continue running after that timeout.
+Plugin code runs inside the PolonRLM process with the same filesystem, network, process, and credential access as the current user. It is not sandboxed. Lifecycle hooks run in the main process. Registered tools are executed in a separate Node.js child process with a 30 second limit, so a crashing or looping tool does not block the main event loop; it still has the same user permissions and is not a security boundary. A timeout limits how long PolonRLM waits for a hook, but JavaScript that has already started may continue running after that timeout.
 
 Read the source before enabling it. `/plugins enable <id>` prints the plugin path and SHA-256 without executing the module. After reviewing the files, `/plugins enable <id> confirm` runs that version and stores its hash. On startup, PolonRLM checks the hash again and skips changed code. The hash covers `plugin.json` and `index.mjs`; imported modules and other external code are outside that hash, so plugins should be self-contained and imports should be reviewed separately.
 
-Plugin hooks cannot approve a tool or change its permission rule. Normal mode, workspace, and tool approval checks still run. A `beforeTool` hook can deny a call; a hook error also blocks that call. `afterTool` and `afterTask` receive read-only copies and cannot change the tool result. Registered plugin tools execute in the main process with the user's permissions; `readOnly` only affects the permission classifier and does not sandbox the code. Tool output is clipped and redacted by the runtime, and arguments are validated against the plugin's JSON Schema before the handler runs.
+Plugin hooks cannot approve a tool or change its permission rule. Normal mode, workspace, and tool approval checks still run. A `beforeTool` hook can deny a call; a hook error also blocks that call. `afterTool` and `afterTask` receive read-only copies and cannot change the tool result. Registered plugin tools execute in a separate child process with the user's permissions; `readOnly` only affects the permission classifier and does not sandbox the code. Tool output is clipped and redacted by the runtime, and arguments are validated against the plugin's JSON Schema before the handler runs.
 
 ## Create and manage a plugin
 

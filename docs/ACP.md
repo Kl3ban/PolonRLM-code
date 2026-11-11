@@ -13,15 +13,17 @@ The process must keep stdout clean for JSON-RPC. Diagnostics go to the client th
 
 | Method | Behaviour |
 | --- | --- |
-| `initialize` | Returns protocol version 1, text-only prompt capabilities, and session close/list capability. |
+| `initialize` | Returns protocol version 1, image prompt support, session load/resume/close/list capability. |
 | `authenticate`, `logout` | Acknowledged; provider credentials come from the normal PolonRLM profile. |
 | `session/new` | Opens a real PolonRLM controller for the absolute `cwd` and returns a `sessionId`. |
+| `session/load` | Resumes an existing PolonRLM session and replays text history through `session/update`. |
+| `session/resume` | Resumes a session without replaying history. |
 | `session/list` | Lists live sessions in this process. |
-| `session/prompt` | Runs text content blocks; streams `session/update` `agent_message_chunk` and tool-call status updates; returns `end_turn` or `cancelled`. |
+| `session/prompt` | Runs text and image content blocks; streams `session/update` text and tool-call status; returns `end_turn` or `cancelled`. |
 | `session/cancel` | Cancels the running prompt; the response uses the `cancelled` stop reason. |
 | `session/close` | Cancels and closes the session. |
 
-`session/load`, `session/resume`, modes, configuration options, client filesystem/terminal methods and `session/request_permission` are **not implemented**. A tool that requires approval is denied because there is no interactive permission bridge. `mcpServers` in `session/new` is currently ignored; MCP servers come from the profile. Images and embedded binary content are not advertised or forwarded.
+Approval-required tools call `session/request_permission` with `allow_once` and `reject_once` options. Without a connected client transport the request is denied. `mcpServers` in `session/new` is currently ignored; MCP servers come from the profile. Audio, arbitrary embedded binary content, ACP session modes, configuration options, client filesystem/terminal methods and `session/set_mode` are not implemented.
 
 ## Example
 

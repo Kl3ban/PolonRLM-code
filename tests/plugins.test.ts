@@ -97,7 +97,7 @@ export default {
       readOnly: true,
       run(args, context) {
         if (!Object.isFrozen(args) || !Object.isFrozen(context)) throw new Error('plugin tool context must be frozen');
-        return 'echo:' + args.text + ':' + context.tool;
+        return 'echo:' + args.text + ':' + context.tool + ':' + process.pid;
       },
     });
   },
@@ -110,7 +110,9 @@ export default {
   const definitions = plugins.toolDefinitions();
   assert.equal(definitions[0]?.definition.name, 'plugin_echo');
   assert.equal(definitions[0]?.definition.readOnly, true);
-  assert.equal(await plugins.callTool(id, 'plugin_echo', { text: 'hello' }, { sessionId: 's', workspace: 'w', task: 't', role: 'main', mode: 'BUILD', tool: 'plugin_echo', arguments: { text: 'hello' } }), 'echo:hello:plugin_echo');
+  const output = await plugins.callTool(id, 'plugin_echo', { text: 'hello' }, { sessionId: 's', workspace: 'w', task: 't', role: 'main', mode: 'BUILD', tool: 'plugin_echo', arguments: { text: 'hello' } });
+  assert.match(output, /^echo:hello:plugin_echo:\d+$/);
+  assert.notEqual(Number(output.split(':').at(-1)), process.pid, 'plugin tool must run outside the main process');
   await plugins.deactivate(id);
   assert.deepEqual(plugins.toolDefinitions(), []);
   await assert.rejects(plugins.callTool(id, 'plugin_echo', { text: 'hello' }, { sessionId: 's', workspace: 'w', task: 't', role: 'main', mode: 'BUILD', tool: 'plugin_echo', arguments: { text: 'hello' } }), /not loaded/);

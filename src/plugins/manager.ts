@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,6 +18,32 @@ const MAX_TASK_CONTEXT_BYTES = 12_000;
 const HOOK_TIMEOUT_MS = 5_000;
 const TOOL_TIMEOUT_MS = 30_000;
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,48}$/;
+const PLUGIN_BOOTSTRAP = `
+import { pathToFileURL } from 'node:url';
+const noop = () => {};
+const freeze = value => {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
+process.on('message', async message => {
+  try {
+    const tools = new Map();
+    const api = { version: 1, hooks: { beforeTask: noop, beforeTool: noop, afterTool: noop, afterTask: noop }, tools: { register(tool) { tools.set(tool.name, tool); } } };
+    const plugin = (await import(pathToFileURL(message.entry).href)).default;
+    if (!plugin || typeof plugin.activate !== 'function') throw new Error('Plugin has no activate function.');
+    await plugin.activate(api);
+    const tool = tools.get(message.name);
+    if (!tool) throw new Error('Plugin tool ' + message.name + ' was not registered during activation.');
+    const value = await tool.run(freeze(message.args), freeze(message.context));
+    process.send({ ok: true, value });
+  } catch (error) {
+    process.send({ ok: false, error: String(error && error.stack ? error.stack : error) });
+  }
+});
+`;
 const manifestSchema = z.object({
   id: z.string().regex(PLUGIN_ID),
   name: z.string().min(1).max(80),
@@ -35,6 +62,7 @@ type ActivePlugin = {
   afterTool: Array<PluginHandler<PluginToolResult>>;
   afterTask: Array<PluginHandler<PluginTaskResult>>;
   tools: Array<{ definition: PluginToolDefinition }>;
+  entryPath: string;
 };
 
 export interface PluginPreview { manifest: PluginManifest; path: string; sha256: string }
@@ -144,7 +172,7 @@ export class PluginManager {
     }).passthrough();
     const plugin = pluginSchema.parse(loaded.default) as PolonRLMPlugin;
     if (plugin.id !== id || plugin.version !== preview.manifest.version) throw new Error('Plugin code id/version must match plugin.json.');
-    const handlers: ActivePlugin = { manifest: preview.manifest, plugin, hash: preview.sha256, beforeTask: [], beforeTool: [], afterTool: [], afterTask: [], tools: [] };
+    const handlers: ActivePlugin = { manifest: preview.manifest, plugin, hash: preview.sha256, beforeTask: [], beforeTool: [], afterTool: [], afterTask: [], tools: [], entryPath: preview.path };
     let registrations = 0;
     const add = <T>(collection: Array<PluginHandler<T, any>>, handler: PluginHandler<T, any>): void => {
       if (typeof handler !== 'function') throw new Error('Plugin hook must be a function.');
@@ -207,9 +235,35 @@ export class PluginManager {
     const active = this.active.get(pluginId);
     const tool = active?.tools.find(entry => entry.definition.name === name);
     if (!active || !tool) throw new Error(`Plugin tool ${name} is not loaded.`);
-    const result = await this.runTimed(pluginId, `tool:${name}`, () => tool.definition.run(frozenCopy(args), frozenCopy({ ...context, tool: name, arguments: args })), TOOL_TIMEOUT_MS);
+    const result = await this.runToolProcess(active.entryPath, name, frozenCopy(args), frozenCopy({ ...context, tool: name, arguments: args }));
     if (typeof result === 'string') return result;
-    try { return JSON.stringify(result); } catch { return String(result); }
+    try { return JSON.stringify(result) ?? String(result); } catch { return String(result); }
+  }
+
+  private runToolProcess(entry: string, name: string, args: Readonly<Record<string, unknown>>, context: PluginToolContext): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', PLUGIN_BOOTSTRAP], {
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
+      });
+      let settled = false;
+      const finish = (error?: Error, value?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error); else resolve(value);
+      };
+      const timer = setTimeout(() => { child.kill(); finish(new Error(`Plugin tool ${name} exceeded ${TOOL_TIMEOUT_MS}ms.`)); }, TOOL_TIMEOUT_MS);
+      timer.unref();
+      child.once('error', error => finish(error));
+      child.once('exit', code => { if (!settled) finish(new Error(`Plugin tool ${name} exited with code ${code ?? 'unknown'}.`)); });
+      child.on('message', (message: any) => {
+        if (!message || typeof message !== 'object') return;
+        if (message.ok) finish(undefined, message.value);
+        else finish(new Error(String(message.error ?? 'Plugin tool failed.')));
+        child.kill();
+      });
+      child.send({ entry, name, args, context });
+    });
   }
 
   async list(configs: Record<string, TrustedPluginConfig>): Promise<PluginStatus[]> {
