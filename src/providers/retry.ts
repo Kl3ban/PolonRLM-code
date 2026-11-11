@@ -1,4 +1,13 @@
 export const PROVIDER_RETRY_DELAY_MS = 10_000;
+/** Automatic retries for one provider/model before the runtime tries the next candidate. */
+export const MAX_PROVIDER_RETRIES = 3;
+/** Upper bound for each exponential-backoff wait. */
+export const MAX_PROVIDER_RETRY_DELAY_MS = 60_000;
+
+export function providerRetryDelay(attempt: number, baseMs: number): number {
+  if (!Number.isFinite(baseMs) || baseMs <= 0) return 0;
+  return Math.min(MAX_PROVIDER_RETRY_DELAY_MS, baseMs * 2 ** Math.max(0, attempt - 1));
+}
 
 type ErrorFields = Record<string, unknown>;
 

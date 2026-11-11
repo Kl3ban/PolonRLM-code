@@ -19,7 +19,7 @@ import { AgentTeam, type AgentTeamMessage } from './agent-team.js';
 import { OPTIONAL_TOOLS_GUIDANCE } from './tool-guidance.js';
 import { registerBuiltins } from '../tools/builtin.js';
 import { describeToolCall } from './tool-display.js';
-import { isRetryableProviderError, PROVIDER_RETRY_DELAY_MS } from '../providers/retry.js';
+import { isRetryableProviderError, MAX_PROVIDER_RETRIES, PROVIDER_RETRY_DELAY_MS, providerRetryDelay } from '../providers/retry.js';
 import { providerConfigForModel } from '../providers/provider.js';
 import { taskGraphWaves } from './task-graph.js';
 import type { SandboxExecutor } from '../tools/sandbox.js';
@@ -707,10 +707,16 @@ ${skills.join('\n')}`;
                 if (this.settings.tokenBudget > 0 && budget.usage.input + budget.usage.output + budget.reserved + reserve > this.settings.tokenBudget) throw new Error(`Shared token limit reached before retrying ${candidate.model}.`);
                 if (this.settings.dollarBudget > 0 && budget.usage.cost + budget.reservedCost + reserveCost > this.settings.dollarBudget) throw new Error(`Cost limit reached before retrying ${candidate.model}.`);
                 assertRoleBudget();
+                if (retryNumber >= MAX_PROVIDER_RETRIES) {
+                  if (index === selectedAttempts.length - 1) throw error;
+                  this.emit({ type: 'status', text: `Fallback: ${selectedAttempts[index + 1]!.config.model} (${MAX_PROVIDER_RETRIES} retries exhausted for ${candidate.model})` });
+                  break;
+                }
                 retryNumber++;
-                const delaySeconds = Math.ceil(this.providerRetryDelayMs / 1000);
-                this.emit({ type: 'status', text: `${candidate.model} did not respond. Retrying in ${delaySeconds} seconds (retry ${retryNumber}).` });
-                await delay(this.providerRetryDelayMs, undefined, { signal });
+                const retryDelayMs = providerRetryDelay(retryNumber, this.providerRetryDelayMs);
+                const delaySeconds = Math.ceil(retryDelayMs / 1000);
+                this.emit({ type: 'status', text: `${candidate.model} did not respond. Retrying in ${delaySeconds} seconds (retry ${retryNumber}/${MAX_PROVIDER_RETRIES}).` });
+                await delay(retryDelayMs, undefined, { signal });
                 signal.throwIfAborted();
                 budget.reserved += reserve; budget.reservedCost += reserveCost; reserveRoleRequest(); reservationCount++; budget.calls++;
                 continue;

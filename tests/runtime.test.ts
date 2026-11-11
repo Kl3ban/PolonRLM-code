@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { AgentRuntime, createRunBudget } from '../src/core/runtime.js';
-import { PROVIDER_RETRY_DELAY_MS } from '../src/providers/retry.js';
+import { MAX_PROVIDER_RETRIES, PROVIDER_RETRY_DELAY_MS } from '../src/providers/retry.js';
 import { OPTIONAL_TOOLS_GUIDANCE } from '../src/core/tool-guidance.js';
 import { compactMessages, estimateTokens } from '../src/core/context.js';
 import { defaultSettings } from '../src/core/config.js';
@@ -317,7 +317,7 @@ test('temporary provider errors retry the selected model and show the retry coun
   assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered response.');
   assert.equal(calls.length, 2);
   assert.ok(calls[1]! - calls[0]! >= 9_500, 'the retry should wait approximately ten seconds');
-  assert.ok(h.events.some(event => event.type === 'status' && /fake did not respond\. Retrying in 10 seconds \(retry 1\)/.test(event.text ?? '')));
+  assert.ok(h.events.some(event => event.type === 'status' && new RegExp(`fake did not respond\\. Retrying in 10 seconds \\(retry 1/${MAX_PROVIDER_RETRIES}\\)`).test(event.text ?? '')));
   assert.equal(PROVIDER_RETRY_DELAY_MS, 10_000);
 });
 
@@ -379,6 +379,18 @@ test('retry attempts consume the shared model-call limit', async t => {
   const h = await harness(t, async () => { calls++; throw new Error('The selected provider is temporarily busy.'); }, { maxSteps: 1 }, 0);
   await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /Shared limit of 1 model calls reached while retrying fake/);
   assert.equal(calls, 1);
+});
+
+test('provider retries stop after a bounded number when no budget limits are set', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    throw new Error('The selected provider is temporarily busy.');
+  }, { maxSteps: 0, tokenBudget: 0, dollarBudget: 0 }, 0);
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /temporarily busy/);
+  assert.equal(calls, MAX_PROVIDER_RETRIES + 1);
+  assert.equal(h.events.filter(event => event.type === 'status' && /Retrying in/.test(event.text ?? '')).length, MAX_PROVIDER_RETRIES);
+  assert.ok(h.events.some(event => event.type === 'status' && new RegExp(`retry 3/${MAX_PROVIDER_RETRIES}`).test(event.text ?? '')));
 });
 
 test('resumed desktop follow-ups keep the tool active and recover invalid calls without executing them', async t => {

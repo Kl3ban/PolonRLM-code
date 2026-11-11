@@ -8,7 +8,7 @@ Existing provider settings take precedence over presets when loading configurati
 
 NVIDIA NIM uses a longer default request timeout because free inference can take several minutes to start. Change it for the selected provider with `/settings provider.requestTimeoutMs <milliseconds>`. Use `0` to inherit the global request timeout. Positive values are milliseconds and can be set up to Node's timer maximum of 2,147,483,647. Other providers use the global request timeout unless an override is configured.
 
-Temporary network failures, request timeouts, provider overloads, rate limits, and empty replies are retried on the same model after 10 seconds. The status line shows each retry. Cancel or Ctrl+C stops the wait. A response that already streamed text is never replayed. Retries count toward the shared model-call, token, and cost limits.
+Temporary network failures, request timeouts, provider overloads, rate limits, and empty replies are retried on the same model at most three times before the runtime falls back to the next configured candidate. The wait starts at 10 seconds and doubles for each retry, up to 60 seconds. The status line shows each retry. Cancel or Ctrl+C stops the wait. A response that already streamed text is never replayed. Retries count toward the shared model-call, token, and cost limits.
 
 Payment and insufficient-balance errors are shown immediately and are not retried. TeamoRouter documents an insufficient wallet balance as HTTP 402, or HTTP 400 for its OpenAI-compatible format; check the [TeamoRouter API guide](https://teamorouter.com/docs/api-integration) for account billing requirements.
 
