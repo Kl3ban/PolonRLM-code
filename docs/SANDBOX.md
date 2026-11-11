@@ -2,7 +2,7 @@
 
 PolonRLM can run selected project commands under an operating-system sandbox. This is separate from tool approval: approval decides whether a command may run, while the OS backend limits what the process and its children can read, write, and reach over the network.
 
-The current integration applies to `execute_command`, `execute_powershell`, `run_tests`, `install_dependencies`, `inspect_errors`, `execute_python`, `process_start`, and `lsp_request`. Built-in read-only Git and process inspection commands, browser automation, desktop control, and MCP servers use their existing controls and are not covered by this sandbox integration.
+The current integration applies to `execute_command`, `execute_powershell`, `run_tests`, `install_dependencies`, `inspect_errors`, `execute_python`, `process_start`, and `lsp_request`. Built-in read-only Git and process inspection commands are not sandboxed but are read-only. Browser automation, desktop control, MCP servers and ordinary file writes are not covered by this OS sandbox; in `required` mode PolonRLM **refuses** those unisolated actions instead of pretending they are isolated. Use `auto` with the normal permission policy when they are needed.
 
 ## Modes
 

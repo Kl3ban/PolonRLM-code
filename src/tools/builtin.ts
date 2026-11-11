@@ -26,10 +26,13 @@ export function withShellLock<T>(work: () => Promise<T>): Promise<T> {
 }
 
 export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean; sandbox?: SandboxExecutor; store?: SessionStore } = {}): void {
-  if (options.computer !== false) registerComputerTool(registry, workspace);
+  if (options.computer !== false) registerComputerTool(registry, workspace, undefined, settings.sandboxMode);
   registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit, options.sandbox, options.store);
   registerBrowserSessionTools(registry, workspace, () => settings.browserEngine);
   const file = z.object({ path: z.string().min(1) });
+  const requireFileSandbox = (tool: string): void => {
+    if (settings.sandboxMode === 'required') throw new Error(`${tool} is not covered by the OS command sandbox. Required mode refuses unisolated file writes; use sandboxMode auto with workspace permissions or disable required mode for this edit.`);
+  };
   registry.add('read_file', 'Read numbered text lines. Request targeted ranges. Accepts start/lines, line_start/line_end, or offset/limit aliases.', file.extend({
     start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(1000).default(200),
     line_start: z.number().int().positive().optional(), line_end: z.number().int().positive().optional(),
@@ -53,15 +56,15 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
     return workspace.read(args.path, start, lines);
   });
   registry.add('list_directory', 'List directory entries; skips dependency and metadata folders.', z.object({ path: z.string().default('.') }), true, async args => workspace.list(args.path));
-  registry.add('write_file', 'Create or replace text file. Shows diff and supports /undo.', file.extend({ content: z.string().max(2_000_000) }), false, async (args, context) => workspace.change('write_file', args.path, () => args.content, context.mode, context.signal));
-  registry.add('edit_file', 'Replace exact unique text with replacement (the write_file-style content field is accepted as an alias). Read before editing.', file.extend({ old: z.string().min(1), replacement: z.string().optional(), content: z.string().optional() }), false, async (args, context) => workspace.change('edit_file', args.path, before => {
+  registry.add('write_file', 'Create or replace text file. Shows diff and supports /undo.', file.extend({ content: z.string().max(2_000_000) }), false, async (args, context) => { requireFileSandbox('write_file'); return workspace.change('write_file', args.path, () => args.content, context.mode, context.signal); });
+  registry.add('edit_file', 'Replace exact unique text with replacement (the write_file-style content field is accepted as an alias). Read before editing.', file.extend({ old: z.string().min(1), replacement: z.string().optional(), content: z.string().optional() }), false, async (args, context) => { requireFileSandbox('edit_file'); return workspace.change('edit_file', args.path, before => {
     if (before === null) throw new Error('File does not exist.');
     const replacement = args.replacement ?? args.content;
     if (replacement === undefined) throw new Error('Provide replacement text (or the content alias).');
     const first = before.indexOf(args.old); if (first < 0 || before.indexOf(args.old, first + 1) !== -1) throw new Error('Text must occur exactly once.'); return before.replace(args.old, () => replacement);
-  }, context.mode, context.signal));
-  registry.add('delete_file', 'Delete one file after explicit approval.', file, false, async (args, context) => workspace.change('delete_file', args.path, before => { if (before === null) throw new Error('File does not exist.'); return null; }, context.mode, context.signal));
-  registry.add('apply_patch', 'Apply unified diff to one file. No multi-file patch.', file.extend({ patch: z.string() }), false, async (args, context) => workspace.change('apply_patch', args.path, before => { const result = applyPatch(before ?? '', args.patch); if (result === false) throw new Error('Patch does not match the current file.'); return result; }, context.mode, context.signal));
+  }, context.mode, context.signal); });
+  registry.add('delete_file', 'Delete one file after explicit approval.', file, false, async (args, context) => { requireFileSandbox('delete_file'); return workspace.change('delete_file', args.path, before => { if (before === null) throw new Error('File does not exist.'); return null; }, context.mode, context.signal); });
+  registry.add('apply_patch', 'Apply unified diff to one file. No multi-file patch.', file.extend({ patch: z.string() }), false, async (args, context) => { requireFileSandbox('apply_patch'); return workspace.change('apply_patch', args.path, before => { const result = applyPatch(before ?? '', args.patch); if (result === false) throw new Error('Patch does not match the current file.'); return result; }, context.mode, context.signal); });
   const searchSchema = z.object({ pattern: z.string().max(500), path: z.string().default('.'), limit: z.number().int().min(1).max(200).default(60) });
   async function rg(args: any, files: boolean, context: ToolContext): Promise<string> {
     const target = await workspace.resolve(args.path);
@@ -131,5 +134,5 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
   registry.add('git_blame', 'Read commit attribution for a bounded line range in a workspace file.', z.object({ path: z.string(), start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(200).default(50) }), true, async (args, context) => { await workspace.resolve(args.path); return processRun('git_blame', 'git', ['--no-pager', 'blame', '--no-textconv', '-L', `${args.start},+${args.lines}`, '--', args.path], context, true); });
   registry.add('git_commit', 'Commit currently staged changes; follows the configured permission policy. Does not stage files.', z.object({ message: z.string().min(1).max(1000) }), false, async (args, context) => processRun('git_commit', 'git', ['-c', 'core.hooksPath=', 'commit', '-m', args.message], context));
   registerNetworkTools(registry, workspace, settings);
-  registry.add('browser_automation', 'Headless browser navigation, text, screenshot or click. Auto selects an installed Playwright Chromium, Chrome, Edge, Brave or Firefox; users can choose an engine in /settings. Missing Playwright Chromium/Firefox is downloaded to the local cache on first use, after the browser action is approved. Actions follow the configured permission policy.', z.object({ url: z.url(), action: z.enum(['text', 'screenshot', 'click']).default('text'), selector: z.string().optional(), output: z.string().default('browser.png') }), false, async (args, context) => { await workspace.permissions.check('browser_automation', 'external', `Browser: ${args.action} ${args.url}. The page may perform external actions. A missing Playwright engine may be downloaded to the local cache.`, undefined, context.mode, context.signal); return browserAction(args, workspace, context.signal, context.mode, settings.browserEngine); });
+  registry.add('browser_automation', 'Headless browser navigation, text, screenshot or click. Auto selects an installed Playwright Chromium, Chrome, Edge, Brave or Firefox; users can choose an engine in /settings. Missing Playwright Chromium/Firefox is downloaded to the local cache on first use, after the browser action is approved. Actions follow the configured permission policy.', z.object({ url: z.url(), action: z.enum(['text', 'screenshot', 'click']).default('text'), selector: z.string().optional(), output: z.string().default('browser.png') }), false, async (args, context) => { if (settings.sandboxMode === 'required') throw new Error('browser_automation is not covered by the OS command sandbox. Required mode refuses this unisolated external action; use sandboxMode auto and the normal permission policy.'); await workspace.permissions.check('browser_automation', 'external', `Browser: ${args.action} ${args.url}. The page may perform external actions. A missing Playwright engine may be downloaded to the local cache.`, undefined, context.mode, context.signal); return browserAction(args, workspace, context.signal, context.mode, settings.browserEngine); });
 }

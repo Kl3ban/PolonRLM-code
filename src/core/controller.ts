@@ -876,7 +876,7 @@ export class Controller implements UIController {
           execution,
           network,
           status.reason ? `Details: ${status.reason}` : '',
-          'Coverage: shell, Python, background processes and LSP only. Browser, desktop, MCP and ordinary file-tool I/O are not isolated by this OS sandbox; their normal permission and network checks still apply.',
+          'Coverage: shell, Python, background processes and LSP are isolated when the backend is ready. File writes, browser actions, desktop control and MCP are not covered; required mode refuses them instead of running them unisolated. Their normal permission and network checks still apply in auto/off mode.',
           'Switch with /sandbox on, /sandbox off, /sandbox auto, or /sandbox docker. On Windows, /sandbox setup provisions the one-time backend.',
         ].filter(Boolean).join('\n'));
         break;

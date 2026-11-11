@@ -50,6 +50,16 @@ test('tool schemas do not require parameters that have defaults', async t => {
   assert.deepEqual(runTests.required, ['command']);
 });
 
+test('required sandbox mode fails closed for unisolated file writes and browser actions', async t => {
+  const f = await fixture(t, { sandboxMode: 'required' });
+  await writeFile(path.join(f.root, 'existing.txt'), 'keep');
+  await assert.rejects(f.run('write_file', { path: 'new.txt', content: 'x' }), /not covered by the OS command sandbox/);
+  await assert.rejects(f.run('edit_file', { path: 'existing.txt', old: 'keep', replacement: 'changed' }), /not covered by the OS command sandbox/);
+  assert.equal(await f.run('read_file', { path: 'existing.txt' }), '1: keep');
+  await assert.rejects(f.run('browser_automation', { url: 'https://example.com' }), /not covered by the OS command sandbox/);
+  await assert.rejects(f.run('computer_use', { action: 'list' }), /not covered by the OS command sandbox/);
+});
+
 test('shell lock serializes concurrent mutating commands', async () => {
   let active = 0;
   let peak = 0;

@@ -1065,6 +1065,7 @@ ${skills.join('\n')}`;
             await workspace.permissions.check('remember', 'write', `Save procedure ${name}`, redact(body), mode, signal);
             this.store.remember(workspace.root, name, body); result = 'Note saved.';
           } else if (!isolated && this.mcp.tools().some(tool => tool.name === call.name)) {
+            if (this.settings.sandboxMode === 'required') throw new Error('MCP tools are not covered by the OS command sandbox. Required mode refuses this unisolated external action; use sandboxMode auto and the normal permission policy.');
             await workspace.permissions.check(call.name, 'external', 'MCP may send local data or perform external actions.', clip(redact(JSON.stringify(call.arguments)), 5000), mode, signal);
             result = await this.mcp.call(call.name, call.arguments, signal);
           } else { result = await tools.execute(call.name, call.arguments, { signal, mode, sessionId: depth === 0 ? session : undefined, vision: providerConfig.vision, isolated, onImage: image => images.push(image) }); }
