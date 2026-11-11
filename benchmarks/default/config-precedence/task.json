@@ -1,0 +1,6 @@
+{
+  "id": "config-precedence",
+  "title": "Merge layered configuration without losing values",
+  "timeoutMs": 600000,
+  "prompt": "Fix deepMerge in src/merge.js and resolveConfig in src/resolve.js. resolveConfig(user, workspace) must merge DEFAULT_CONFIG, user, then workspace. Recursively merge plain objects. Arrays and non-object values replace earlier values. A later undefined must not overwrite an earlier value, but null, false, zero, and empty string are real values. Do not mutate any input. Keep the current exports and run the focused Node tests."
+}

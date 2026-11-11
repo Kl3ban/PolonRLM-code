@@ -168,6 +168,15 @@ function canonicalToolName(name: string, tools: ToolSpec[]): string {
   return alias && tools.some(spec => spec.name === alias) ? alias : name;
 }
 
+/** Apply an optional role-specific model without reusing metadata from another model. */
+export function providerConfigForModel(config: ProviderConfig, modelOverride?: string): ProviderConfig {
+  const model = modelOverride?.trim();
+  if (!model || model === config.model) return config;
+  const routed = { ...config, model };
+  for (const key of ['reasoning', 'reasoningSupported', 'reasoningControl', 'reasoningEfforts', 'contextWindow', 'maxOutputTokens', 'toolCalling', 'vision', 'inputPrice', 'outputPrice'] as const) delete (routed as any)[key];
+  return routed;
+}
+
 export function createProvider(config: ProviderConfig, apiKey: string | undefined, maxOutputTokens: number): LLMProvider {
   const baseURL = checkedBaseURL(config.baseURL);
   const name = config.id.replace(/[^a-zA-Z0-9_-]/g, '_') || 'custom';

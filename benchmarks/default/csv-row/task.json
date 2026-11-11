@@ -1,0 +1,6 @@
+{
+  "id": "csv-row",
+  "title": "Parse a quoted CSV record",
+  "timeoutMs": 600000,
+  "prompt": "Implement parseCsvRow in src/csv.js. It parses one CSV record into fields, supports commas inside quoted fields and escaped quotes written as two quotes, and preserves spaces inside and outside fields. A quote may only begin an empty field. After a closing quote, only a comma or end of input is valid. Throw SyntaxError for an unclosed quote or an invalid quote in an unquoted field. Keep the existing export."
+}

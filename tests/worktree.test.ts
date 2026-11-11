@@ -60,6 +60,39 @@ test('subagent overlays omit Git-ignored local files from copies and change repo
   assert.deepEqual((await overlay.changes()).map(change => change.path), ['.gitignore', 'main.ts', 'new.ts']);
 });
 
+test('dependency workspace stages successful node changes and preserves the original baseline', async t => {
+  const source = await mkdtemp(path.join(os.tmpdir(), 'polon-worktree-graph-'));
+  let branch: AgentWorktree | undefined, worker: AgentWorktree | undefined;
+  t.after(async () => { if (worker) await worker.remove(); if (branch) await branch.remove(); await rm(source, { recursive: true, force: true }); });
+  await writeFile(path.join(source, 'shared.txt'), 'base');
+  branch = await AgentWorktree.create(source);
+  worker = await AgentWorktree.create(branch.root);
+  await writeFile(path.join(worker.root, 'shared.txt'), 'staged by dependency');
+  await writeFile(path.join(worker.root, 'new.txt'), 'new dependency output');
+  await branch.mergeChanges(await worker.changes());
+  assert.equal(await readFile(path.join(branch.root, 'shared.txt'), 'utf8'), 'staged by dependency');
+  assert.equal(await readFile(path.join(branch.root, 'new.txt'), 'utf8'), 'new dependency output');
+  assert.deepEqual((await branch.changes()).map(change => change.path), ['new.txt', 'shared.txt']);
+  assert.equal(await readFile(path.join(source, 'shared.txt'), 'utf8'), 'base', 'staging must never change the user workspace');
+});
+
+test('dependency workspace rejects stale staged changes before mutating any other path', async t => {
+  const source = await mkdtemp(path.join(os.tmpdir(), 'polon-worktree-graph-conflict-'));
+  let branch: AgentWorktree | undefined, worker: AgentWorktree | undefined;
+  t.after(async () => { if (worker) await worker.remove(); if (branch) await branch.remove(); await rm(source, { recursive: true, force: true }); });
+  await writeFile(path.join(source, 'a.txt'), 'base a');
+  await writeFile(path.join(source, 'b.txt'), 'base b');
+  branch = await AgentWorktree.create(source);
+  worker = await AgentWorktree.create(branch.root);
+  await writeFile(path.join(worker.root, 'a.txt'), 'worker a');
+  await writeFile(path.join(worker.root, 'b.txt'), 'worker b');
+  const changes = await worker.changes();
+  await writeFile(path.join(branch.root, 'b.txt'), 'another dependency changed it');
+  await assert.rejects(branch.mergeChanges(changes), /Graph conflict: b\.txt changed/);
+  assert.equal(await readFile(path.join(branch.root, 'a.txt'), 'utf8'), 'base a', 'preflight should prevent an earlier file from being staged');
+  assert.equal(await readFile(path.join(branch.root, 'b.txt'), 'utf8'), 'another dependency changed it');
+});
+
 test('subagent overlay rejects source trees over the file limit', async t => {
   const source = await mkdtemp(path.join(os.tmpdir(), 'polon-worktree-limit-'));
   t.after(() => rm(source, { recursive: true, force: true }));

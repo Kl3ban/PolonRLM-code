@@ -4,7 +4,7 @@ import type { Permissions } from '../core/permissions.js';
 import { clip } from '../core/context.js';
 import { redact } from '../core/secrets.js';
 
-export interface ToolContext { signal: AbortSignal; mode: Mode; vision?: boolean; isolated?: boolean; outputLimit?: number; onImage?: (image: ImageAttachment) => void }
+export interface ToolContext { signal: AbortSignal; mode: Mode; sessionId?: string; vision?: boolean; isolated?: boolean; outputLimit?: number; onImage?: (image: ImageAttachment) => void }
 type Entry = { spec: ToolSpec; schema: z.ZodType; run: (args: any, context: ToolContext) => Promise<unknown>; readOnly: boolean; modeMutates?: (args: any) => boolean };
 export interface ToolAvailability { name: string; description: string; parameters?: Record<string, unknown>; available: boolean; reason?: string }
 export class ToolRegistry {

@@ -1,0 +1,6 @@
+{
+  "id": "dependency-plan",
+  "title": "Build stable dependency waves with validation",
+  "timeoutMs": 600000,
+  "prompt": "Implement validateTasks in src/validate.js and buildWaves in src/graph.js, then export both from src/index.js. Input is an array of `{ id, dependsOn? }`; ids are non-empty unique strings, dependencies are unique known ids and cannot include the task itself. Return arrays of id arrays. Each wave contains tasks whose dependencies completed in prior waves, preserving input order within each wave. Empty input returns []. Reject malformed input, duplicate ids, unknown/repeated/self dependencies, and cycles with an Error. Never mutate input. Pass `npm test`."
+}

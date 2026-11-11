@@ -13,40 +13,48 @@ import { ToolRegistry } from '../tools/registry.js';
 import { registerBuiltins } from '../tools/builtin.js';
 import { SkillsManager } from '../integrations/skills.js';
 import { MCPManager, mcpConfigPreview } from '../integrations/mcp.js';
-import { createProvider, PROVIDER_PRESETS } from '../providers/provider.js';
+import { createProvider, providerConfigForModel, PROVIDER_PRESETS } from '../providers/provider.js';
 import { effortChoices, findEffortChoice, normalizeEffort } from '../providers/reasoning.js';
-import { AgentRuntime } from './runtime.js';
+import { AgentRuntime, createRunBudget } from './runtime.js';
 import { compactMessages, estimateTokens } from './context.js';
 import { CORTEX } from './cortex.js';
 import { formatLimit, formatTokenBudget, parseTokenBudget, parseUnlimitedLimit, tokenBudgetMaximum } from './budget.js';
 import { SETTINGS_FIELDS } from './settings-fields.js';
 import { describeToolCall } from './tool-display.js';
+import { formatEvidenceTimeline } from './evidence.js';
 import { discoverVerificationPlan, formatVerificationHistory, formatVerificationReport, hashWorkspaceFiles, makeVerificationReport, parseGitStatusPaths, type VerificationCheck, type VerificationDiagnostic, type VerificationStatus } from './verification.js';
+import { SandboxExecutor } from '../tools/sandbox.js';
+import { PluginManager } from '../plugins/manager.js';
 
 export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /grill-me <task> | off            Ask one question at a time
 /plan <task> | /build <task> | /review <task>
 /retry                            Retry the last task
 /connect [provider] [BaseURL]     Set provider and endpoint
+/fallback [provider ...|none]    Set ordered fallback providers
 /key <key>                        Save API key securely with Windows DPAPI
-/models                           Fetch models from the endpoint
+/models [provider]                Fetch models from an endpoint
 /model <id|number>                Change model without restarting
+/route [role provider [model]]    Route agent roles to a provider and model
 /effort [value]                   Choose an effort supported by the current model
 /image <path>|clear               Attach an image to the next message or clear attachments
 /tools [filter]                   Show available AI tools
-/verify [command|history [count]|report <id>] Verify project checks and inspect saved evidence
+/timeline [count]                 Review recorded model, tool, and verification evidence
+/verify [command|repair [attempts]|history [count]|report <id>] Verify project checks and inspect saved evidence
 /recover [rollback <id>]         Inspect unfinished changes or safely restore one change group
 /history changes [count]         Browse persistent file change history
 /rollback <change-or-group-id>   Restore saved file changes after hash checks
 /settings [name] [value]          Settings and budgets
+/sandbox [status|setup [confirm]] Show readiness or explicitly configure Windows isolation
 /budget [tokens] [USD]            Set the next task's budget
 /settings provider.<field> <value> Reasoning, request timeout, temperature, pricing, and capabilities
 /agents                           List subagents and limits
 /steer <id> <message>             Steer an active subagent
 /skills [list|install|enable|disable|remove|update|show|create]
 /mcp [list|add|connect|disconnect|remove]
+/plugins [list|create|show|enable|disable|remove]
 /mode [PLAN|BUILD|REVIEW]          Tab changes mode; Ctrl+P opens commands
-/cortex [0-5]                     Work level, without extra model calls
+/cortex [0-5]                     Set maximum work level; /settings cortexStrategy toggles adaptive selection
 /sessions [search]                Search project conversation history
 /copy [user|ai|last]               Copy a message; /copy alone opens a picker
 /new                              Start a new conversation
@@ -118,6 +126,8 @@ export class Controller implements UIController {
   private permissions!: Permissions;
   private workspace!: Workspace;
   private registry!: ToolRegistry;
+  private sandbox!: SandboxExecutor;
+  private plugins!: PluginManager;
   private skills!: SkillsManager;
   private mcp!: MCPManager;
   private runtime!: AgentRuntime;
@@ -155,16 +165,21 @@ export class Controller implements UIController {
       catch { credentialWarnings.push(`Could not read the key ${provider.id}. Select the provider and save the key again.`); }
     }
     this.skills = new SkillsManager(this.config.home, this.workspace.root); this.mcp = new MCPManager(settings.mcp);
-    this.registry = new ToolRegistry(this.permissions, () => settings.toolOutputLimit); registerBuiltins(this.registry, this.workspace, settings);
+    this.registry = new ToolRegistry(this.permissions, () => settings.toolOutputLimit); this.sandbox = new SandboxExecutor(settings, this.workspace.root);
+    registerBuiltins(this.registry, this.workspace, settings, { sandbox: this.sandbox, store: this.store });
+    this.registry.onClose(() => this.sandbox.close());
     this.session = this.store.create(this.workspace.root);
     this.state = { workspace: this.workspace.root, sessionId: this.session, provider: settings.provider, model: settings.providers[settings.provider]?.model ?? '', mode: settings.mode, cortex: settings.cortex,
       busy: false, status: 'Ready', messages: [], usage: this.store.usage(this.session), taskUsage: { input: 0, output: 0, cached: 0, cost: 0, costKnown: true },
       agents: [], attachments: [], contextTokens: 0, contextLimit: contextLimit(settings.maxInputTokens, settings.maxOutputTokens, settings.providers[settings.provider]), contextLimitSource: contextLimitSource(settings.maxInputTokens, settings.maxOutputTokens, settings.providers[settings.provider]), tokenLimit: settings.tokenBudget, dollarLimit: settings.dollarBudget,
       vision: settings.providers[settings.provider]?.vision, theme: settings.theme };
-    this.runtime = new AgentRuntime(settings, this.store, this.registry, this.workspace, this.skills, this.mcp, id => this.provider(id), event => this.event(event));
+    this.plugins = new PluginManager(this.config.home);
+    const pluginWarnings = await this.plugins.loadEnabled(settings.plugins);
+    this.runtime = new AgentRuntime(settings, this.store, this.registry, this.workspace, this.skills, this.mcp, (id, model) => this.provider(id, true, model), event => this.event(event), undefined, this.sandbox, this.plugins);
     const cliQuestion = this.runtime.askQuestion;
     this.runtime.askQuestion = (question, signal) => this.events.listenerCount('change') ? this.askQuestion(question, signal) : cliQuestion(question, signal);
     for (const warning of credentialWarnings) this.note(warning, 'error');
+    for (const warning of pluginWarnings) this.note(`Plugin: ${warning}`, 'error');
   }
   snapshot(): UIState { return { ...this.state, messages: [...this.state.messages], agents: this.state.agents.map(agent => ({ ...agent, changedFiles: agent.changedFiles ? [...agent.changedFiles] : undefined })), usage: { ...this.state.usage }, taskUsage: { ...this.state.taskUsage }, attachments: this.pendingImages.map(image => ({ name: image.name ?? 'image', mediaType: image.mediaType, bytes: Buffer.from(image.data, 'base64').length })) }; }
   subscribe(listener: () => void): () => void { this.events.on('change', listener); return () => this.events.off('change', listener); }
@@ -172,9 +187,11 @@ export class Controller implements UIController {
   private async persistSettings(rollback: () => void): Promise<void> {
     try { await this.config.save(); } catch (error) { rollback(); throw error; }
   }
-  async listModels(): Promise<ModelInfo[]> {
-    this.models = await (await this.provider(undefined, false)).listModels();
-    return structuredClone(this.models);
+  async listModels(providerId = this.config.settings.provider): Promise<ModelInfo[]> {
+    if (this.state.busy || this.closing) throw new Error('Wait for the task to finish.');
+    const models = await (await this.provider(providerId, false)).listModels();
+    if (providerId === this.config.settings.provider) this.models = models;
+    return structuredClone(models);
   }
   listProviders(): { id: string; url: string; model: string }[] {
     const providers = new Map(Object.entries(PROVIDER_PRESETS));
@@ -208,11 +225,12 @@ export class Controller implements UIController {
     const existing = Object.hasOwn(settings.providers, id) ? settings.providers[id] : undefined;
     const preset = Object.hasOwn(PROVIDER_PRESETS, id) ? PROVIDER_PRESETS[id] : undefined;
     if (!existing && !preset) throw new Error('Unknown provider.');
-    const previousProvider = settings.provider, previousModels = this.models, previousProviders = new Map(this.providers);
+    const previousProvider = settings.provider, previousFallback = settings.fallback, previousModels = this.models, previousProviders = new Map(this.providers);
     if (!existing) settings.providers[id] = structuredClone(preset!);
-    settings.provider = id; this.models = []; this.providers.clear();
+    settings.provider = id; settings.fallback = settings.fallback.filter(provider => provider !== id); this.models = []; this.providers.clear();
     await this.persistSettings(() => {
       settings.provider = previousProvider;
+      settings.fallback = previousFallback;
       if (!existing) delete settings.providers[id];
       this.models = previousModels; this.providers = previousProviders;
     });
@@ -227,12 +245,14 @@ export class Controller implements UIController {
   async configureProvider(provider: ProviderConfig, apiKey?: string): Promise<void> {
     if (this.state.busy || this.closing) throw new Error('Wait for the task to finish.');
     const settings = this.config.settings;
-    const parsed = settingsSchema.parse({ ...settings, provider: provider.id, providers: { ...settings.providers, [provider.id]: provider } });
+    const previousFallback = settings.fallback;
+    const parsed = settingsSchema.parse({ ...settings, provider: provider.id, fallback: settings.fallback.filter(id => id !== provider.id), providers: { ...settings.providers, [provider.id]: provider } });
     const next = parsed.providers[provider.id]!;
     const previousProvider = settings.provider;
     const previousConfig = settings.providers[next.id];
     settings.providers[next.id] = next;
     settings.provider = next.id;
+    settings.fallback = parsed.fallback;
     let configSaved = false;
     try {
       await this.config.save(); configSaved = true;
@@ -240,6 +260,7 @@ export class Controller implements UIController {
     }
     catch (error) {
       settings.provider = previousProvider;
+      settings.fallback = previousFallback;
       if (previousConfig) settings.providers[next.id] = previousConfig;
       else delete settings.providers[next.id];
       if (configSaved) {
@@ -280,7 +301,7 @@ export class Controller implements UIController {
   }
   readSettings(): ReturnType<NonNullable<UIController['readSettings']>> {
     const settings = this.config.settings;
-    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, field.key === 'verificationCommands' ? JSON.stringify(settings.verificationCommands) : settings[field.key as keyof Settings] as string | number])),
+    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, ['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : settings[field.key as keyof Settings] as string | number])),
       tools: this.registry.discovery(settings.mode).map(tool => ({ name: tool.name, description: tool.description, available: tool.available, policy: settings.toolPermissions[tool.name] ?? 'default' })) };
   }
   async updateSetting(name: string, value: string | number): Promise<void> {
@@ -296,13 +317,20 @@ export class Controller implements UIController {
     } else {
       if (!SETTINGS_FIELDS.some(field => field.key === name)) throw new Error('Unknown setting.');
       const key = name as keyof Settings;
-      let verificationCommands: unknown = value;
-      if (name === 'verificationCommands' && typeof value === 'string') {
-        try { verificationCommands = JSON.parse(value); }
-        catch { throw new Error('Verification commands must be a JSON array, for example ["npm test", "npm run check"].'); }
+      let parsedInput: unknown = value;
+      if (['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) && typeof value === 'string') {
+        try { parsedInput = JSON.parse(value); }
+        catch { throw new Error(`${name} must be valid JSON.`); }
       }
-      const parsedValue = name === 'verificationCommands' ? verificationCommands : name === 'tokenBudget' ? parseTokenBudget(value)
+      const parsedValue = ['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) ? parsedInput : name === 'tokenBudget' ? parseTokenBudget(value)
+        : name === 'repeatFailureThreshold' ? parseUnlimitedLimit(value, 0)
+        : name === 'verificationRepairAttempts' ? Number(value)
         : SETTINGS_FIELDS.some(field => field.key === name && field.section === 'limits') ? parseUnlimitedLimit(value, name === 'maxDepth' ? -1 : 0) : value;
+      if (name === 'fallback' && Array.isArray(parsedValue) && parsedValue.every(item => typeof item === 'string')) {
+        const providers = parsedValue as string[];
+        if (new Set(providers).size !== providers.length) throw new Error('Fallback providers must be unique and keep their listed order.');
+        if (providers.includes(settings.provider)) throw new Error('The selected provider cannot also be a fallback provider.');
+      }
       const parsed = settingsSchema.safeParse({ ...settings, [name]: parsedValue });
       if (!parsed.success) {
         const issue = parsed.error.issues[0]!;
@@ -371,8 +399,9 @@ export class Controller implements UIController {
     else if (event.type === 'agent') this.state.agents = this.runtime.agents.map(agent => ({ ...agent, changedFiles: agent.changedFiles ? [...agent.changedFiles] : undefined }));
     this.onEvent?.(event); this.notify();
   }
-  private async provider(id = this.config.settings.provider, requireKey = true): Promise<LLMProvider> {
-    const config = this.config.settings.providers[id]; if (!config) throw new Error(`Unknown provider ${id}. Use /connect.`);
+  private async provider(id = this.config.settings.provider, requireKey = true, modelOverride?: string): Promise<LLMProvider> {
+    const configured = this.config.settings.providers[id]; if (!configured) throw new Error(`Unknown provider ${id}. Use /connect.`);
+    const config = providerConfigForModel(configured, modelOverride);
     const key = await this.vault.get(config.id, config.apiKeyEnv);
     if (requireKey && !key && !['ollama', 'lmstudio', 'vllm', 'custom'].includes(config.id) && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/)/.test(config.baseURL)) throw new Error(`API key is missing: /key <key> or environment variable ${config.apiKeyEnv ?? 'API'}.`);
     const cacheKey = `${id}:${JSON.stringify(config)}:${key ?? ''}:${this.config.settings.maxOutputTokens}`;
@@ -384,8 +413,13 @@ export class Controller implements UIController {
     if (!text) text = 'Describe the attached image.';
     if (text.startsWith('/')) { try { await this.command(text); } catch (error: any) { this.note(redact(error.message), 'error'); } return; }
     if (this.state.busy) { this.note('The agent is working. Use /cancel to stop the task.'); return; }
-    const visionCandidates = [this.config.settings.provider, ...this.config.settings.fallback]
-      .map(id => this.config.settings.providers[id]).filter((provider): provider is ProviderConfig => provider !== undefined);
+    const visionRoute = this.config.settings.modelRoutes.orchestrator;
+    const visionPrimaryId = visionRoute?.provider ?? this.config.settings.provider;
+    const visionPrimary = this.config.settings.providers[visionPrimaryId];
+    const visionCandidates = [
+      ...(visionPrimary ? [providerConfigForModel(visionPrimary, visionRoute?.model)] : []),
+      ...this.config.settings.fallback.map(id => this.config.settings.providers[id]).filter((provider): provider is ProviderConfig => provider !== undefined),
+    ];
     if (this.pendingImages.length && !visionCandidates.some(provider => provider.vision !== false)) { this.note('The selected model and all fallback models do not support images. Choose a model or vision fallback that does, or use /image clear.', 'error'); return; }
     const images = this.pendingImages; this.pendingImages = [];
     this.state.taskUsage = { input: 0, output: 0, cached: 0, cost: 0, costKnown: true };
@@ -407,7 +441,39 @@ export class Controller implements UIController {
             this.config.settings.tokenBudget = Number.isFinite(combined) ? combined : 0;
             this.config.settings.dollarBudget = originalDollarBudget - spent;
           }
-          try { await this.runtime.run(this.session, task, this.abort!.signal, continuation ? undefined : images); }
+          const signal = this.abort!.signal;
+          const budget = createRunBudget();
+          const autoVerify = this.config.settings.verificationMode === 'after_changes' && this.config.settings.mode === 'BUILD';
+          let verificationBaseline: Map<string, string | null> | undefined;
+          let runError: unknown;
+          try {
+            if (autoVerify) {
+              try { verificationBaseline = await this.verificationSnapshot(signal); }
+              catch (error: any) {
+                if (signal.aborted) throw error;
+                this.note(`Automatic verification could not capture the starting file state: ${redact(error?.message ?? String(error))}`, 'error');
+              }
+            }
+            try { await this.runtime.run(this.session, task, signal, continuation ? undefined : images, budget); }
+            catch (error) { runError = error; }
+            if (verificationBaseline && !signal.aborted) {
+              try {
+                const changed = await this.changedSince(verificationBaseline, signal);
+                if (changed.length) {
+                  this.note(`Build changed ${changed.length} file${changed.length === 1 ? '' : 's'}. Running automatic verification.`, 'system');
+                  try { await this.verifyWithRepairs(undefined, this.config.settings.verificationRepairAttempts, signal, budget); }
+                  catch (error: any) {
+                    if (signal.aborted) throw error;
+                    this.note(`Automatic verification stopped: ${redact(error?.message ?? String(error))}`, 'error');
+                  }
+                }
+              } catch (error: any) {
+                if (signal.aborted) throw error;
+                this.note(`Automatic verification could not compare file state: ${redact(error?.message ?? String(error))}`, 'error');
+              }
+            }
+            if (runError) throw runError;
+          }
           finally {
             this.config.settings.tokenBudget = originalBudget; this.config.settings.dollarBudget = originalDollarBudget;
             const w = this.store.workflow(this.session); if (w.goal && goalBefore) { const after = this.store.usage(this.session); w.goal.usedTokens += Math.max(0, after.input + after.output - before.input - before.output); if (w.goal.usedTokens >= tokenBudgetMaximum(w.goal.tokenBudget) && w.goal.status === 'active') w.goal.status = 'limit'; this.store.saveWorkflow(this.session, w); }
@@ -435,12 +501,12 @@ export class Controller implements UIController {
   private sync(): void {
     const settings = this.config.settings; const provider = settings.providers[settings.provider]; this.state.provider = settings.provider; this.state.model = provider?.model ?? ''; this.state.mode = settings.mode; this.state.cortex = settings.cortex; this.state.theme = settings.theme; this.state.vision = provider?.vision; this.state.contextLimit = contextLimit(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.contextLimitSource = contextLimitSource(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.tokenLimit = settings.tokenBudget; this.state.dollarLimit = settings.dollarBudget; this.notify();
   }
-  private async verify(explicitCommand?: string): Promise<void> {
+  private async verify(explicitCommand?: string, repairAttempts = 0): Promise<void> {
     if (this.state.busy || this.closing) throw new Error('Wait for the current task before starting verification.');
     if (this.config.settings.mode !== 'BUILD') throw new Error('Verification commands run project code. Switch to BUILD mode first.');
     const abort = new AbortController();
-    this.abort = abort; this.state.busy = true; this.state.status = 'Preparing verification'; this.notify();
-    const operation = this.performVerification(explicitCommand, abort.signal);
+    this.abort = abort; this.state.busy = true; this.state.status = 'Preparing verification'; this.state.taskUsage = { input: 0, output: 0, cached: 0, cost: 0, costKnown: true }; this.notify();
+    const operation = (async () => { await this.verifyWithRepairs(explicitCommand, repairAttempts, abort.signal, createRunBudget()); })();
     this.active = operation;
     try { await operation; }
     catch (error: any) { this.note(redact(abort.signal.aborted ? 'Verification cancelled before the report was complete.' : error.message ?? String(error)), 'error'); }
@@ -450,7 +516,56 @@ export class Controller implements UIController {
       this.state.busy = false; this.state.status = 'Ready'; this.notify();
     }
   }
-  private async performVerification(explicitCommand: string | undefined, signal: AbortSignal): Promise<void> {
+  private async verifyWithRepairs(explicitCommand: string | undefined, repairAttempts: number, signal: AbortSignal, budget: ReturnType<typeof createRunBudget>): Promise<import('./verification.js').VerificationReport> {
+    let report = await this.performVerification(explicitCommand, signal);
+    for (let attempt = 1; attempt <= repairAttempts && report.status === 'failed'; attempt++) {
+      signal.throwIfAborted();
+      this.state.status = `Repairing verification failure ${attempt}/${repairAttempts}`; this.notify();
+      this.note(`Verification failed. Asking the selected model to repair the reported failures (${attempt}/${repairAttempts}).`, 'system');
+      await this.runtime.run(this.session, this.verificationRepairTask(report), signal, undefined, budget);
+      signal.throwIfAborted();
+      report = await this.performVerification(explicitCommand, signal);
+    }
+    return report;
+  }
+  private async verificationSnapshot(signal: AbortSignal): Promise<Map<string, string | null>> {
+    const paths = new Set(this.workspace.changedPaths());
+    try {
+      const raw = await this.registry.execute('git_status', { untrackedFiles: true }, { signal, mode: this.config.settings.mode, outputLimit: 0 });
+      const status = JSON.parse(raw) as { exitCode?: unknown; stdout?: unknown };
+      if (status.exitCode === 0 && typeof status.stdout === 'string') parseGitStatusPaths(status.stdout).forEach(filename => paths.add(filename));
+    } catch (error) { if (signal.aborted) throw error; }
+    signal.throwIfAborted();
+    return hashWorkspaceFiles(this.workspace, [...paths]);
+  }
+  private async changedSince(before: Map<string, string | null>, signal: AbortSignal): Promise<string[]> {
+    const after = await this.verificationSnapshot(signal);
+    return [...new Set([...before.keys(), ...after.keys()])].filter(filename => before.get(filename) !== after.get(filename));
+  }
+  private verificationRepairTask(report: import('./verification.js').VerificationReport): string {
+    const failures = report.commands.filter(check => check.status === 'failed').slice(0, 8).map(check => ({
+      label: check.label, command: redact(check.command), exitCode: check.exitCode,
+      output: redact(check.output).slice(-1200),
+    }));
+    const diagnostics = report.diagnostics.filter(item => item.error || item.diagnostics.length).slice(0, 20).map(item => ({
+      path: item.path,
+      error: item.error ? redact(item.error).slice(0, 500) : undefined,
+      diagnostics: item.diagnostics.slice(0, 8).map(diagnostic => ({
+        code: diagnostic.code, line: diagnostic.line, column: diagnostic.column,
+        message: redact(diagnostic.message).slice(0, 500),
+      })),
+    }));
+    const evidence = JSON.stringify({ failures, diagnostics, changedDuringCheck: report.files.filter(file => file.changedDuringCheck).map(file => file.path).slice(0, 30) });
+    return [
+      'Repair the concrete project failures in this verification report.',
+      'Inspect relevant files first and make the smallest safe fixes. Do not claim the issue is fixed until the controller reruns verification.',
+      'Do not run the verification commands yourself; the controller will rerun them after this repair attempt. Do not make unrelated edits.',
+      'Use the normal tool permissions and approval flow. If a required action is disabled or denied, explain the blocker and stop. Do not bypass it.',
+      `Verification report ${report.id.slice(0, 8)} from ${report.workspace}:`,
+      evidence.slice(0, 9000),
+    ].join('\n\n');
+  }
+  private async performVerification(explicitCommand: string | undefined, signal: AbortSignal): Promise<import('./verification.js').VerificationReport> {
     const settings = this.config.settings;
     const plan = await discoverVerificationPlan(this.workspace, settings.verificationCommands, explicitCommand);
     const paths = new Set(this.workspace.changedPaths());
@@ -524,11 +639,12 @@ export class Controller implements UIController {
     const report = makeVerificationReport({ session: this.session, workspace: this.workspace.root, status, commands: checks, diagnostics, files, notes });
     this.store.saveVerification(report);
     this.note(formatVerificationReport(report), status === 'failed' || status === 'blocked' || status === 'incomplete' ? 'error' : 'system');
+    return report;
   }
   private async command(line: string): Promise<void> {
     const [command = '', ...args] = line.split(/\s+/); const tail = line.slice(command.length).trim();
     const settings = this.config.settings;
-    if (this.state.busy && !(command === '/goal' && (!tail || ['status', 'pause'].includes(tail))) && !['/cancel', '/status', '/cost', '/context', '/agents', '/steer', '/help', '/clear', '/exit'].includes(command)) throw new Error('Wait for the agent or use /cancel before changing the configuration.');
+    if (this.state.busy && !(command === '/goal' && (!tail || ['status', 'pause'].includes(tail))) && !['/cancel', '/status', '/cost', '/context', '/agents', '/steer', '/timeline', '/help', '/clear', '/exit'].includes(command)) throw new Error('Wait for the agent or use /cancel before changing the configuration.');
     switch (command) {
       case '/goal': {
         const w = this.store.workflow(this.session);
@@ -545,6 +661,9 @@ export class Controller implements UIController {
         if (tail.startsWith('--') && !match) throw new Error('/goal --tokens <N> <objective>');
         const budget = parseTokenBudget(match ? match[1] : settings.tokenBudget);
         if (w.goal?.status === 'active') throw new Error('An active goal exists. /goal pause or /goal clear first.');
+        // A persisted plan belongs to the task that created it. Do not carry it
+        // into a new goal, where it would mislead the agent's progress summary.
+        delete w.plan;
         w.goal = { objective: match ? match[2]! : tail, status: 'active', tokenBudget: budget, usedTokens: 0 }; this.store.saveWorkflow(this.session, w);
         await this.submit(w.goal.objective); break;
       }
@@ -581,6 +700,54 @@ export class Controller implements UIController {
         this.note(`Attached image ${this.pendingImages.length}/${MAX_IMAGES_PER_TASK}: ${path.basename(filename)}. Now send a message describing the task.`); break;
       }
       case '/help': this.note(HELP); break;
+      case '/sandbox': {
+        if (args[0] === 'setup') {
+          if (args.length === 1) {
+            this.note([
+              'Windows sandbox setup',
+              'This optional one-time setup creates a local sandbox account and a machine-wide network filter, then asks Windows for administrator approval.',
+              'It skips user-profile read grants. Project access is granted only when a sandboxed command runs, and those project ACL grants can persist.',
+              'PolonRLM refuses to elevate the bundled installer if it lives inside the writable project.',
+              'After setup, shell and code tools use required isolation and stop if it is unavailable.',
+              'Review the change, then type /sandbox setup confirm to continue. This command does not install anything.',
+            ].join('\n'));
+            break;
+          }
+          if (args.length !== 2 || args[1] !== 'confirm') throw new Error('Use /sandbox setup, then /sandbox setup confirm after reviewing the system changes.');
+          if (process.platform !== 'win32') throw new Error('The Windows sandbox setup command is available only on Windows.');
+
+          const current = await this.sandbox.status(this.workspace.root, 'required');
+          if (current.available) {
+            const previous = settings.sandboxMode;
+            settings.sandboxMode = 'required';
+            try { await this.persistSettings(() => { settings.sandboxMode = previous; }); }
+            catch (error) { this.sync(); throw error; }
+            this.sync();
+            this.note('Windows sandbox is already installed. Required isolation is now enabled.');
+            break;
+          }
+
+          this.note('Starting the Windows sandbox installer. Windows will show an administrator approval prompt. User-profile access is skipped.');
+          const installed = await this.sandbox.installWindows();
+          if (installed.cancelled) { this.note('Windows sandbox setup was cancelled. No sandbox setting was changed.'); break; }
+          const ready = await this.sandbox.status(this.workspace.root, 'required');
+          if (!ready.available) {
+            this.note(`Setup finished, but required isolation is not ready yet. Current mode was left unchanged. Details: ${ready.reason ?? ready.backend}`);
+            break;
+          }
+          const previous = settings.sandboxMode;
+          settings.sandboxMode = 'required';
+          try { await this.persistSettings(() => { settings.sandboxMode = previous; }); }
+          catch (error) { this.sync(); throw new Error(`Windows sandbox setup completed, but the setting could not be saved. Run /settings sandboxMode required after fixing the configuration error. ${String((error as Error)?.message ?? error)}`); }
+          this.sync();
+          this.note('Windows sandbox setup completed. Required isolation is enabled. Use /sandbox status to review it.');
+          break;
+        }
+        if (args.length > 1 || (args[0] && args[0] !== 'status')) throw new Error('Use /sandbox, /sandbox status, or /sandbox setup.');
+        const status = await this.sandbox.status(this.workspace.root);
+        this.note([`OS sandbox: ${status.mode}`, `Backend: ${status.backend}`, `Ready: ${status.available ? 'yes' : 'no'}`, status.reason ? `Details: ${status.reason}` : 'Network: sandboxed processes can reach only /settings sandboxNetworkDomains.', 'On Windows, use /sandbox setup to review and explicitly configure isolation.'].join('\n'));
+        break;
+      }
       case '/cancel': this.cancel(); break;
       case '/exit': await this.close(); break;
       case '/clear': this.state.messages = []; this.notify(); break;
@@ -605,10 +772,62 @@ export class Controller implements UIController {
         }
         this.note(`${id}: ${settings.providers[id]!.baseURL}\n/key <key> or ${settings.providers[id]!.apiKeyEnv ?? 'local endpoint without a key'}. /models fetches the list.`); break;
       }
+      case '/fallback': {
+        if (!args.length) {
+          const active = settings.fallback.length ? settings.fallback.map((id, index) => `${index + 1}. ${id} (${settings.providers[id]?.model ?? 'no model'})`).join('\n') : 'None';
+          const choices = Object.values(settings.providers).map(provider => `${provider.id}${provider.id === settings.provider ? ' (selected)' : ''} · ${provider.model || 'no model'}`).join('\n');
+          this.note([`Fallback order: ${active}`, 'Set with /fallback <provider IDs separated by spaces or commas>. Use /fallback none to clear it.', 'Configured providers:', choices].join('\n')); break;
+        }
+        const value = args.length === 1 && ['none', 'clear', 'off'].includes(args[0]!.toLowerCase()) ? [] : tail.split(/[\s,]+/).filter(Boolean);
+        if (new Set(value).size !== value.length) throw new Error('List each fallback provider once.');
+        if (value.includes(settings.provider)) throw new Error('The selected provider cannot also be a fallback provider.');
+        const unknown = value.filter(id => !Object.hasOwn(settings.providers, id));
+        if (unknown.length) throw new Error(`Unknown provider${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}. Configure it with /connect first.`);
+        await this.updateSetting('fallback', JSON.stringify(value));
+        this.note(`Fallback order: ${settings.fallback.length ? settings.fallback.join(' → ') : 'none'}.`); break;
+      }
       case '/key': if (!tail) throw new Error('Use /key <key>. The key field is masked and the key is omitted from history.'); await this.vault.set(settings.providers[settings.provider]!.id, tail); this.providers.clear(); this.note('Key encrypted with DPAPI for the current Windows account.'); break;
       case '/models': {
-        await this.listModels();
-        this.note(this.models.length ? this.models.map((model, index) => `${index + 1}. ${model.id}${model.contextWindow ? ` · context ${model.contextWindow}` : ''}${model.maxOutputTokens ? ` · max output ${model.maxOutputTokens}` : ''}${model.toolCalling === false ? ' · no tools' : ''}${model.reasoning === false ? ' · no reasoning' : ''}${model.vision === false ? ' · no image support' : ''}`).join('\n') + '\n/model <number> or /model <custom ID>' : 'The endpoint returned no models. Use /model <model ID>.'); break;
+        if (args.length > 1) throw new Error('Use /models [provider ID].');
+        const providerId = args[0] ?? settings.provider;
+        const models = await this.listModels(providerId);
+        const modelLines = models.map((model, index) => {
+          const details = [
+            model.contextWindow ? 'context ' + model.contextWindow : '',
+            model.maxOutputTokens ? 'max output ' + model.maxOutputTokens : '',
+            model.toolCalling === false ? 'no tools' : '',
+            model.reasoning === false ? 'no reasoning' : '',
+            model.vision === false ? 'no image support' : '',
+          ].filter(Boolean);
+          return (index + 1) + '. ' + model.id + (details.length ? ' · ' + details.join(' · ') : '');
+        });
+        const next = providerId === settings.provider ? '/model <number> or /model <custom ID>' : '/route <role> ' + providerId + ' <model ID> assigns a model to a role.';
+        this.note(models.length ? 'Models from ' + providerId + ':\n' + modelLines.join('\n') + '\n' + next : 'The ' + providerId + ' endpoint returned no models.');
+        break;
+      }
+      case '/route': {
+        const roles = ['orchestrator', 'planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] as const;
+        if (!args.length) {
+          const routes = roles.map(role => {
+            const route = settings.modelRoutes[role];
+            const provider = route ? settings.providers[route.provider] : undefined;
+            return role + ': ' + (route ? route.provider + '/' + (route.model ?? provider?.model ?? 'no model') : settings.provider + '/' + (settings.providers[settings.provider]?.model ?? 'no model') + ' (default)');
+          });
+          this.note([...routes, '', '/route <role> <provider> [model ID] assigns a role-specific model.', '/route <role> default uses the main provider and model again.', '/models <provider> lists that provider\'s models without switching the main provider.'].join('\n'));
+          break;
+        }
+        if (args.length < 2 || args.length > 3 || !roles.includes(args[0] as typeof roles[number])) throw new Error('Use /route <orchestrator|planner|coder|researcher|reviewer|tester|debugger> <provider> [model ID], or /route <role> default.');
+        const role = args[0] as typeof roles[number];
+        const routes = structuredClone(settings.modelRoutes);
+        if (args[1]!.toLowerCase() === 'default' && args.length === 2) delete routes[role];
+        else {
+          if (!Object.hasOwn(settings.providers, args[1]!)) throw new Error('Unknown provider ' + args[1] + '. Configure it with /connect first.');
+          routes[role] = { provider: args[1]!, ...(args[2] ? { model: args[2] } : {}) };
+        }
+        await this.updateSetting('modelRoutes', JSON.stringify(routes));
+        const route = settings.modelRoutes[role];
+        this.note(role + ' route: ' + (route ? route.provider + '/' + (route.model ?? settings.providers[route.provider]!.model) : 'main provider and model') + '.');
+        break;
       }
       case '/model': {
         if (!tail) { this.note(`Model: ${this.state.model || 'not selected'}. Use /model <id> or /models.`); break; }
@@ -643,7 +862,7 @@ export class Controller implements UIController {
       } break;
       case '/setting':
       case '/settings': {
-        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : String(settings[field.key as keyof Settings])}`), `Subagent tool profiles: ${JSON.stringify(settings.agentToolProfiles)}`, '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/settings agentToolProfiles {"reviewer":["read_file","search_files"]} sets a strict subagent allowlist; unset roles inherit the normal catalog.', '/permissions manages tool permissions.'].join('\n')); break; }
+        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : ['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : String(settings[field.key as keyof Settings])}`), `Subagent tool profiles: ${JSON.stringify(settings.agentToolProfiles)}`, '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/settings sandboxMode auto|required|off controls isolation for shell, Python, background commands and LSP.', '/settings sandboxNetworkDomains ["registry.npmjs.org","github.com"] allows network access from sandboxed commands.', '/settings agentToolProfiles {"reviewer":["read_file","search_files"]} sets a strict subagent allowlist; unset roles inherit the normal catalog.', '/settings modelRoleBudgets {"coder":{"maxTokens":50000,"maxCost":1,"maxCalls":30}} sets optional role caps; omitted values and 0 are unlimited.', '/permissions manages tool permissions.'].join('\n')); break; }
         if (args[0].startsWith('provider.')) {
           const field = args[0].slice('provider.'.length);
           if (!['reasoning', 'reasoningSupported', 'reasoningControl', 'reasoningEfforts', 'requestTimeoutMs', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, reasoningControl, reasoningEfforts, requestTimeoutMs, temperature, pricing, and capabilities. Change the model with /model and the URL with /connect.');
@@ -657,7 +876,7 @@ export class Controller implements UIController {
           this.providers.clear(); this.sync(); this.note(`Saved ${args[0]}.`); break;
         }
         const name = args[0] as keyof typeof settings;
-        if (['providers', 'provider', 'mcp', 'allowTools', 'denyTools'].includes(name) || !Object.hasOwn(settings, name)) throw new Error('Use the command for the relevant module.');
+        if (['providers', 'provider', 'mcp', 'plugins', 'allowTools', 'denyTools'].includes(name) || !Object.hasOwn(settings, name)) throw new Error(name === 'plugins' ? 'Use /plugins to review and manage executable plugin code.' : 'Use the command for the relevant module.');
         if (args.length === 1) { this.note(`${name}: ${JSON.stringify(settings[name])}`); break; }
         let value: unknown; const raw = tail.slice(name.length).trim(); try { value = JSON.parse(raw); } catch { value = raw; }
         if (SETTINGS_FIELDS.some(field => field.key === name)) { await this.updateSetting(name, value as string | number); this.note(`Saved ${name === 'tokenBudget' ? `token limit: ${formatTokenBudget(settings.tokenBudget)}` : name}.`); break; }
@@ -679,8 +898,20 @@ export class Controller implements UIController {
           if (!Number.isInteger(count) || count < 1) throw new Error('History count must be a positive whole number.');
           this.note(formatVerificationHistory(this.store.verificationReports(this.session, count))); break;
         }
+        if (args[0] === 'repair') {
+          if (args.length > 2) throw new Error('Use /verify repair [attempts], from 1 to 3.');
+          const attempts = args[1] === undefined ? 1 : Number(args[1]);
+          if (!Number.isInteger(attempts) || attempts < 1 || attempts > 3) throw new Error('Verification repair attempts must be a whole number from 1 to 3.');
+          await this.verify(undefined, attempts); break;
+        }
         const explicit = tail ? tail.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1') : undefined;
         await this.verify(explicit); break;
+      }
+      case '/timeline': {
+        if (args.length > 1) throw new Error('Use /timeline [count], from 1 to 200.');
+        const count = args[0] === undefined ? 30 : Number(args[0]);
+        if (!Number.isInteger(count) || count < 1 || count > 200) throw new Error('Timeline count must be a whole number from 1 to 200.');
+        this.note(formatEvidenceTimeline(this.store.evidenceTimeline(this.session, count))); break;
       }
       case '/recover': {
         if (args[0] === 'rollback') {
@@ -717,7 +948,7 @@ export class Controller implements UIController {
       case '/agents': this.note(`Parallel limit: ${displayLimit('maxAgents', settings.maxAgents)}; delegation depth: ${displayLimit('maxDepth', settings.maxDepth)}; Cortex ${settings.cortex} effort: ${CORTEX[settings.cortex]!.name}.\n${this.runtime.agents.map(agent => `${agent.id} · ${agent.role} · ${agent.status}`).join('\n') || 'No subagents.'}`); break;
       case '/permissions': {
         const [action, tool] = args;
-        const registered = new Set([...this.registry.discovery(settings.mode).map(item => item.name), ...this.mcp.tools().map(item => item.name), 'ask_question', 'get_goal', 'update_goal', 'finish_interview', 'discover_tools', 'request_tool', 'search_history', 'delegate', 'agent_message', 'agent_changes', 'agent_apply', 'load_skill', 'remember']);
+        const registered = new Set([...this.registry.discovery(settings.mode).map(item => item.name), ...this.mcp.tools().map(item => item.name), 'ask_question', 'get_goal', 'update_goal', 'finish_interview', 'discover_tools', 'request_tool', 'search_history', 'delegate', 'agent_message', 'agent_changes', 'agent_apply', 'load_skill', 'remember', 'sandbox_fallback']);
         const names = [...new Set([...registered, ...Object.keys(settings.toolPermissions), ...settings.allowTools, ...settings.denyTools])].sort();
         if (!action || action === 'list') {
           const effective = (name: string) => { const rule = settings.toolPermissions[name]; if (rule) return rule; if (settings.permissions === 'all') return 'auto'; if (settings.denyTools.includes(name) || (settings.allowTools.length && !settings.allowTools.includes(name))) return 'off'; return `global:${settings.permissions}`; };
@@ -786,6 +1017,7 @@ export class Controller implements UIController {
       case '/memory': if (args[0] === 'forget' && args[1]) this.store.forgetMemory(this.workspace.root, args.slice(1).join(' ')); this.note(JSON.stringify(this.store.memories(this.workspace.root), null, 2)); break;
       case '/skills': await this.skillCommand(args, tail); break;
       case '/mcp': await this.mcpCommand(args, tail); break;
+      case '/plugins': await this.pluginCommand(args); break;
       default: throw new Error('Unknown command. Use /help to see the command list.');
     }
   }
@@ -821,12 +1053,93 @@ export class Controller implements UIController {
     }
     else throw new Error('/mcp add <name> {"type":"stdio","command":"...","args":[]} or {"type":"http","url":"https://...","headersEnv":{"Authorization":"MCP_AUTH"}}; /mcp connect|disconnect|remove <name>');
   }
+  private async pluginCommand(args: string[]): Promise<void> {
+    const [action = 'list', id, confirmation] = args;
+    const configured = this.config.settings.plugins;
+    if (action === 'list' && args.length <= 1) {
+      const statuses = await this.plugins.list(configured);
+      const problems = this.plugins.drainProblems();
+      this.note([
+        ...statuses.map(plugin => `${plugin.loaded ? 'loaded' : plugin.enabled ? 'enabled' : 'off'} Â· ${plugin.id}${plugin.name ? ` Â· ${plugin.name} v${plugin.version}` : ''}${plugin.problem ? ` Â· ${plugin.problem}` : ''}`),
+        ...problems.map(problem => `problem Â· ${problem}`),
+        statuses.length ? '' : 'No plugins configured.',
+        'Plugins are trusted JavaScript with the current user permissions. Use /plugins enable <id> to review one, then /plugins enable <id> confirm to run it.',
+      ].filter(Boolean).join('\n'));
+      return;
+    }
+    if (action === 'create' && id && args.length === 2) {
+      if (Object.hasOwn(configured, id)) throw new Error(`Plugin ${id} is already configured.`);
+      const directory = await this.plugins.create(id);
+      const previous = configured[id]; configured[id] = { enabled: false };
+      try { await this.persistSettings(() => { if (previous) configured[id] = previous; else delete configured[id]; }); }
+      catch (error) { throw new Error(`Plugin files were created but could not be registered: ${String((error as Error)?.message ?? error)}. Files remain disabled at ${directory}.`); }
+      this.note(`Created disabled plugin ${id} at ${directory}. Review plugin.json and index.mjs before enabling it.`);
+      return;
+    }
+    if (action === 'show' && id && args.length === 2) {
+      const preview = await this.plugins.preview(id);
+      this.note([`${preview.manifest.name} v${preview.manifest.version}`, preview.manifest.description, `Entry: ${preview.path}`, `SHA-256 approval: ${preview.sha256}`, 'Enabling runs this local JavaScript with PolonRLM’s current user permissions.'].join('\n'));
+      return;
+    }
+    if (action === 'enable' && id && (args.length === 2 || args.length === 3 && confirmation === 'confirm')) {
+      const preview = args.length === 2 ? await this.plugins.review(id) : await this.plugins.preview(id);
+      if (args.length === 2) {
+        this.note([`Review plugin ${preview.manifest.name} v${preview.manifest.version}`, preview.manifest.description, `Entry: ${preview.path}`, `SHA-256: ${preview.sha256}`, 'This is trusted JavaScript with the same file, network, and process permissions as PolonRLM.', `Read the file, then type /plugins enable ${id} confirm to run this exact version.`].join('\n'));
+        return;
+      }
+      if (!this.plugins.consumeReview(id, preview.sha256)) {
+        const current = await this.plugins.review(id);
+        this.note([`Plugin ${id} was NOT started because its files were not the version from the last review.`, `Entry: ${current.path}`, `Current SHA-256: ${current.sha256}`, 'Read the current plugin source, then confirm it again with /plugins enable ' + id + ' confirm.'].join('\n'));
+        return;
+      }
+      const previous = configured[id];
+      configured[id] = { enabled: true, sha256: preview.sha256 };
+      try {
+        await this.config.save();
+        await this.plugins.activate(id, preview.sha256);
+      } catch (error) {
+        await this.plugins.deactivate(id).catch(() => {});
+        if (previous) configured[id] = previous; else delete configured[id];
+        await this.config.save().catch(() => {});
+        this.sync();
+        throw error;
+      }
+      this.sync();
+      this.note(`Enabled ${id} at SHA-256 ${preview.sha256}. The exact file hash is pinned; edits require another review and confirmation.`);
+      return;
+    }
+    if (action === 'disable' && id && args.length === 2) {
+      const previous = configured[id]; if (!previous) throw new Error(`Plugin ${id} is not configured.`);
+      configured[id] = { ...previous, enabled: false };
+      try { await this.persistSettings(() => { configured[id] = previous; }); }
+      catch (error) { this.sync(); throw error; }
+      await this.plugins.deactivate(id);
+      this.sync();
+      this.note(`Disabled ${id}. Its files remain in your PolonRLM plugins folder.`);
+      return;
+    }
+    if (action === 'remove' && id && args.length === 2) {
+      const previous = configured[id]; if (!previous) throw new Error(`Plugin ${id} is not configured.`);
+      delete configured[id];
+      try { await this.persistSettings(() => { configured[id] = previous; }); }
+      catch (error) { this.sync(); throw error; }
+      await this.plugins.deactivate(id);
+      this.sync();
+      this.note(`Removed ${id} from PolonRLM. Its plugin files remain in your user directory for review.`);
+      return;
+    }
+    throw new Error('/plugins list | create <id> | show <id> | enable <id> [confirm] | disable <id> | remove <id>');
+  }
   close(): Promise<void> {
     if (this.closeOperation) return this.closeOperation;
     this.closing = true; this.cancel();
     this.closeOperation = (async () => {
       await this.active;
-      try { await this.mcp.close(); } finally { try { await this.registry.close(); } finally { this.recoveryCipher.close(); this.store.close(); this.state.status = 'closed'; this.notify(); } }
+      try { await this.plugins.close(); } finally {
+        try { await this.mcp.close(); } finally {
+          try { await this.registry.close(); } finally { this.recoveryCipher.close(); this.store.close(); this.state.status = 'closed'; this.notify(); }
+        }
+      }
     })();
     return this.closeOperation;
   }

@@ -56,6 +56,7 @@ export interface RecoveryCheckpoint {
 }
 
 export interface RecoveryJournal {
+  withWorkspaceLock<T>(workspace: string, work: () => Promise<T>, signal?: AbortSignal): Promise<T>;
   prepareRecoveryChange(change: RecoveryChange): void;
   setRecoveryChangeState(workspace: string, id: string, state: RecoveryChangeState): void;
   recoveryChange(workspace: string, id: string): RecoveryChange | undefined;

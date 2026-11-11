@@ -8,9 +8,11 @@ import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { ConfigManager, defaultSettings, secureMcpServerSchema, settingsSchema } from '../src/core/config.js';
 import { SessionStore } from '../src/core/store.js';
+import { RecoveryCipher } from '../src/core/recovery.js';
 import { redact, registerSecret, SecretVault, StreamRedactor, safeText } from '../src/core/secrets.js';
 import { Permissions } from '../src/core/permissions.js';
 import { ToolRegistry } from '../src/tools/registry.js';
+import { Workspace } from '../src/tools/workspace.js';
 import { z } from 'zod';
 
 test('all terminal output strips DCS, SOS, C1 and carriage returns', () => {
@@ -48,6 +50,7 @@ test('migrates the former 200000-token factory budget but preserves a customized
   const directory = await mkdtemp(path.join(os.tmpdir(), 'polon-unlimited-migration-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const oldSettings = { ...defaultSettings(), maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
+  delete (oldSettings as Partial<ReturnType<typeof defaultSettings>>).configVersion;
   await writeFile(path.join(directory, 'config.json'), JSON.stringify(oldSettings));
   const migrated = new ConfigManager(directory); await migrated.load();
   assert.deepEqual({
@@ -58,6 +61,16 @@ test('migrates the former 200000-token factory budget but preserves a customized
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
     maxAgents: 0, maxProcesses: 0, maxDepth: -1, toolOutputLimit: 0, timeoutMs: 0,
   });
+  await migrated.save();
+  assert.equal(JSON.parse(await readFile(path.join(directory, 'config.json'), 'utf8')).configVersion, 2);
+
+  const versionOneDirectory = await mkdtemp(path.join(os.tmpdir(), 'polon-version-one-migration-'));
+  t.after(() => rm(versionOneDirectory, { recursive: true, force: true }));
+  await writeFile(path.join(versionOneDirectory, 'config.json'), JSON.stringify({ ...oldSettings, configVersion: 1 }));
+  const versionOne = new ConfigManager(versionOneDirectory); await versionOne.load();
+  assert.equal(versionOne.settings.maxSteps, 0);
+  assert.equal(versionOne.settings.tokenBudget, 0);
+  assert.equal(versionOne.settings.configVersion, 2);
 
   const customizedDirectory = await mkdtemp(path.join(os.tmpdir(), 'polon-custom-budget-'));
   t.after(() => rm(customizedDirectory, { recursive: true, force: true }));
@@ -65,6 +78,32 @@ test('migrates the former 200000-token factory budget but preserves a customized
   const customized = new ConfigManager(customizedDirectory); await customized.load();
   assert.equal(customized.settings.tokenBudget, 250000);
   assert.equal(customized.settings.maxInputTokens, 0);
+});
+
+test('versioned config preserves limits equal to old factory defaults across restarts', async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-versioned-limits-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const settings = { ...defaultSettings(), maxSteps: 24, tokenBudget: 200000 };
+  await writeFile(path.join(home, 'config.json'), JSON.stringify(settings));
+
+  const first = new ConfigManager(home);
+  await first.load();
+  assert.equal(first.settings.maxSteps, 24);
+  assert.equal(first.settings.tokenBudget, 200000);
+  await first.save();
+  assert.equal(JSON.parse(await readFile(path.join(home, 'config.json'), 'utf8')).configVersion, 2);
+
+  const second = new ConfigManager(home);
+  await second.load();
+  assert.equal(second.settings.maxSteps, 24);
+  assert.equal(second.settings.tokenBudget, 200000);
+});
+
+test('unsupported future config versions fail visibly instead of being downgraded', async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-future-config-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await writeFile(path.join(home, 'config.json'), JSON.stringify({ ...defaultSettings(), configVersion: 3 }));
+  await assert.rejects(new ConfigManager(home).load(), /Invalid configuration/);
 });
 
 test('fresh settings start with no application-imposed resource limits', () => {
@@ -116,7 +155,15 @@ test('new MCP configs refuse plaintext auth while legacy config stays loadable',
   assert.equal(parse(legacyServer).success, true);
   assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio', command: 'node', env: { AUTH: 'inline-secret-value' } }).success, false);
   assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio', command: 'node', env: { AUTH: '${MCP_AUTH}' } }).success, true);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio' }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio', command: '   ' }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio', command: 'node', url: 'https://mcp.example.test' }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio', command: 'node', headersEnv: { Authorization: 'MCP_AUTH' } }).success, false);
   assert.equal(secureMcpServerSchema.safeParse({ type: 'http', url: 'https://mcp.example.test', headersEnv: { Authorization: 'not a variable' } }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'http' }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'http', url: 'https://mcp.example.test', command: 'node' }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'http', url: 'https://mcp.example.test', args: ['--flag'] }).success, false);
+  assert.equal(secureMcpServerSchema.safeParse({ type: 'http', url: 'https://mcp.example.test', env: { TOKEN: '${MCP_TOKEN}' } }).success, false);
   assert.equal(secureMcpServerSchema.safeParse({ type: 'http', url: 'https://mcp.example.test/path?token=inline-secret-value' }).success, false);
   assert.equal(secureMcpServerSchema.safeParse({ type: 'stdio', command: 'node', args: ['--api-key', 'inline-secret-value'] }).success, false);
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-mcp-legacy-'));
@@ -185,6 +232,104 @@ test('concurrent PolonRLM processes preserve SQLite sessions and messages', { ti
   try {
     assert.equal(store.integrityCheck(), 'ok');
     assert.equal(workers.reduce((total, worker) => total + store.messages(worker.id).length, 0), 200);
+  } finally { store.close(); }
+});
+
+test('concurrent PolonRLM processes serialize writes after the stale-hash check', { timeout: 30000 }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-workspace-lock-'));
+  const root = path.join(home, 'workspace'); await mkdir(root); await writeFile(path.join(root, 'shared.txt'), 'original');
+  t.after(async () => {
+    assert.equal(path.dirname(home), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(home).startsWith('polon-workspace-lock-'));
+    await rm(home, { recursive: true, force: true });
+  });
+  const initialStore = new SessionStore(home); initialStore.close();
+  const initialCipher = await RecoveryCipher.open(home); initialCipher.close();
+
+  const urls = Object.fromEntries(['store', 'recovery', 'permissions', 'config', 'workspace'].map(name => [name, pathToFileURL(path.resolve(`src/${name === 'workspace' ? 'tools/workspace' : `core/${name}`}.ts`)).href]));
+  const workerSource = [
+    `const { SessionStore } = await import(${JSON.stringify(urls.store)});`,
+    `const { RecoveryCipher } = await import(${JSON.stringify(urls.recovery)});`,
+    `const { Permissions } = await import(${JSON.stringify(urls.permissions)});`,
+    `const { defaultSettings } = await import(${JSON.stringify(urls.config)});`,
+    `const { Workspace } = await import(${JSON.stringify(urls.workspace)});`,
+    'const home = process.env.POLON_LOCK_HOME, root = process.env.POLON_LOCK_ROOT, id = process.env.POLON_LOCK_ID;',
+    'const store = new SessionStore(home), cipher = await RecoveryCipher.open(home);',
+    "const permissions = new Permissions({ ...defaultSettings(), permissions: 'workspace' });",
+    'const workspace = await Workspace.open(root, permissions); workspace.attachRecovery(store, cipher);',
+    'const resolveWorkspace = workspace.resolve.bind(workspace); let resolveCalls = 0;',
+    "workspace.resolve = async input => { const resolved = await resolveWorkspace(input); if (++resolveCalls === 2) { process.stdout.write('READY:' + id + '\\n'); await new Promise(resolve => process.stdin.once('data', resolve)); } return resolved; };",
+    "process.stdout.write('START:' + id + '\\n');",
+    "let result; try { await workspace.change('write_file', 'shared.txt', before => { if (before !== 'original') throw new Error('STALE'); return id; }, 'BUILD'); result = 'SUCCESS'; } catch (error) { result = error.message === 'STALE' ? 'STALE' : 'ERROR:' + error.message; }",
+    "process.stdout.write('RESULT:' + id + ':' + result + '\\n'); store.close(); cipher.close();",
+  ].join('\n');
+  const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+  const ids = ['first', 'second'];
+  const children = ids.map(id => spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', workerSource], {
+    cwd: process.cwd(), windowsHide: true,
+    env: { ...inherited, POLON_LOCK_HOME: home, POLON_LOCK_ROOT: root, POLON_LOCK_ID: id }, stdio: ['pipe', 'pipe', 'pipe'],
+  }));
+  const output = children.map(() => ''), errors = children.map(() => ''), close = children.map(child => new Promise<number | null>(resolve => child.once('close', resolve)));
+  children.forEach((child, index) => {
+    child.stdout.setEncoding('utf8').on('data', chunk => output[index] += chunk);
+    child.stderr.setEncoding('utf8').on('data', chunk => errors[index] += chunk);
+  });
+  t.after(async () => {
+    for (const child of children) if (child.exitCode === null) child.kill();
+    await Promise.all(close);
+  });
+  const waitFor = async (condition: () => boolean, description: string) => {
+    const deadline = Date.now() + 10000;
+    while (!condition()) {
+      if (Date.now() >= deadline) assert.fail(`Workspace lock workers did not ${description}: ${JSON.stringify({ output, errors })}`);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+
+  await waitFor(() => ids.every(id => output.some(text => text.includes(`START:${id}\n`))), 'start');
+  await waitFor(() => output.some(text => text.includes('READY:')), 'reach the stale-hash boundary');
+  await new Promise(resolve => setTimeout(resolve, 250));
+  for (let index = 0; index < children.length; index++) if (output[index]!.includes('READY:')) children[index]!.stdin.end('continue\n');
+  await waitFor(() => output.every(text => text.includes('RESULT:')), 'finish');
+  const results = output.flatMap(text => [...text.matchAll(/RESULT:(first|second):(SUCCESS|STALE|ERROR:[^\r\n]+)/g)].map(match => `${match[1]}:${match[2]}`)).sort();
+  assert.equal(output.filter(text => text.includes('READY:')).length, 1, 'the second process must wait before reading the target file');
+  assert.deepEqual(results.map(item => item.split(':')[1]).sort(), ['STALE', 'SUCCESS']);
+  const winner = results.find(item => item.endsWith(':SUCCESS'))!.split(':')[0]!;
+  assert.equal(await readFile(path.join(root, 'shared.txt'), 'utf8'), winner);
+});
+
+test('workspace mutation locks recover after the owning process exits unexpectedly', { timeout: 20000 }, async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-workspace-lock-recovery-'));
+  t.after(async () => { await rm(home, { recursive: true, force: true }); });
+  const workspace = path.join(home, 'workspace');
+  const initial = new SessionStore(home); initial.close();
+  const storeUrl = pathToFileURL(path.resolve('src/core/store.ts')).href;
+  const workerSource = [
+    `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+    'const store = new SessionStore(process.env.POLON_LOCK_RECOVERY_HOME);',
+    'await store.withWorkspaceLock(process.env.POLON_LOCK_RECOVERY_WORKSPACE, () => new Promise(resolve => process.stdout.write("LOCKED\\n", () => process.exit(0))));',
+  ].join('\n');
+  const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+  const worker = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', workerSource], {
+      cwd: process.cwd(), windowsHide: true,
+      env: { ...inherited, POLON_LOCK_RECOVERY_HOME: home, POLON_LOCK_RECOVERY_WORKSPACE: workspace }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '', stderr = '';
+    const timeout = setTimeout(() => child.kill(), 10000);
+    child.stdout.setEncoding('utf8').on('data', chunk => stdout += chunk);
+    child.stderr.setEncoding('utf8').on('data', chunk => stderr += chunk);
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('close', code => { clearTimeout(timeout); resolve({ code, stdout, stderr }); });
+  });
+  assert.equal(worker.code, 0, worker.stderr);
+  assert.equal(worker.stdout, 'LOCKED\n');
+
+  const store = new SessionStore(home);
+  try {
+    let acquired = false;
+    await store.withWorkspaceLock(workspace, async () => { acquired = true; });
+    assert.equal(acquired, true);
   } finally { store.close(); }
 });
 
@@ -315,11 +460,56 @@ test('configurable limits have no arbitrary app ceiling beyond the native timer 
   assert.equal(parsed.maxProcesses, 9);
   assert.equal(parsed.maxDepth, 3);
   assert.equal(parsed.timeoutMs, 600_001);
+  assert.equal(settingsSchema.parse({ ...settings, providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 0 } } }).providers.openrouter?.requestTimeoutMs, 0);
+  assert.throws(() => settingsSchema.parse({ ...settings, providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: -1 } } }));
   assert.equal(settingsSchema.parse({ ...settings, timeoutMs: 2_147_483_647 }).timeoutMs, 2_147_483_647);
   assert.throws(() => settingsSchema.parse({ ...settings, timeoutMs: 2_147_483_648 }));
   assert.throws(() => settingsSchema.parse({ ...settings,
     providers: { ...settings.providers, openrouter: { ...settings.providers.openrouter, requestTimeoutMs: 2_147_483_648 } },
   }));
+});
+
+test('role model routes are optional and must reference configured providers and known roles', () => {
+  const settings = defaultSettings();
+  assert.deepEqual(settingsSchema.parse(settings).modelRoutes, {});
+  assert.deepEqual(settingsSchema.parse({ ...settings, modelRoutes: { reviewer: { provider: 'openrouter', model: 'custom-flash' } } }).modelRoutes,
+    { reviewer: { provider: 'openrouter', model: 'custom-flash' } });
+  assert.equal(settingsSchema.safeParse({ ...settings, modelRoutes: { reviewer: { provider: 'missing' } } }).success, false);
+  assert.equal(settingsSchema.safeParse({ ...settings, modelRoutes: { unknown: { provider: 'openrouter' } } }).success, false);
+});
+
+test('role model budgets are optional, validated, and unlimited unless configured', () => {
+  const settings = defaultSettings();
+  assert.deepEqual(settingsSchema.parse(settings).modelRoleBudgets, {});
+  const configured = { coder: { maxCalls: 30, maxTokens: 50_000, maxCost: 1 }, reviewer: { maxCalls: 0 } };
+  assert.deepEqual(settingsSchema.parse({ ...settings, modelRoleBudgets: configured }).modelRoleBudgets, configured);
+  assert.equal(settingsSchema.safeParse({ ...settings, modelRoleBudgets: { unknown: { maxCalls: 1 } } }).success, false);
+  assert.equal(settingsSchema.safeParse({ ...settings, modelRoleBudgets: { coder: {} } }).success, false);
+});
+
+test('Cortex strategy defaults to adaptive and accepts a fixed mode', () => {
+  const settings = defaultSettings();
+  assert.equal(settings.cortexStrategy, 'adaptive');
+  assert.equal(settingsSchema.parse({ ...settings, cortexStrategy: 'fixed' }).cortexStrategy, 'fixed');
+  assert.equal(settingsSchema.safeParse({ ...settings, cortexStrategy: 'automatic-ish' }).success, false);
+});
+
+test('repeated failure threshold defaults to three and can be disabled or changed', () => {
+  const settings = defaultSettings();
+  assert.equal(settings.repeatFailureThreshold, 3);
+  assert.equal(settingsSchema.parse({ ...settings, repeatFailureThreshold: 0 }).repeatFailureThreshold, 0);
+  assert.equal(settingsSchema.parse({ ...settings, repeatFailureThreshold: 7 }).repeatFailureThreshold, 7);
+  assert.equal(settingsSchema.safeParse({ ...settings, repeatFailureThreshold: 21 }).success, false);
+});
+
+test('automatic verification defaults on with one repair attempt and validates its controls', () => {
+  const settings = defaultSettings();
+  assert.equal(settings.verificationMode, 'after_changes');
+  assert.equal(settings.verificationRepairAttempts, 1);
+  assert.equal(settingsSchema.parse({ ...settings, verificationMode: 'manual', verificationRepairAttempts: 0 }).verificationRepairAttempts, 0);
+  assert.equal(settingsSchema.parse({ ...settings, verificationRepairAttempts: 3 }).verificationRepairAttempts, 3);
+  assert.equal(settingsSchema.safeParse({ ...settings, verificationMode: 'always' }).success, false);
+  assert.equal(settingsSchema.safeParse({ ...settings, verificationRepairAttempts: 4 }).success, false);
 });
 
 test('Windows vault roundtrips through DPAPI without plaintext credentials on disk', { skip: process.platform !== 'win32' }, async () => {

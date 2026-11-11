@@ -1,0 +1,6 @@
+{
+  "id": "retry-status",
+  "title": "Classify retryable HTTP statuses",
+  "timeoutMs": 600000,
+  "prompt": "Fix shouldRetryStatus in src/status.js. Retry statuses 408, 425, 429, and all 5xx statuses. Do not retry other statuses or non-finite values. Keep the current named export."
+}

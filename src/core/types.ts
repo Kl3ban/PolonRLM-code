@@ -1,4 +1,9 @@
 export type Mode = 'PLAN' | 'BUILD' | 'REVIEW';
+export const AGENT_MODEL_ROLES = ['orchestrator', 'planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] as const;
+export type AgentModelRole = typeof AGENT_MODEL_ROLES[number];
+export interface ModelRoute { provider: string; model?: string }
+export interface ModelRoleBudget { maxCalls?: number; maxTokens?: number; maxCost?: number }
+export interface TrustedPluginConfig { enabled: boolean; sha256?: string }
 export type ProviderKind = 'openai' | 'compatible' | 'anthropic' | 'google';
 export type ReasoningControl = 'effort' | 'toggle' | 'thinking-level' | 'thinking-budget';
 export interface ProviderConfig {
@@ -31,13 +36,18 @@ export interface LLMProvider {
   listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
 }
 export interface Settings {
+  configVersion: number;
   provider: string; providers: Record<string, ProviderConfig>; fallback: string[];
-  mode: Mode; cortex: number; maxSteps: number; maxInputTokens: number; maxOutputTokens: number;
+  mode: Mode; cortex: number; cortexStrategy: 'adaptive' | 'fixed'; repeatFailureThreshold: number; maxSteps: number; maxInputTokens: number; maxOutputTokens: number;
   tokenBudget: number; dollarBudget: number; maxAgents: number; maxProcesses: number; maxDepth: number;
   permissions: 'ask' | 'workspace' | 'readonly' | 'all'; toolPermissions: Record<string, 'ask' | 'auto' | 'off'>; allowTools: string[]; denyTools: string[];
   theme: 'dark' | 'light'; toolOutputLimit: number; timeoutMs: number; webSearchMode: 'auto' | 'bing' | 'brave' | 'yahoo'; browserEngine: 'auto' | 'chromium' | 'chrome' | 'edge' | 'brave' | 'firefox';
-  verificationCommands: string[]; mcp: Record<string, MCPConfig>;
+  verificationCommands: string[]; verificationMode: 'manual' | 'after_changes'; verificationRepairAttempts: number; mcp: Record<string, MCPConfig>;
   agentToolProfiles: Record<string, string[]>;
+  modelRoutes: Partial<Record<AgentModelRole, ModelRoute>>;
+  modelRoleBudgets: Partial<Record<AgentModelRole, ModelRoleBudget>>;
+  plugins: Record<string, TrustedPluginConfig>;
+  sandboxMode: 'off' | 'auto' | 'required'; sandboxNetworkDomains: string[];
 }
 export interface MCPConfig {
   type: 'stdio' | 'http'; command?: string; args?: string[]; url?: string;
@@ -74,7 +84,7 @@ export interface UIController {
   cycleMode(): void;
   close(): Promise<void>;
   setApprover(approve: Approve): void;
-  listModels?(): Promise<ModelInfo[]>;
+  listModels?(providerId?: string): Promise<ModelInfo[]>;
   listProviders?(): { id: string; url: string; model: string }[];
   setModel?(id: string, persist?: boolean): Promise<void>;
   listEfforts?(): { id: string; label: string; detail?: string }[];

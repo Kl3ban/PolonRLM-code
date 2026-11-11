@@ -13,10 +13,12 @@ import { registerAdvancedTools } from './advanced.js';
 import { registerBrowserSessionTools } from './browser-session.js';
 import { subprocessEnvironment } from '../core/secrets.js';
 import { resolvePythonCommand } from './python-runtime.js';
+import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
+import type { SessionStore } from '../core/store.js';
 
-export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean } = {}): void {
+export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean; sandbox?: SandboxExecutor; store?: SessionStore } = {}): void {
   if (options.computer !== false) registerComputerTool(registry, workspace);
-  registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit);
+  registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit, options.sandbox, options.store);
   registerBrowserSessionTools(registry, workspace, () => settings.browserEngine);
   const file = z.object({ path: z.string().min(1) });
   registry.add('read_file', 'Read numbered text lines. Request targeted ranges.', file.extend({ start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(1000).default(200) }), true, async args => workspace.read(args.path, args.start, args.lines));
@@ -47,24 +49,47 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
   }
   for (const name of ['inspect_project', 'detect_project_type', 'analyze_dependencies']) registry.add(name, 'Inspect project manifest, scripts and dependency declarations without running code.', z.object({}), true, detect);
   async function processRun(tool: string, command: string, args: string[], context: ToolContext, approved = false): Promise<unknown> {
-    if (!approved) await workspace.permissions.check(tool, 'shell', 'Command runs with your permissions, outside a sandbox. Approve only trusted code.', `${command} ${args.join(' ')}`, context.mode, context.signal);
+    let prepared: PreparedCommand | undefined;
+    let sandboxStatus: Awaited<ReturnType<SandboxExecutor['status']>> | undefined;
+    if (!approved && options.sandbox) {
+      sandboxStatus = await options.sandbox.status(workspace.root);
+      if (settings.sandboxMode === 'required' && !sandboxStatus.available) throw new Error(`OS sandbox is required but unavailable: ${sandboxStatus.reason ?? sandboxStatus.backend}. No command was run.`);
+      const detail = sandboxStatus.available
+        ? `Run the command inside the ${sandboxStatus.backend} OS sandbox after approval. Sandbox network access follows /settings sandboxNetworkDomains.${sandboxStatus.reason ? ` Setup note: ${sandboxStatus.reason}` : ''}`
+        : `The OS sandbox is unavailable (${sandboxStatus.reason ?? sandboxStatus.backend}). Run this command with your normal host permissions only after approval.`;
+      await workspace.permissions.check(tool, 'shell', detail, `${command} ${args.join(' ')}`, context.mode, context.signal);
+      if (!sandboxStatus.available && settings.toolPermissions[tool] === 'auto' && settings.permissions !== 'all') {
+        await workspace.permissions.check('sandbox_fallback', 'shell', 'The selected tool is set to auto, but the OS sandbox is unavailable. Approve this host execution explicitly.', `${command} ${args.join(' ')}`, context.mode, context.signal);
+      }
+      try { prepared = await options.sandbox.prepare(command, args, workspace.root, context.signal); }
+      catch (error: any) {
+        if (settings.sandboxMode === 'required') throw error;
+        const reason = String(error?.message ?? error);
+        await workspace.permissions.check('sandbox_fallback', 'shell', `Sandbox setup failed (${reason}). Approve running this command directly on the host.`, `${command} ${args.join(' ')}`, context.mode, context.signal);
+        prepared = { command, args, env: subprocessEnvironment(context.isolated), sandboxed: false, reason, cleanup: async () => {}, annotate: stderr => stderr };
+      }
+    } else if (!approved) {
+      await workspace.permissions.check(tool, 'shell', 'Run the command with your permissions on the host after approval. OS sandbox is not configured for this tool.', `${command} ${args.join(' ')}`, context.mode, context.signal);
+    }
     context.signal.throwIfAborted();
-    const result = await execa(command, args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), reject: false, timeout: settings.timeoutMs > 0 ? settings.timeoutMs : undefined, cancelSignal: context.signal, killDescendants: true, forceKillAfterDelay: 1000, maxBuffer: Number.POSITIVE_INFINITY, windowsHide: true, cleanup: true });
-    context.signal.throwIfAborted();
-    if (result.timedOut) throw new Error(`Command timed out after ${settings.timeoutMs} ms.`);
-    if (result.exitCode === undefined) throw new Error(`Command was not started: ${result.shortMessage ?? result.stderr}`);
-    return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+    const launch = prepared ?? { command, args, env: subprocessEnvironment(context.isolated), sandboxed: false, cleanup: async () => {}, annotate: (stderr: string) => stderr };
+    try {
+      const result = await execa(launch.command, launch.args, { cwd: workspace.root, env: launch.sandboxed ? launch.env : subprocessEnvironment(context.isolated), reject: false, timeout: settings.timeoutMs > 0 ? settings.timeoutMs : undefined, cancelSignal: context.signal, killDescendants: true, forceKillAfterDelay: 1000, maxBuffer: Number.POSITIVE_INFINITY, windowsHide: true, cleanup: true });
+      context.signal.throwIfAborted();
+      if (result.timedOut) throw new Error(`Command timed out after ${settings.timeoutMs} ms.`);
+      if (result.exitCode === undefined) throw new Error(`Command was not started: ${result.shortMessage ?? result.stderr}`);
+      return { execution: launch.sandboxed ? `sandboxed (${sandboxStatus?.backend ?? 'OS'})` : `host${launch.reason ? ` (sandbox fallback: ${launch.reason})` : settings.sandboxMode === 'off' ? ' (sandbox off)' : ''}`, exitCode: result.exitCode, stdout: result.stdout, stderr: launch.annotate(result.stderr) };
+    } finally { await launch.cleanup(); }
   }
   const shellSchema = z.object({ command: z.string().min(1).max(10000) });
   const shell = (tool: string, command: string, context: ToolContext) => processRun(tool, process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' + command] : ['-c', command], context);
-  for (const name of ['execute_command', 'execute_powershell', 'run_tests', 'install_dependencies', 'inspect_errors']) registry.add(name, 'Run shell command after approval; returns actual exit code and bounded output. Shell is not sandboxed.', shellSchema, false, async (args, context) => { if (name === 'execute_powershell' && process.platform !== 'win32') throw new Error('PowerShell tool requires Windows.'); return shell(name, args.command, context); });
+  for (const name of ['execute_command', 'execute_powershell', 'run_tests', 'install_dependencies', 'inspect_errors']) registry.add(name, 'Run a shell command under the configured permission policy. Uses OS isolation when available; host fallback follows the permission policy and is reported.', shellSchema, false, async (args, context) => { if (name === 'execute_powershell' && process.platform !== 'win32') throw new Error('PowerShell tool requires Windows.'); return shell(name, args.command, context); });
   registry.add('execute_python', 'Execute Python code after explicit approval. Uses an installed interpreter, skipping Windows Store aliases.', z.object({ code: z.string().min(1) }), false, async (args, context) => {
-    await workspace.permissions.check('execute_python', 'shell', 'Run the provided Python code with your permissions.', args.code, context.mode, context.signal);
     const python = await resolvePythonCommand();
-    return processRun('execute_python', python.command, [...python.prefixArgs, '-c', args.code], context, true);
+    return processRun('execute_python', python.command, [...python.prefixArgs, '-c', args.code], context);
   });
   registry.add('inspect_process', 'Inspect running processes; no process termination.', z.object({}), true, async (_args, context) => processRun('inspect_process', process.platform === 'win32' ? 'tasklist.exe' : 'ps', process.platform === 'win32' ? ['/FO', 'CSV'] : ['-eo', 'pid,comm'], context, true));
-  registry.add('git_status', 'Read git working tree status.', z.object({ untrackedFiles: z.boolean().default(false) }), true, (args, context) => processRun('git_status', 'git', ['--no-optional-locks', 'status', '--short', ...(args.untrackedFiles ? ['--untracked-files=all'] : [])], context, true));
+  registry.add('git_status', 'Read git working tree status without running repository-configured fsmonitor hooks.', z.object({ untrackedFiles: z.boolean().default(false) }), true, (args, context) => processRun('git_status', 'git', ['-c', 'core.fsmonitor=false', '--no-optional-locks', 'status', '--short', ...(args.untrackedFiles ? ['--untracked-files=all'] : [])], context, true));
   registry.add('git_diff', 'Read git diff without external diff drivers.', z.object({ staged: z.boolean().default(false) }), true, (args, context) => processRun('git_diff', 'git', ['--no-pager', 'diff', '--no-ext-diff', '--no-textconv', ...(args.staged ? ['--cached'] : [])], context, true));
   registry.add('git_log', 'Read recent commit hashes, dates and subjects, optionally for one workspace path.', z.object({ limit: z.number().int().min(1).max(50).default(15), path: z.string().optional() }), true, async (args, context) => { if (args.path) await workspace.resolve(args.path); return processRun('git_log', 'git', ['--no-pager', 'log', `-n${args.limit}`, '--date=iso-strict', '--format=%h %ad %s', '--', ...(args.path ? [args.path] : [])], context, true); });
   registry.add('git_show', 'Inspect an explicit commit without external diff drivers or text conversion.', z.object({ revision: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._~^/-]{0,100}$/) }), true, (args, context) => processRun('git_show', 'git', ['--no-pager', 'show', '--no-ext-diff', '--no-textconv', '--format=fuller', args.revision, '--'], context, true));

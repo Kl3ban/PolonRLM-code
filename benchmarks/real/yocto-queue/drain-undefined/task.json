@@ -1,0 +1,11 @@
+{
+  "id": "drain-undefined",
+  "title": "Drain values after undefined entries",
+  "prompt": "Fix Queue.drain() so it yields every queued item, including undefined, and leaves the queue empty. Preserve the current lazy iterator behavior, FIFO order, size, and public API. Add a regression test and run the project tests.",
+  "timeoutMs": 600000,
+  "setup": {
+    "command": ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+    "timeoutMs": 300000,
+    "networkDomains": ["registry.npmjs.org"]
+  }
+}

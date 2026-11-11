@@ -1,4 +1,5 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { createTwoFilesPatch } from 'diff';
@@ -102,5 +103,67 @@ export class AgentWorktree {
     }
     return changes;
   }
+  /** Merge one dependency-wave result into this private graph workspace after checking its base. */
+  async mergeChanges(changes: readonly OverlayChange[]): Promise<void> {
+    const paths = new Set<string>();
+    const prepared: { path: string; target: string; before: Buffer | null; after: string | null }[] = [];
+    for (const change of changes) {
+      const relative = path.normalize(change.path);
+      const target = path.resolve(this.root, relative);
+      const fromRoot = path.relative(this.root, target);
+      if (!relative || path.isAbsolute(relative) || fromRoot === '..' || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot) || !safeProjectFile(relative)) {
+        throw new Error(`Graph conflict: unsafe staged path ${change.path}.`);
+      }
+      if (paths.has(relative)) throw new Error(`Graph conflict: duplicate staged path ${relative}.`);
+      paths.add(relative);
+      if (change.binary) throw new Error(`Graph conflict: binary changes cannot be composed (${relative}).`);
+      const current = await readRegularProjectFile(this.root, relative);
+      const currentText = current ? decode(current.content) : null;
+      if ((current && currentText === null) || currentText !== change.before) throw new Error(`Graph conflict: ${relative} changed after this task started.`);
+      prepared.push({ path: relative, target, before: current?.content ?? null, after: change.after });
+    }
+
+    const applied: typeof prepared = [];
+    try {
+      for (const entry of prepared) {
+        await ensureSafeParents(this.root, entry.path);
+        if (entry.after === null) await rm(entry.target, { force: true });
+        else {
+          const stage = `${entry.target}.polonrlm-${randomUUID()}.tmp`;
+          try { await writeFile(stage, entry.after, { encoding: 'utf8', flag: 'wx' }); await rename(stage, entry.target); }
+          finally { await rm(stage, { force: true }).catch(() => {}); }
+        }
+        applied.push(entry);
+      }
+    } catch (error) {
+      const rollbackFailures: string[] = [];
+      for (const entry of applied.reverse()) {
+        try {
+          await ensureSafeParents(this.root, entry.path);
+          if (entry.before === null) await rm(entry.target, { force: true });
+          else {
+            const stage = `${entry.target}.polonrlm-rollback-${randomUUID()}.tmp`;
+            try { await writeFile(stage, entry.before, { flag: 'wx' }); await rename(stage, entry.target); }
+            finally { await rm(stage, { force: true }).catch(() => {}); }
+          }
+        } catch (rollbackError) { rollbackFailures.push(`${entry.path}: ${String(rollbackError)}`); }
+      }
+      throw new Error(`Could not stage dependency task changes: ${String(error)}${rollbackFailures.length ? ` Rollback failures: ${rollbackFailures.join('; ')}` : ''}`);
+    }
+  }
   async remove(): Promise<void> { await rm(this.root, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); }
+}
+
+async function ensureSafeParents(root: string, relative: string): Promise<void> {
+  const parts = relative.split(path.sep);
+  let current = root;
+  for (const part of parts.slice(0, -1)) {
+    current = path.join(current, part);
+    const info = await lstat(current).catch((error: any) => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (!info) await mkdir(current);
+    else if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Refusing to follow a symlink or non-directory in ${relative}.`);
+  }
+  const target = path.join(root, relative);
+  const info = await lstat(target).catch((error: any) => { if (error.code === 'ENOENT') return undefined; throw error; });
+  if (info && (!info.isFile() || info.isSymbolicLink())) throw new Error(`Refusing to replace a symlink or non-file in ${relative}.`);
 }

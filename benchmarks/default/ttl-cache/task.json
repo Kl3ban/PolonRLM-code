@@ -1,0 +1,6 @@
+{
+  "id": "ttl-cache",
+  "title": "Add an LRU cache with deterministic expiry",
+  "timeoutMs": 600000,
+  "prompt": "Implement LruTtlCache in src/cache.js and export it from src/index.js. Constructor accepts `{ maxEntries = 100, ttlMs = 0, now = Date.now }`. Validate maxEntries as a positive integer, ttlMs as a finite non-negative number, and now as a function. `set(key, value)` refreshes recency and evicts least-recently-used entries until within capacity. `get` and `has` lazily remove expired entries; `get` refreshes recency only for a live entry. ttlMs 0 means no expiration. `delete` and `clear` return whether anything was removed. Pass `npm test`."
+}

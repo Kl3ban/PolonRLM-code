@@ -11,6 +11,7 @@ import type { TerminalMouseEvent } from './input-router.js';
 
 const sections = ['General', 'Limits', 'Tools'];
 const policies = [{ value: 'default', label: 'Inherit' }, { value: 'ask', label: 'Ask' }, { value: 'auto', label: 'Auto' }, { value: 'off', label: 'Off' }];
+const JSON_SETTINGS = new Set(['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
 type Row = SettingField & { value: string | number };
 
 export function SettingsPanel({ controller, state, width, rows, close, mouseEvents }: { controller: UIController; state: UIState; width: number; rows: number; close: () => void; mouseEvents?: EventEmitter }): React.JSX.Element {
@@ -33,7 +34,7 @@ export function SettingsPanel({ controller, state, width, rows, close, mouseEven
     saving.current = true; setError(''); setNotice('Saving…');
     try {
       if (!controller.updateSetting) throw new Error('Settings editing is unavailable.');
-      const parsed = row.options ? value : row.key === 'verificationCommands' ? value : row.key === 'tokenBudget' ? parseTokenBudget(value) : row.section === 'limits' ? parseUnlimitedLimit(value, row.key === 'maxDepth' ? -1 : 0) : Number(value);
+      const parsed = row.options ? value : JSON_SETTINGS.has(row.key) ? value : row.key === 'tokenBudget' ? parseTokenBudget(value) : row.section === 'limits' ? parseUnlimitedLimit(value, row.key === 'maxDepth' ? -1 : 0) : Number(value);
       if (typeof parsed === 'number' && !Number.isFinite(parsed)) throw new Error('Enter a valid number.');
       await controller.updateSetting(row.key, parsed); saving.current = false; editingRef.current = false; refresh(value => value + 1); setEditing(false); setNotice('Saved');
     } catch (cause) { saving.current = false; setNotice(''); setError(sanitizeTerminalText(cause instanceof Error ? cause.message : String(cause))); }

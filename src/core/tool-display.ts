@@ -4,7 +4,7 @@ const names: Record<string, string> = {
   discover_tools: 'Tool discovery', web_search: 'Web search', read_webpage: 'Read webpage', fetch_webpage: 'Read webpage', fetch_documentation: 'Read documentation', download_to_disk: 'Download file', github_repo_inspector: 'GitHub repository',
   browser: 'Browser', browser_sessions: 'Browser sessions', browser_automation: 'Browser', computer_use: 'Desktop control',
   read_file: 'Read file', read_files: 'Read files', write_file: 'Write file', edit_file: 'Edit file', apply_patch: 'Edit code',
-  search_files: 'Find files', search_content: 'Search code', search_batch: 'Search project', list_directory: 'List files', inspect_project: 'Inspect project',
+  search_files: 'Find files', search_content: 'Search code', search_batch: 'Search project', list_directory: 'List files', inspect_project: 'Inspect project', project_map: 'Map project',
   execute_command: 'Terminal command', execute_powershell: 'PowerShell', execute_python: 'Python', run_tests: 'Run tests', request_tool: 'Tool approval request',
 };
 export const toolDisplayName = (name: string): string => names[name] ?? safeText(name.replace(/_/g, ' '));

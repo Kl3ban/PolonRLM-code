@@ -12,6 +12,13 @@ type TextEncoding = RecoveryChangeData['encoding'];
 type Change = RecoveryChangeData & { id: string; groupId?: string };
 type Transaction = { id: string; name: string; start: number };
 
+class RecoveryCommitError extends Error {
+  constructor(readonly appliedChange: Change, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'RecoveryCommitError';
+  }
+}
+
 function decodeWorkspaceText(bytes: Buffer): { text: string; encoding: TextEncoding } {
   let encoding: TextEncoding = 'utf8';
   let body = bytes;
@@ -48,11 +55,14 @@ function encodeWorkspaceText(text: string, encoding: TextEncoding): Buffer {
 
 export class Workspace {
   private changes: Change[] = [];
+  private revision = 0;
   private transaction?: Transaction;
   private recovery?: { journal: RecoveryJournal; cipher: RecoveryCipher };
   private ephemeralCheckpoints = new Map<string, { name: string; data: CheckpointData; createdAt: number }>();
   private queue: Promise<unknown> = Promise.resolve();
   private constructor(readonly root: string, readonly permissions: Permissions) {}
+  /** Monotonic count of successful, non-noop workspace writes in this runtime. */
+  get progressRevision(): number { return this.revision; }
   static async open(root: string, permissions: Permissions): Promise<Workspace> {
     const resolved = await realpath(root);
     if (!(await lstat(resolved)).isDirectory()) throw new Error('Workspace must be a directory.');
@@ -90,11 +100,24 @@ export class Workspace {
     const entries = await readdir(await this.resolve(input), { withFileTypes: true });
     return entries.filter(entry => !['node_modules', '.git', '.polonrlm', '.januszgpt'].includes(entry.name)).slice(0, 500).map(entry => `${entry.name}${entry.isDirectory() ? '/' : entry.isSymbolicLink() ? '@' : ''}`);
   }
-  private exclusive<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(work, work); this.queue = next.catch(() => {}); return next;
+  private exclusive<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const run = () => {
+      signal?.throwIfAborted();
+      const journal = this.recovery?.journal;
+      return journal ? journal.withWorkspaceLock(this.root, work, signal) : work();
+    };
+    const next = this.queue.then(run, run); this.queue = next.catch(() => {}); return next;
   }
   async change(tool: string, input: string, transform: (before: string | null, encoding?: TextEncoding) => string | null, mode: Mode, signal?: AbortSignal): Promise<string> {
-    return this.exclusive(() => this.applyChange(tool, input, transform, mode, true, signal, undefined, this.transaction?.id));
+    return this.exclusive(async () => {
+      try { return await this.applyChange(tool, input, transform, mode, true, signal, undefined, this.transaction?.id); }
+      catch (error) {
+        if (!(error instanceof RecoveryCommitError)) throw error;
+        const rollback = await this.rollbackAppliedChange(error.appliedChange, mode);
+        if (rollback.restored) throw new Error(`The file write was rolled back because its recovery journal could not be committed: ${error.message}.${rollback.error ? ` ${rollback.error}` : ''}`);
+        throw new Error(`The recovery journal failed after the file write, and rollback also failed: ${rollback.error ?? error.message}`);
+      }
+    }, signal);
   }
   async beginTransaction(name: string): Promise<{ id: string; name: string }> {
     return this.exclusive(async () => {
@@ -122,6 +145,19 @@ export class Workspace {
       const groupId = randomUUID();
       this.recovery?.journal.startRecoveryGroup({ id: groupId, workspace: this.root, name: `Atomic ${tool}`, createdAt: Date.now(), processId: process.pid, state: 'running' });
       const applied: Array<{ path: string; change: Change }> = [];
+      const rollback = async (failure: unknown) => {
+        const rolledBack: string[] = [];
+        const rollbackFailures: Array<{ path: string; error: string }> = [];
+        for (const entry of [...applied].reverse()) {
+          const restored = await this.rollbackAppliedChange(entry.change, mode);
+          if (restored.restored) rolledBack.push(entry.path);
+          if (restored.error) rollbackFailures.push({ path: entry.path, error: restored.error });
+        }
+        try { this.recovery?.journal.setRecoveryGroupState(this.root, groupId, rollbackFailures.length ? 'partial' : 'rolled_back'); }
+        catch (error: any) { rollbackFailures.push({ path: '<recovery group>', error: error.message ?? String(error) }); }
+        const stillApplied = applied.filter(entry => !rolledBack.includes(entry.path)).map(entry => entry.path);
+        return { applied: stillApplied, rolledBack, error: failure instanceof Error ? failure.message : String(failure), ...(rollbackFailures.length ? { rollbackFailures } : {}) };
+      };
       for (const item of requested) {
         try {
           signal?.throwIfAborted();
@@ -139,30 +175,19 @@ export class Workspace {
             applied.push({ path: item.path, change });
           }
         } catch (error: any) {
-          const rolledBack: string[] = [];
-          const rollbackFailures: Array<{ path: string; error: string }> = [];
-          for (const entry of [...applied].reverse()) {
-            try {
-              await this.permissions.withOneTimeToolApproval(() => this.applyChange('transaction_rollback', entry.path, (current, encoding) => {
-                if (current !== entry.change.after || (current !== null && encoding !== entry.change.encoding)) throw new Error('File changed outside the atomic operation.');
-                return entry.change.before;
-              }, mode, false, undefined, entry.change.beforeEncoding ?? entry.change.encoding, undefined, true));
-              const index = this.changes.lastIndexOf(entry.change);
-              if (index >= 0) this.changes.splice(index, 1);
-              if (entry.change.id) this.recovery?.journal.setRecoveryChangeState(this.root, entry.change.id, 'rolled_back');
-              rolledBack.push(entry.path);
-            } catch (rollbackError: any) {
-              rollbackFailures.push({ path: entry.path, error: rollbackError.message ?? String(rollbackError) });
-            }
+          // applyChange writes the file before marking its recovery row applied.
+          // If that journal update fails, include the already-written file in
+          // this transaction's rollback set instead of returning a false empty rollback.
+          if (error instanceof RecoveryCommitError && !applied.some(entry => entry.change.id === error.appliedChange.id)) {
+            applied.push({ path: item.path, change: error.appliedChange });
           }
-          this.recovery?.journal.setRecoveryGroupState(this.root, groupId, rollbackFailures.length ? 'partial' : 'rolled_back');
-          const stillApplied = applied.filter(entry => !rolledBack.includes(entry.path)).map(entry => entry.path);
-          return { applied: stillApplied, rolledBack, error: error.message ?? String(error), ...(rollbackFailures.length ? { rollbackFailures } : {}) };
+          return rollback(error);
         }
       }
-      this.recovery?.journal.setRecoveryGroupState(this.root, groupId, 'committed');
+      try { this.recovery?.journal.setRecoveryGroupState(this.root, groupId, 'committed'); }
+      catch (error) { return rollback(error); }
       return { applied: applied.map(entry => entry.path), rolledBack: [] };
-    });
+    }, signal);
   }
   async rollbackTransaction(id: string, mode: Mode, signal?: AbortSignal): Promise<{ restored: string[]; failed?: string; error?: string }> {
     return this.exclusive(async () => {
@@ -179,7 +204,7 @@ export class Workspace {
       }
       this.recovery?.journal.setRecoveryGroupState(this.root, id, 'rolled_back');
       this.transaction = undefined; return { restored };
-    });
+    }, signal);
   }
   private async applyChange(tool: string, input: string, transform: (before: string | null, encoding?: TextEncoding) => string | null, mode: Mode, record: boolean, signal?: AbortSignal, encodingHint?: TextEncoding, groupId?: string, forceEncoding = false): Promise<string> {
       const target = await this.resolve(input);
@@ -233,10 +258,33 @@ export class Workspace {
         throw error;
       }
       if (record && id) {
-        this.changes.push({ ...changeData, id, ...(groupId ? { groupId } : {}) });
-        if (this.recovery) this.recovery.journal.setRecoveryChangeState(this.root, id, 'applied');
+        const change = { ...changeData, id, ...(groupId ? { groupId } : {}) };
+        this.changes.push(change);
+        this.revision++;
+        if (this.recovery) {
+          try { this.recovery.journal.setRecoveryChangeState(this.root, id, 'applied'); }
+          catch (error) { throw new RecoveryCommitError(change, error); }
+        }
       }
       return diff;
+  }
+  private async rollbackAppliedChange(change: Change, mode: Mode): Promise<{ restored: boolean; error?: string }> {
+    try {
+      await this.permissions.withOneTimeToolApproval(() => this.applyChange('transaction_rollback', change.path, (current, encoding) => {
+        if (current !== change.after || (current !== null && encoding !== change.encoding)) throw new Error('File changed outside the recovery operation.');
+        return change.before;
+      }, mode, false, undefined, change.beforeEncoding ?? change.encoding, undefined, true));
+    } catch (error: any) {
+      return { restored: false, error: error.message ?? String(error) };
+    }
+    const index = this.changes.lastIndexOf(change);
+    if (index >= 0) this.changes.splice(index, 1);
+    try {
+      if (change.id) this.recovery?.journal.setRecoveryChangeState(this.root, change.id, 'rolled_back');
+      return { restored: true };
+    } catch (error: any) {
+      return { restored: true, error: `File restored, but recovery state could not be updated: ${error.message ?? String(error)}` };
+    }
   }
   private async restoreRecoveryChange(entry: RecoveryChange, mode: Mode, signal?: AbortSignal): Promise<string> {
     if (!this.recovery) throw new Error('Persistent recovery is not initialized.');
@@ -313,7 +361,7 @@ export class Workspace {
       const target = match.type === 'change' ? this.recovery.journal.recoveryChange(this.root, match.id)?.groupId ?? match.id : match.id;
       const result = await this.rollbackRecoveryInternal(target, mode, signal);
       return { id: target, ...result };
-    });
+    }, signal);
   }
   recoveryStatus(): { groups: RecoveryGroup[]; changes: RecoveryChange[] } {
     if (!this.recovery) return { groups: [], changes: [] };

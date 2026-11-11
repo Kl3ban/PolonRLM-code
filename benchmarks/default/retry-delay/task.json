@@ -1,0 +1,6 @@
+{
+  "id": "retry-delay",
+  "title": "Fix exponential retry delays",
+  "timeoutMs": 600000,
+  "prompt": "Fix retryDelay in src/retry.js. Attempts are one-based: attempt 1 returns baseMs, attempt 2 returns baseMs * 2, and so on, capped at maxMs. A non-finite argument or attempt below 1 returns 0. Truncate fractional attempts down. Treat negative baseMs and maxMs as 0. Keep the existing export and defaults. Run a few focused checks if useful."
+}

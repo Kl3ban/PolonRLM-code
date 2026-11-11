@@ -19,8 +19,9 @@ PolonRLM is written in TypeScript and runs on Node.js 24 or newer. It takes insp
 - Searches the web, controls a headless browser, connects to MCP servers, and can use the Windows desktop.
 - Saves chat history locally and can compact old context without another model call.
 - Connects to hosted APIs, local model servers, or a custom OpenAI-compatible endpoint.
+- Adds opt-in local lifecycle hooks through a small plugin SDK.
 
-The model chooses when to use tools. Writes, shell commands, and other actions follow the permission settings. By default, PolonRLM asks before sensitive actions. Shell commands run with your Windows or terminal account permissions.
+The model chooses when to use tools. Writes, shell commands, and other actions follow the permission settings. By default, PolonRLM asks before sensitive actions. Selected shell, Python, background-process, and language-server tools use OS isolation when available; `/sandbox status` shows the current state. Windows setup is opt-in with `/sandbox setup` followed by `/sandbox setup confirm`.
 
 ## Install
 
@@ -67,6 +68,8 @@ Built-in providers include Google, OpenAI, Anthropic, OpenRouter, NVIDIA, Mistra
 | `/build <task>` | Work on a task. File changes still follow your permission settings. |
 | `/review <task>` | Review code without making edits. |
 | `/settings` | Change budgets, browser, model, search, and other options. |
+| `/timeline [count]` | Review recent model requests, tool results, and verification evidence for this chat. |
+| `/cortex 0..5` | Set the maximum Cortex level. Adaptive mode picks a lower strategy for simple tasks; choose `fixed` in `/settings` to disable that adjustment. |
 | `/permissions` | View or change which tools can run automatically. |
 | `/image <path>` | Attach an image to the next request. The model must support images. |
 | `/agents` | See active subagents. |
@@ -85,7 +88,7 @@ Browser automation runs headless and does not use your regular browser profile o
 
 Token, cost, call, context, agent, process, and tool-output limits start unlimited in PolonRLM. Set limits in `/settings` or `/budget` if you want them. Your provider still applies its own limits and billing.
 
-The `workspace` permission allows normal changes in the current project. `readonly` blocks writes and shell actions. Read each approval prompt before accepting it; shell commands are not sandboxed.
+The `workspace` permission allows normal changes in the current project. `readonly` blocks writes and shell actions. Read each approval prompt before accepting it. See [the sandbox guide](docs/SANDBOX.md) for the isolation modes and their limits.
 
 ## Development
 
@@ -105,6 +108,8 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [Commands](docs/COMMANDS.md)
 - [Providers](docs/PROVIDERS.md)
 - [Tools](docs/TOOLS.md)
+- [Plugin SDK](docs/PLUGIN-SDK.md)
+- [OS command sandbox](docs/SANDBOX.md)
 - [Local web search](docs/LOCAL-WEB.md)
 - [Browser and desktop control](docs/COMPUTER-USE.md)
 - [License](LICENSE)

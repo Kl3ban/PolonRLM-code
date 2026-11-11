@@ -7,6 +7,8 @@ import { redact, safeText } from './secrets.js';
 import { clip } from './context.js';
 import type { WorkflowState } from './workflows.js';
 import type { VerificationReport } from './verification.js';
+import type { EvidenceTimelineEntry } from './evidence.js';
+import { describeToolCall } from './tool-display.js';
 import type { RecoveryChange, RecoveryChangeState, RecoveryCheckpoint, RecoveryGroup, RecoveryGroupState } from './recovery.js';
 
 function execWithBusyRetry(db: DatabaseSync, sql: string): void {
@@ -34,6 +36,23 @@ function isDatabaseCorruption(error: unknown): boolean {
   const code = (error as { errcode?: number } | null)?.errcode;
   const primaryCode = typeof code === 'number' ? code & 0xff : 0;
   return primaryCode === 11 || primaryCode === 26; // SQLITE_CORRUPT or SQLITE_NOTADB
+}
+
+function processIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+function waitForWorkspaceLock(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Task cancelled.'));
+  return new Promise((resolve, reject) => {
+    const finish = () => { signal?.removeEventListener('abort', abort); resolve(); };
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(signal?.reason instanceof Error ? signal.reason : new Error('Task cancelled.')); };
+    const timer = setTimeout(finish, 50);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 function acquireRecoveryLock(filename: string): () => void {
@@ -144,6 +163,7 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, session TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, session TEXT, time INTEGER, tool TEXT, data TEXT);
+      CREATE INDEX IF NOT EXISTS audit_session_time ON audit(session,time DESC,id DESC);
       CREATE TABLE IF NOT EXISTS workflows(session TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY, session TEXT, data TEXT);
       CREATE TABLE IF NOT EXISTS context(session TEXT PRIMARY KEY, data TEXT, watermark INTEGER);
@@ -156,7 +176,9 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS file_changes_workspace_created ON file_changes(workspace,created DESC);
       CREATE INDEX IF NOT EXISTS file_changes_group ON file_changes(workspace,group_id,created);
       CREATE TABLE IF NOT EXISTS file_checkpoints(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, name TEXT NOT NULL, created INTEGER NOT NULL, payload TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS file_checkpoints_workspace_created ON file_checkpoints(workspace,created DESC);`);
+      CREATE INDEX IF NOT EXISTS file_checkpoints_workspace_created ON file_checkpoints(workspace,created DESC);
+      CREATE TABLE IF NOT EXISTS workspace_mutation_locks(workspace TEXT PRIMARY KEY, owner TEXT NOT NULL, process_id INTEGER NOT NULL, acquired INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS project_indexes(workspace TEXT NOT NULL, target TEXT NOT NULL, updated INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workspace,target));`);
   }
   create(workspace: string, title = 'New session'): string {
     const id = randomUUID(); this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(id, workspace, safeText(title).replace(/\s+/g, ' ').trim().slice(0, 100) || 'New session', Date.now()); return id;
@@ -216,6 +238,39 @@ export class SessionStore {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   audit(session: string, tool: string, data: unknown): void { this.db.prepare('INSERT INTO audit(session,time,tool,data) VALUES(?,?,?,?)').run(session, Date.now(), tool, redact(JSON.stringify(data))); }
+  evidenceTimeline(session: string, limit = 30): EvidenceTimelineEntry[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('Timeline count must be between 1 and 200.');
+    const toolRows = this.db.prepare('SELECT id,time,tool,data FROM audit WHERE session=? ORDER BY time DESC,id DESC LIMIT ?').all(session, limit) as { id: number; time: number; tool: string; data: string }[];
+    const toolEvents = toolRows.map(row => {
+      let data: Record<string, unknown> = {};
+      try { const parsed: unknown = JSON.parse(row.data); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* Keep a minimal event when an older audit entry is malformed. */ }
+      const args = data.arguments && typeof data.arguments === 'object' && !Array.isArray(data.arguments) ? data.arguments as Record<string, unknown> : {};
+      if (row.tool === 'model_request') {
+        const usage = data.usage && typeof data.usage === 'object' ? data.usage as Record<string, unknown> : {};
+        const tokenText = typeof usage.input === 'number' && typeof usage.output === 'number' ? ` · ~${usage.input + usage.output} tokens` : '';
+        const provider = safeText(String(data.provider ?? 'provider'));
+        const model = safeText(String(data.model ?? 'model'));
+        const cost = typeof usage.cost === 'number' && usage.costKnown === true ? ` · $${usage.cost.toFixed(6)}` : '';
+        return { id: `model-${row.id}`, createdAt: row.time, kind: 'model' as const, actor: safeText(String(data.agent ?? 'agent')),
+          status: safeText(String(data.status ?? 'unknown')), summary: clip(`${provider}/${model}${tokenText}${cost}`, 150),
+          ...(typeof data.durationMs === 'number' && Number.isFinite(data.durationMs) && data.durationMs >= 0 ? { durationMs: data.durationMs } : {}) };
+      }
+      return { id: `tool-${row.id}`, createdAt: row.time, kind: 'tool' as const, actor: safeText(String(data.agent ?? 'agent')),
+        status: data.isError === true ? 'error' : 'done', summary: describeToolCall(row.tool, args),
+        ...(typeof data.durationMs === 'number' && Number.isFinite(data.durationMs) ? { durationMs: data.durationMs } : {}) };
+    });
+    const verificationEvents = this.verificationReports(session, limit).map(report => {
+      const passed = report.commands.filter(command => command.status === 'passed').length;
+      return { id: `verification-${report.id}`, createdAt: report.createdAt, kind: 'verification' as const, actor: 'user', status: report.status,
+        summary: `${passed}/${report.commands.length} checks · ${report.files.length} files hashed · report ${report.id.slice(0, 8)}` };
+    });
+    const timeline = [
+      ...toolEvents.map((entry, index) => ({ entry, sequence: toolRows[index]!.id })),
+      ...verificationEvents.map(entry => ({ entry, sequence: Number.MAX_SAFE_INTEGER })),
+    ];
+    return timeline.sort((left, right) => right.entry.createdAt - left.entry.createdAt || right.sequence - left.sequence || right.entry.id.localeCompare(left.entry.id))
+      .slice(0, limit).map(value => value.entry);
+  }
   saveVerification(report: VerificationReport): void {
     if (!this.db.prepare('SELECT id FROM sessions WHERE id=?').get(report.session)) throw new Error('Cannot save verification for an unknown session.');
     this.db.prepare('INSERT OR REPLACE INTO verification_reports(id,session,created,data) VALUES(?,?,?,?)').run(report.id, report.session, report.createdAt, redact(JSON.stringify(report)));
@@ -230,6 +285,21 @@ export class SessionStore {
       .map(row => JSON.parse(row.data) as VerificationReport).filter(report => report.id.startsWith(prefix));
     if (matches.length > 1) throw new Error('That report prefix is ambiguous. Use a longer ID.');
     return matches[0];
+  }
+  projectIndex(workspace: string, target: string): unknown | undefined {
+    const row = this.db.prepare('SELECT data FROM project_indexes WHERE workspace=? AND target=?').get(workspace, target) as { data: string } | undefined;
+    if (!row) return undefined;
+    try { return JSON.parse(row.data) as unknown; }
+    catch {
+      this.db.prepare('DELETE FROM project_indexes WHERE workspace=? AND target=?').run(workspace, target);
+      return undefined;
+    }
+  }
+  saveProjectIndex(workspace: string, target: string, value: unknown): void {
+    const data = redact(JSON.stringify(value));
+    if (Buffer.byteLength(data) > 5_000_000) throw new Error('Project index cache is too large.');
+    this.db.prepare('INSERT INTO project_indexes(workspace,target,updated,data) VALUES(?,?,?,?) ON CONFLICT(workspace,target) DO UPDATE SET updated=excluded.updated,data=excluded.data')
+      .run(workspace, target, Date.now(), data);
   }
   prepareRecoveryChange(change: RecoveryChange): void {
     this.db.prepare('INSERT INTO file_changes(id,workspace,group_id,path,tool,created,state,payload) VALUES(?,?,?,?,?,?,?,?)')
@@ -310,5 +380,45 @@ export class SessionStore {
   forgetMemory(workspace: string, name: string): void { this.db.prepare('DELETE FROM memory WHERE workspace=? AND name=?').run(workspace, name); }
   workflow(session: string): WorkflowState { const row = this.db.prepare('SELECT data FROM workflows WHERE session=?').get(session) as { data: string } | undefined; return row ? JSON.parse(row.data) : {}; }
   saveWorkflow(session: string, state: WorkflowState): void { this.db.prepare('INSERT OR REPLACE INTO workflows VALUES(?,?)').run(session, redact(JSON.stringify(state))); }
+  savePlan(session: string, plan: NonNullable<WorkflowState['plan']>): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db.prepare('SELECT data FROM workflows WHERE session=?').get(session) as { data: string } | undefined;
+      const state: WorkflowState = row ? JSON.parse(row.data) : {};
+      state.plan = plan;
+      this.db.prepare('INSERT OR REPLACE INTO workflows VALUES(?,?)').run(session, redact(JSON.stringify(state)));
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* The transaction may already have ended. */ }
+      throw error;
+    }
+  }
+  async withWorkspaceLock<T>(workspace: string, work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const owner = randomUUID(), deadline = Date.now() + 30_000;
+    const acquire = (): boolean => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const current = this.db.prepare('SELECT process_id FROM workspace_mutation_locks WHERE workspace=?').get(workspace) as { process_id: number } | undefined;
+        if (current && processIsAlive(current.process_id)) { this.db.exec('COMMIT'); return false; }
+        this.db.prepare(`INSERT INTO workspace_mutation_locks(workspace,owner,process_id,acquired) VALUES(?,?,?,?)
+          ON CONFLICT(workspace) DO UPDATE SET owner=excluded.owner,process_id=excluded.process_id,acquired=excluded.acquired`)
+          .run(workspace, owner, process.pid, Date.now());
+        this.db.exec('COMMIT');
+        return true;
+      } catch (error) {
+        try { this.db.exec('ROLLBACK'); } catch { /* The transaction may already have ended. */ }
+        throw error;
+      }
+    };
+
+    while (true) {
+      signal?.throwIfAborted();
+      if (acquire()) break;
+      if (Date.now() >= deadline) throw new Error('Another PolonRLM process is changing this project. Wait for it to finish or close it, then try again.');
+      await waitForWorkspaceLock(signal);
+    }
+    try { return await work(); }
+    finally { this.db.prepare('DELETE FROM workspace_mutation_locks WHERE workspace=? AND owner=?').run(workspace, owner); }
+  }
   close(): void { this.db.close(); }
 }

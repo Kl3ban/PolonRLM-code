@@ -8,7 +8,8 @@ import { execa } from 'execa';
 import { Controller } from '../src/core/controller.js';
 import { ConfigManager, defaultSettings, settingsSchema } from '../src/core/config.js';
 import { SessionStore } from '../src/core/store.js';
-import type { Message, RuntimeEvent } from '../src/core/types.js';
+import { SETTINGS_FIELDS } from '../src/core/settings-fields.js';
+import type { Message, RuntimeEvent, Settings } from '../src/core/types.js';
 
 async function fixture(handler: (request: IncomingMessage, response: ServerResponse) => void = (_request, response) => {
   response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ data: [{ id: 'test-model' }] }));
@@ -19,6 +20,7 @@ async function fixture(handler: (request: IncomingMessage, response: ServerRespo
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const config = new ConfigManager(home); await config.load();
   config.settings.provider = 'custom';
+  config.settings.verificationMode = 'manual';
   config.settings.providers.custom = { id: 'custom', kind: 'compatible', baseURL: `http://127.0.0.1:${address.port}/v1`, model: 'test-model' };
   config.settings.cortex = 0; config.settings.maxOutputTokens = 128; config.settings.timeoutMs = 5000;
   await config.save();
@@ -46,18 +48,21 @@ async function until(predicate: () => boolean): Promise<void> {
 test('/goal continues work, tracks cumulative usage and persists completion', async t => {
   const f = await fixture();
   const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  const store = (controller as any).store as SessionStore;
+  const session = controller.snapshot().sessionId;
+  store.savePlan(session, [{ step: 'Old task step', status: 'in_progress' }]);
   let runs = 0;
   (controller as any).runtime.run = async (session: string) => {
-    runs++; const store = (controller as any).store as SessionStore;
+    runs++;
     store.recordUsage(session, { input: 100, output: 20, cached: 0, cost: 0, costKnown: true });
     if (runs === 2) { const w = store.workflow(session); w.goal!.status = 'complete'; w.goal!.evidence = 'Outputs checked'; store.saveWorkflow(session, w); }
     return 'Progress';
   };
   await controller.submit('/goal --tokens 4000 Implement feature');
   assert.equal(runs, 2);
-  const store = (controller as any).store as SessionStore;
   const goal = store.workflow(controller.snapshot().sessionId).goal!;
   assert.equal(goal.status, 'complete'); assert.equal(goal.usedTokens, 240);
+  assert.equal(store.workflow(controller.snapshot().sessionId).plan, undefined, 'new goal must not inherit a stale task plan');
   await controller.submit('/goal clear');
   assert.equal(store.workflow(controller.snapshot().sessionId).goal, undefined);
 });
@@ -72,6 +77,152 @@ test('/settings persists validated subagent tool profiles', async t => {
   await controller.submit('/settings');
   assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Subagent tool profiles: \{"reviewer":\["read_file","search_files"\]\}/);
   assert.equal(settingsSchema.safeParse({ ...defaultSettings(), agentToolProfiles: { reviewer: ['read_file', 'read_file'] } }).success, false);
+});
+
+test('/plugins require reviewing the exact source hash before running trusted code', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home);
+  t.after(async () => { await controller.close(); await f.dispose(); });
+  const id = 'review-gate';
+  const marker = `__polonrlm_controller_plugin_${Date.now()}`;
+  const entry = path.join(f.home, 'plugins', id, 'index.mjs');
+
+  await controller.submit(`/plugins create ${id}`);
+  await writeFile(entry, `globalThis[${JSON.stringify(marker)}] = 'version one'; export default { id: ${JSON.stringify(id)}, version: '1.0.0', activate() {} };`, 'utf8');
+  await controller.submit(`/plugins enable ${id}`);
+  assert.equal((globalThis as Record<string, unknown>)[marker], undefined, 'review must not evaluate the module');
+
+  await writeFile(entry, `globalThis[${JSON.stringify(marker)}] = 'changed after review'; export default { id: ${JSON.stringify(id)}, version: '1.0.0', activate() {} };`, 'utf8');
+  await controller.submit(`/plugins enable ${id} confirm`);
+  assert.equal((globalThis as Record<string, unknown>)[marker], undefined, 'edited code must not run under a previous review');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /NOT started because its files were not the version from the last review/);
+
+  await controller.submit(`/plugins enable ${id}`);
+  await controller.submit(`/plugins enable ${id} confirm`);
+  assert.equal((globalThis as Record<string, unknown>)[marker], 'changed after review');
+  assert.equal(controller.config.settings.plugins[id]?.enabled, true);
+  assert.match(controller.config.settings.plugins[id]?.sha256 ?? '', /^[a-f0-9]{64}$/);
+
+  await controller.submit('/settings plugins');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Use \/plugins/);
+  await controller.submit(`/plugins disable ${id}`);
+  assert.equal(controller.config.settings.plugins[id]?.enabled, false);
+});
+
+test('/sandbox setup previews system changes without installing anything', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/sandbox setup');
+  const message = controller.snapshot().messages.at(-1)?.text ?? '';
+  assert.match(message, /machine-wide network filter/i);
+  assert.match(message, /skips user-profile read grants/i);
+  assert.match(message, /\/sandbox setup confirm/i);
+  assert.equal(controller.config.settings.sandboxMode, 'auto');
+});
+
+test('every settings-panel field validates, persists, reloads, and reads back its configured value', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home);
+  t.after(async () => { await controller.close(); await f.dispose(); });
+  const values = {
+    mode: 'REVIEW', cortex: 5, permissions: 'workspace', theme: 'light', webSearchMode: 'yahoo', browserEngine: 'edge',
+    verificationCommands: '["npm test","npm run check"]', verificationMode: 'after_changes', verificationRepairAttempts: 2, sandboxMode: 'required', sandboxNetworkDomains: '["registry.npmjs.org","github.com"]',
+    fallback: '["google"]', agentToolProfiles: '{"reviewer":["read_file","search_files"]}',
+    modelRoutes: '{"coder":{"provider":"google","model":"test-code"},"reviewer":{"provider":"custom"}}',
+    modelRoleBudgets: '{"coder":{"maxCalls":12,"maxTokens":32000,"maxCost":0.75}}', cortexStrategy: 'fixed', repeatFailureThreshold: 5,
+    tokenBudget: 8000, dollarBudget: 1.25, maxInputTokens: 80000, maxOutputTokens: 16000, maxSteps: 128, maxAgents: 8,
+    maxProcesses: 6, maxDepth: 3, timeoutMs: 35000, toolOutputLimit: 300000,
+  } satisfies Record<string, string | number>;
+  assert.deepEqual(Object.keys(values).sort(), SETTINGS_FIELDS.map(field => field.key).sort());
+
+  for (const [name, value] of Object.entries(values)) await controller.updateSetting(name, value);
+  await controller.submit('/permissions read_file off');
+  await controller.submit('/permissions allow read_file');
+  await controller.submit('/permissions deny execute_command');
+
+  const view = controller.readSettings().values;
+  for (const [name, value] of Object.entries(values)) assert.deepEqual(view[name], value, `readSettings(${name})`);
+  const reopened = new ConfigManager(f.home);
+  await reopened.load();
+  const jsonFields = new Set(['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
+  for (const [name, value] of Object.entries(values)) {
+    const expected = jsonFields.has(name) ? JSON.parse(value as string) : value;
+    assert.deepEqual(reopened.settings[name as keyof Settings], expected, `persisted ${name}`);
+  }
+  assert.equal(reopened.settings.toolPermissions.read_file, 'off');
+  assert.deepEqual(reopened.settings.allowTools, ['read_file']);
+  assert.deepEqual(reopened.settings.denyTools, ['execute_command']);
+});
+
+test('/settings persists role model budgets', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/settings modelRoleBudgets {"coder":{"maxCalls":30,"maxTokens":50000,"maxCost":1}}');
+  assert.deepEqual(controller.config.settings.modelRoleBudgets, { coder: { maxCalls: 30, maxTokens: 50000, maxCost: 1 } });
+  const reopened = new ConfigManager(f.home); await reopened.load();
+  assert.deepEqual(reopened.settings.modelRoleBudgets, { coder: { maxCalls: 30, maxTokens: 50000, maxCost: 1 } });
+  assert.match(controller.readSettings().values.modelRoleBudgets, /"coder"/);
+});
+
+test('/settings lets the user choose adaptive or fixed Cortex strategy', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/settings cortexStrategy fixed');
+  assert.equal(controller.config.settings.cortexStrategy, 'fixed');
+  const reopened = new ConfigManager(f.home); await reopened.load();
+  assert.equal(reopened.settings.cortexStrategy, 'fixed');
+  await controller.submit('/settings cortexStrategy adaptive');
+  assert.equal(controller.config.settings.cortexStrategy, 'adaptive');
+});
+
+test('/settings persists the repeated failure warning threshold', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home);
+  t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/settings repeatFailureThreshold 5');
+  assert.equal(controller.config.settings.repeatFailureThreshold, 5);
+  const reopened = new ConfigManager(f.home); await reopened.load();
+  assert.equal(reopened.settings.repeatFailureThreshold, 5);
+});
+
+test('/timeline shows persisted evidence and validates its event count', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  const store = (controller as any).store as SessionStore;
+  store.audit(controller.snapshot().sessionId, 'run_tests', { arguments: { command: 'npm test' }, result: 'private result', isError: false, agent: 'tester', durationMs: 12 });
+  await controller.submit('/timeline');
+  const output = controller.snapshot().messages.at(-1)?.text ?? '';
+  assert.match(output, /EVIDENCE TIMELINE/);
+  assert.match(output, /TOOL DONE.*tester.*Run tests/);
+  assert.match(output, /No \/verify report is recorded/);
+  assert.doesNotMatch(output, /private result/);
+  await controller.submit('/timeline 0');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /whole number from 1 to 200/);
+});
+
+test('/fallback edits ordered providers, persists, and rejects invalid choices', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/fallback google,openrouter');
+  assert.deepEqual(controller.config.settings.fallback, ['google', 'openrouter']);
+  const reopened = new ConfigManager(f.home); await reopened.load();
+  assert.deepEqual(reopened.settings.fallback, ['google', 'openrouter']);
+  await controller.submit('/fallback');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /google.*openrouter/s);
+  await controller.selectProvider('google');
+  assert.deepEqual(controller.config.settings.fallback, ['openrouter']);
+  await controller.selectProvider('custom');
+  await controller.submit('/fallback google,openrouter');
+  await controller.submit('/fallback google google');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /List each fallback provider once/);
+  assert.deepEqual(controller.config.settings.fallback, ['google', 'openrouter']);
+  await controller.submit('/fallback custom');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /selected provider cannot also be a fallback/);
+  await controller.submit('/fallback missing-provider');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Unknown provider/);
+  assert.deepEqual(controller.config.settings.fallback, ['google', 'openrouter']);
+  await controller.submit('/fallback none');
+  assert.deepEqual(controller.config.settings.fallback, []);
 });
 
 test('a corrupt unrelated DPAPI key leaves startup and provider switching available', { skip: process.platform !== 'win32' }, async t => {
@@ -286,6 +437,13 @@ test('controller commands persist config and transient model overrides clear sta
     await controller.submit('/settings verificationCommands ["npm test", "npm run check"]');
     assert.deepEqual(controller.config.settings.verificationCommands, ['npm test', 'npm run check']);
     assert.equal(controller.readSettings().values.verificationCommands, '["npm test","npm run check"]');
+    await controller.submit('/settings sandboxNetworkDomains ["registry.npmjs.org","github.com"]');
+    assert.deepEqual(controller.config.settings.sandboxNetworkDomains, ['registry.npmjs.org', 'github.com']);
+    assert.equal(controller.readSettings().values.sandboxNetworkDomains, '["registry.npmjs.org","github.com"]');
+    await controller.submit('/settings sandboxMode required');
+    assert.equal(controller.config.settings.sandboxMode, 'required');
+    await controller.submit('/settings sandboxMode invalid');
+    assert.equal(controller.config.settings.sandboxMode, 'required');
     assert.equal(controller.config.settings.providers.custom!.inputPrice, 1);
     await controller.setModel('cli-override');
     assert.equal(controller.snapshot().model, 'cli-override');
@@ -300,6 +458,12 @@ test('controller commands persist config and transient model overrides clear sta
     await controller.submit('/settings cortex 99'); assert.equal(controller.snapshot().cortex, 3);
     const providers = controller.config.settings.providers; const provider = providers.custom; const mcp = controller.config.settings.mcp;
     await controller.submit('/settings provider.reasoning low');
+    await controller.submit('/settings provider.reasoningControl effort');
+    await controller.submit('/settings provider.reasoningEfforts ["low","high"]');
+    await controller.submit('/settings provider.requestTimeoutMs 0');
+    assert.equal(provider?.requestTimeoutMs, 0);
+    const inheritedTimeout = new ConfigManager(local.home); await inheritedTimeout.load();
+    assert.equal(inheritedTimeout.settings.providers.custom?.requestTimeoutMs, 0);
     await controller.submit('/settings provider.requestTimeoutMs 123456');
     await controller.submit('/settings provider.temperature 0.2');
     await controller.submit('/settings provider.inputPrice 1.5');
@@ -312,7 +476,7 @@ test('controller commands persist config and transient model overrides clear sta
     await controller.submit('/settings provider.apiKeyEnv TEST_ONLY_API_KEY');
     await controller.submit('/settings provider.kind compatible');
     assert.equal(controller.config.settings.providers, providers); assert.equal(providers.custom, provider); assert.equal(controller.config.settings.mcp, mcp);
-    assert.deepEqual({ reasoning: provider?.reasoning, requestTimeoutMs: provider?.requestTimeoutMs, temperature: provider?.temperature, inputPrice: provider?.inputPrice, outputPrice: provider?.outputPrice, toolCalling: provider?.toolCalling, vision: provider?.vision, contextWindow: provider?.contextWindow, maxOutputTokens: provider?.maxOutputTokens, reasoningSupported: provider?.reasoningSupported, apiKeyEnv: provider?.apiKeyEnv }, { reasoning: 'low', requestTimeoutMs: 123456, temperature: 0.2, inputPrice: 1.5, outputPrice: 3, toolCalling: false, vision: true, contextWindow: 65000, maxOutputTokens: 2048, reasoningSupported: true, apiKeyEnv: 'TEST_ONLY_API_KEY' });
+    assert.deepEqual({ reasoning: provider?.reasoning, reasoningControl: provider?.reasoningControl, reasoningEfforts: provider?.reasoningEfforts, requestTimeoutMs: provider?.requestTimeoutMs, temperature: provider?.temperature, inputPrice: provider?.inputPrice, outputPrice: provider?.outputPrice, toolCalling: provider?.toolCalling, vision: provider?.vision, contextWindow: provider?.contextWindow, maxOutputTokens: provider?.maxOutputTokens, reasoningSupported: provider?.reasoningSupported, apiKeyEnv: provider?.apiKeyEnv }, { reasoning: 'low', reasoningControl: 'effort', reasoningEfforts: ['low', 'high'], requestTimeoutMs: 123456, temperature: 0.2, inputPrice: 1.5, outputPrice: 3, toolCalling: false, vision: true, contextWindow: 65000, maxOutputTokens: 2048, reasoningSupported: true, apiKeyEnv: 'TEST_ONLY_API_KEY' });
     await controller.submit('/settings provider.temperature 8'); assert.equal(provider?.temperature, 0.2);
     await controller.submit('/settings provider.kind invalid'); assert.equal(provider?.kind, 'compatible');
     await controller.submit('/settings provider.inputPrice -1'); assert.equal(provider?.inputPrice, 1.5);
@@ -323,6 +487,31 @@ test('controller commands persist config and transient model overrides clear sta
     await controller.submit('/mcp remove example'); assert.equal(controller.config.settings.mcp.example, undefined);
     await saved.load(); assert.equal(saved.settings.mode, 'REVIEW'); assert.equal(saved.settings.permissions, 'readonly'); assert.equal(saved.settings.theme, 'light'); assert.equal(saved.settings.browserEngine, 'edge'); assert.equal(saved.settings.providers.custom?.reasoning, 'low'); assert.equal(saved.settings.providers.custom?.temperature, 0.2);
     assert.deepEqual(saved.settings.verificationCommands, ['npm test', 'npm run check']);
+    assert.equal(saved.settings.sandboxMode, 'required'); assert.deepEqual(saved.settings.sandboxNetworkDomains, ['registry.npmjs.org', 'github.com']);
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
+test('invalid values for every configurable setting are rejected without mutating or saving config', { timeout: 10000 }, async () => {
+  const local = await fixture();
+  let controller: Controller | undefined;
+  try {
+    controller = await Controller.open(local.root, local.home);
+    const invalidValues: Record<string, string | number> = {
+      mode: 'INVALID', cortex: 6, permissions: 'invalid', theme: 'blue', webSearchMode: 'google', browserEngine: 'safari',
+      verificationCommands: '[""]', verificationMode: 'always', verificationRepairAttempts: 4, sandboxMode: 'unsafe',
+      sandboxNetworkDomains: '["bad domain"]', fallback: '["missing-provider"]', agentToolProfiles: '{"root":["read_file"]}',
+      modelRoutes: '{"reviewer":{"provider":"missing-provider"}}', modelRoleBudgets: '{"coder":{"maxCalls":-1}}',
+      cortexStrategy: 'random', repeatFailureThreshold: -1, tokenBudget: 999, dollarBudget: -1, maxInputTokens: -1,
+      maxOutputTokens: -1, maxSteps: -1, maxAgents: -1, maxProcesses: -1, maxDepth: -2, timeoutMs: -1, toolOutputLimit: -1,
+    };
+    assert.deepEqual(Object.keys(invalidValues).sort(), SETTINGS_FIELDS.map(field => field.key).sort());
+    const memoryBefore = JSON.stringify(controller.config.settings);
+    const diskBefore = await readFile(path.join(local.home, 'config.json'));
+    for (const [name, value] of Object.entries(invalidValues)) {
+      await assert.rejects(controller.updateSetting(name, value), `invalid setting ${name} should be rejected`);
+      assert.equal(JSON.stringify(controller.config.settings), memoryBefore, `invalid setting ${name} must not mutate memory`);
+    }
+    assert.deepEqual(await readFile(path.join(local.home, 'config.json')), diskBefore);
   } finally { await controller?.close(); await local.dispose(); }
 });
 
@@ -363,6 +552,82 @@ test('/verify runs configured checks, records diagnostics and file hashes, and k
   } finally { await controller?.close(); await local.dispose(); }
 });
 
+test('/verify repair makes a bounded repair call only after a failed check, then reruns independent verification', { timeout: 20_000 }, async () => {
+  const local = await fixture();
+  let controller: Controller | undefined;
+  try {
+    local.config.settings.permissions = 'all';
+    local.config.settings.verificationCommands = ['node verify.mjs'];
+    await local.config.save();
+    await mkdir(path.join(local.root, 'src'));
+    await writeFile(path.join(local.root, 'src', 'app.ts'), 'export const answer: number = "bad";');
+    await writeFile(path.join(local.root, 'verify.mjs'), "import { readFileSync } from 'node:fs'; process.exit(readFileSync('src/app.ts', 'utf8').includes('bad') ? 1 : 0);\n");
+    controller = await Controller.open(local.root, local.home);
+    const session = controller.snapshot().sessionId;
+    const runtime = (controller as any).runtime;
+    const workspace = (controller as any).workspace;
+    let repairCalls = 0;
+    const repairBudgets: unknown[] = [];
+    runtime.run = async (...args: any[]) => {
+      repairCalls++;
+      repairBudgets.push(args[4]);
+      await workspace.change('write_file', 'src/app.ts', () => 'export const answer: number = 42;', 'BUILD');
+    };
+
+    await controller.submit('/verify repair 2');
+    const reports = ((controller as any).store as SessionStore).verificationReports(session, 10);
+    assert.equal(repairCalls, 1, JSON.stringify(reports.map(report => ({ status: report.status, commands: report.commands, diagnostics: report.diagnostics }))));
+    assert.ok(repairBudgets[0] && typeof repairBudgets[0] === 'object');
+    assert.deepEqual(reports.map(report => report.status), ['passed', 'failed']);
+    assert.match(controller.snapshot().messages.map(message => message.text).join('\n'), /VERIFICATION FAILED[\s\S]*VERIFICATION PASSED/);
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
+test('automatic verification runs only after BUILD changes and shares the task budget with bounded repair', { timeout: 20_000 }, async () => {
+  const local = await fixture();
+  let controller: Controller | undefined;
+  try {
+    local.config.settings.permissions = 'all';
+    local.config.settings.verificationCommands = ['node verify.mjs'];
+    local.config.settings.verificationMode = 'after_changes';
+    local.config.settings.verificationRepairAttempts = 1;
+    await local.config.save();
+    await mkdir(path.join(local.root, 'src'));
+    await writeFile(path.join(local.root, 'src', 'app.ts'), 'export const answer: number = 1;');
+    await writeFile(path.join(local.root, 'verify.mjs'), "import { readFileSync } from 'node:fs'; process.exit(readFileSync('src/app.ts', 'utf8').includes('bad') ? 1 : 0);\n");
+    controller = await Controller.open(local.root, local.home);
+    const runtime = (controller as any).runtime;
+    const workspace = (controller as any).workspace;
+    const budgets: unknown[] = [];
+    runtime.run = async (...args: any[]) => {
+      budgets.push(args[4]);
+      if (budgets.length === 1) await workspace.change('write_file', 'src/app.ts', () => 'export const answer: number = "bad";', 'BUILD');
+      else if (budgets.length === 2) await workspace.change('write_file', 'src/app.ts', () => 'export const answer: number = 42;', 'BUILD');
+      else if (budgets.length === 4) {
+        await workspace.change('write_file', 'src/app.ts', () => 'export const answer: number = "bad again";', 'BUILD');
+        throw new Error('simulated provider failure after partial edit');
+      }
+    };
+
+    await controller.submit('Change the answer in src/app.ts.');
+    const reports = ((controller as any).store as SessionStore).verificationReports(controller.snapshot().sessionId, 10);
+    assert.equal(budgets.length, 2, 'one build call and one configured repair call');
+    assert.ok(budgets[0] && budgets[0] === budgets[1], 'verification repair must share the task RunBudget');
+    assert.deepEqual(reports.map(report => report.status), ['passed', 'failed']);
+    assert.match(controller.snapshot().messages.map(message => message.text).join('\n'), /Running automatic verification[\s\S]*VERIFICATION FAILED[\s\S]*VERIFICATION PASSED/);
+
+    await controller.submit('Check whether another change is needed.');
+    assert.equal(((controller as any).store as SessionStore).verificationReports(controller.snapshot().sessionId, 10).length, 2, 'an unchanged BUILD must not trigger another check');
+
+    await controller.updateSetting('verificationRepairAttempts', 0);
+    await controller.submit('Make one more change, then the model request fails.');
+    const afterFailure = ((controller as any).store as SessionStore).verificationReports(controller.snapshot().sessionId, 10);
+    assert.equal(afterFailure.length, 3);
+    assert.equal(afterFailure[0]!.status, 'failed', 'partial edits must still receive a verification report');
+    assert.match(controller.snapshot().messages.map(message => message.text).join('\n'), /simulated provider failure after partial edit/);
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
 test('/verify reports an approval block without starting the configured command', { timeout: 10_000 }, async () => {
   const local = await fixture();
   let controller: Controller | undefined;
@@ -371,11 +636,17 @@ test('/verify reports an approval block without starting the configured command'
     local.config.settings.verificationCommands = [`node -e \"require('fs').writeFileSync('${marker.replaceAll('\\', '/')}', 'ran')\"`];
     await local.config.save();
     controller = await Controller.open(local.root, local.home);
-    await controller.submit('/verify');
+    let repairCalls = 0;
+    (controller as any).runtime.run = async () => { repairCalls++; };
+    await controller.submit('/verify repair');
     const report = ((controller as any).store as SessionStore).verificationReports(controller.snapshot().sessionId, 1)[0]!;
     assert.equal(report.status, 'blocked');
     assert.equal(report.commands[0]?.status, 'blocked');
+    assert.equal(repairCalls, 0);
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
+    await controller.submit('/verify repair 4');
+    assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /whole number from 1 to 3/);
+    assert.equal(repairCalls, 0);
   } finally { await controller?.close(); await local.dispose(); }
 });
 
@@ -523,6 +794,27 @@ test('MCP list and connection approval never reveal legacy inline credentials', 
     await controller.submit('/mcp connect legacy');
     assert.equal(approvalPreview.includes(secret), false);
     assert.match(approvalPreview, /REDACTED/);
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
+test('/mcp add rejects incomplete and mismatched transports before saving them', async t => {
+  const local = await fixture(); let controller: Controller | undefined;
+  try {
+    controller = await Controller.open(local.root, local.home);
+    const invalid = [
+      ['missing-stdio-command', { type: 'stdio' }],
+      ['blank-stdio-command', { type: 'stdio', command: '   ' }],
+      ['stdio-with-url', { type: 'stdio', command: 'node', url: 'https://mcp.example.test' }],
+      ['missing-http-url', { type: 'http' }],
+      ['http-with-command', { type: 'http', url: 'https://mcp.example.test', command: 'node' }],
+      ['http-with-env', { type: 'http', url: 'https://mcp.example.test', env: { TOKEN: '${MCP_TOKEN}' } }],
+    ] as const;
+    for (const [name, config] of invalid) {
+      await controller.submit(`/mcp add ${name} ${JSON.stringify(config)}`);
+      assert.equal(controller.config.settings.mcp[name], undefined, `${name} must not be saved`);
+    }
+    const persisted = JSON.parse(await readFile(path.join(local.home, 'config.json'), 'utf8'));
+    assert.deepEqual(persisted.mcp, {});
   } finally { await controller?.close(); await local.dispose(); }
 });
 

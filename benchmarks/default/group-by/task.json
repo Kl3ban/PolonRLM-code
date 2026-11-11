@@ -1,0 +1,6 @@
+{
+  "id": "group-by",
+  "title": "Preserve group order and values",
+  "timeoutMs": 600000,
+  "prompt": "Implement groupBy in src/group.js. It receives an array and a key function, then returns a Map whose keys appear in first-seen order and whose values are arrays of original items in input order. Do not mutate the input. Throw TypeError if keyFn is not a function. Keep the existing export."
+}

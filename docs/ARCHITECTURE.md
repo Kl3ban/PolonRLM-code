@@ -7,9 +7,12 @@ The terminal app is built with TypeScript, Node.js 24, and Ink. It does not need
 - `src/core/types.ts`: provider, message, tool, permission, and UI contracts.
 - `src/core/runtime.ts`: model and tool loop, budgets, delegation, and fallback handling.
 - `src/core/agent-team.ts`: bounded in-memory messages between active subagents and user steering.
-- `src/core/cortex.ts`: task complexity and subagent policy without extra mandatory model calls.
+- `src/core/cortex.ts`: local task-complexity scoring and adaptive strategy selection without extra model calls; the configured `/cortex` value remains the upper bound.
+- `src/core/failure-loop.ts` and `src/core/tool-cycle.ts`: repeated failure warnings and multi-tool cycle detection for sequences of 2–64 calls using a fixed 128-result ring. Verified file changes and passing tests reset both guards.
 - `src/core/context.ts`: conservative token estimate and local extractive compaction with fact scoring, source labels, and intact tool-call boundaries.
 - `src/core/verification.ts`: project check discovery, file hashes, persisted evidence formatting, and verification history.
+- `src/core/evidence.ts`: a compact timeline view that combines redacted model-request and tool audit entries with saved verification reports.
+- `src/core/workflows.ts`: per-session goals, interviews, and task plans; active goals receive only a compact plan-progress summary.
 - `src/core/controller.ts`: app session and renderer-independent commands.
 - `src/core/config.ts`: validated configuration saved atomically.
 - `src/core/store.ts`: SQLite history, working context, notes, usage, and event log.
@@ -18,6 +21,7 @@ The terminal app is built with TypeScript, Node.js 24, and Ink. It does not need
 - `src/providers/provider.ts`: Vercel AI SDK adapter and endpoint discovery.
 - `src/tools`: argument validation, files, commands, Git, networking, and Playwright.
 - `src/integrations`: Agent Skills and MCP.
+- `src/plugins`: explicit opt-in local plugins and lifecycle hooks; plugin code is trusted and runs with the current user's permissions.
 - `src/ui`: terminal renderer and Markdown output.
 - `src/ui/design.ts`: colors, block logo, and width scaling.
 - `src/ui/menu.tsx`: filtered command palette, provider and model lists, without an extra model call.
@@ -39,11 +43,15 @@ The full conversation remains in `messages`. Compacted context is stored separat
 
 File change snapshots are encrypted before they enter the SQLite journal. Windows protects the local encryption key with DPAPI; other systems keep a user-only key file in local app data. `/undo`, `/history changes`, `/recover`, and `/rollback` work across restarts. Each restore checks the current file hash and keeps any file changed outside PolonRLM. Interrupted shell commands are never rerun automatically. Removing a chat does not remove the separate project change journal.
 
+Workspace file writes, atomic applies, rollbacks, and checkpoint captures use a per-project lock in the shared SQLite store. Separate PolonRLM processes cannot both commit edits based on the same stale file contents. A crashed process leaves a lock that can be reclaimed after its PID exits; a waiting operation reports a busy workspace after 30 seconds instead of proceeding without the lock.
+
 Named file checkpoints use the same encrypted local store and survive restarts. Restoring selected checkpoint files writes them as one transaction, and the before/after encodings are journaled so rollback can put the original bytes back. A checkpoint restore still uses the regular file-write permission checks.
 
 The encryption key remains available to the same OS user who runs PolonRLM. This protects copied database files but is not a boundary against malware or another process running as that user. Registered secrets are removed from conversation messages and logs; recovery snapshots retain the original file content in encrypted form so a restore can be exact.
 
 The name change from JanuszGPT to PolonRLM uses a copy-based migration. The new data directory receives configuration, keys, skills, and a consistent SQLite backup. The old directory remains available for rollback. Migration never overwrites an existing destination.
+
+`config.json` carries a schema version. Versionless settings are treated as the former version and old factory limits are migrated once. Saved version 2 settings keep explicit values even when they match a previous default; unsupported future versions fail visibly instead of being rewritten by an older app.
 
 ## Integrations and trust
 

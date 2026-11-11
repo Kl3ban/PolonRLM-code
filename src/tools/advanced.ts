@@ -6,6 +6,9 @@ import { registerCheckpointTools } from './checkpoints.js';
 import { registerCodeTools } from './code.js';
 import { registerLspTool } from './lsp.js';
 import { registerDocumentTools } from './documents.js';
+import { registerProjectMap } from './project-map.js';
+import type { SandboxExecutor } from './sandbox.js';
+import type { SessionStore } from '../core/store.js';
 
 async function mapConcurrent<T, R>(items: readonly T[], concurrency: number, work: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
@@ -19,12 +22,17 @@ async function mapConcurrent<T, R>(items: readonly T[], concurrency: number, wor
   return results;
 }
 
-export function registerAdvancedTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0): void {
+export function registerAdvancedTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0, sandbox?: SandboxExecutor, store?: SessionStore): void {
   let plan: { step: string; status: 'pending' | 'in_progress' | 'done' }[] = [];
-  registry.add('plan_update', 'Maintain a compact in-memory task plan (not proof of completion). At most one step in progress. Does not edit project files.', z.object({ steps: z.array(z.object({ step: z.string().min(1).max(300), status: z.enum(['pending', 'in_progress', 'done']) })).max(30) }), true, async args => { if (args.steps.filter((step: any) => step.status === 'in_progress').length > 1) throw new Error('Only one plan step can be active at a time.'); plan = args.steps; return plan; });
-  registry.add('plan_status', 'Read the current in-memory task plan.', z.object({}), true, async () => plan);
-  registerProcessTools(registry, workspace, maxProcesses, globalTimeoutMs, outputLimit); registerCheckpointTools(registry, workspace); registerCodeTools(registry, workspace); registerLspTool(registry, workspace);
-  registerDocumentTools(registry, workspace);
+  registry.add('plan_update', 'Maintain a compact session-persistent task plan (not proof of completion). At most one step in progress. Does not edit project files.', z.object({ steps: z.array(z.object({ step: z.string().min(1).max(300), status: z.enum(['pending', 'in_progress', 'done']) })).max(30) }), true, async (args, context) => {
+    if (args.steps.filter((step: any) => step.status === 'in_progress').length > 1) throw new Error('Only one plan step can be active at a time.');
+    plan = args.steps;
+    if (context.sessionId && store) store.savePlan(context.sessionId, plan);
+    return plan;
+  });
+  registry.add('plan_status', 'Read the current session-persistent task plan.', z.object({}), true, async (_args, context) => context.sessionId && store ? store.workflow(context.sessionId).plan ?? [] : plan);
+  registerProcessTools(registry, workspace, maxProcesses, globalTimeoutMs, outputLimit, sandbox); registerCheckpointTools(registry, workspace); registerCodeTools(registry, workspace); registerLspTool(registry, workspace, sandbox);
+  registerDocumentTools(registry, workspace); registerProjectMap(registry, workspace, store);
   registry.add('transaction_begin', 'Start a durable file change transaction. Later writes can be committed or rolled back together, including after restart.', z.object({ name: z.string().min(1).max(100) }), false, async args => workspace.beginTransaction(args.name));
   registry.add('transaction_status', 'Show the active file change transaction and its touched paths.', z.object({}), true, async () => workspace.transactionStatus() ?? { active: false });
   registry.add('transaction_commit', 'Keep all changes in the active transaction and close it. Every file still uses normal write approvals.', z.object({ id: z.string() }), false, async args => workspace.commitTransaction(args.id));

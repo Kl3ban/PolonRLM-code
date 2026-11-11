@@ -26,7 +26,7 @@ interface DraftSelection { anchor: number; focus: number }
 function orderedDraftRange(selection: DraftSelection): [number, number] {
     return selection.anchor <= selection.focus ? [selection.anchor, selection.focus] : [selection.focus, selection.anchor];
 }
-const COMMANDS = ['/goal', '/grill-me', '/plan', '/build', '/review', '/retry', '/copy', '/help', '/connect', '/models', '/model', '/effort', '/key', '/image', '/budget', '/settings', '/agents', '/steer', '/skills', '/mcp', '/mode', '/cortex', '/sessions', '/new', '/resume', '/export', '/context', '/compact', '/cost', '/status', '/permissions', '/cancel', '/undo', '/recover', '/history', '/rollback', '/memory', '/forget', '/clear', '/exit'];
+const COMMANDS = ['/goal', '/grill-me', '/plan', '/build', '/review', '/retry', '/copy', '/help', '/connect', '/fallback', '/models', '/model', '/route', '/effort', '/key', '/image', '/budget', '/settings', '/agents', '/steer', '/skills', '/mcp', '/mode', '/cortex', '/sessions', '/new', '/resume', '/export', '/context', '/compact', '/cost', '/status', '/permissions', '/cancel', '/undo', '/recover', '/history', '/rollback', '/memory', '/forget', '/clear', '/exit'];
 const SPINNER = ['·  ', '·· ', '···', ' ··', '  ·', '   '];
 function cursorAtCell(text: string, targetRow: number, targetColumn: number, width: number) {
     let row = 0, column = 0, index = 0;

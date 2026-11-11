@@ -1,0 +1,6 @@
+{
+  "id": "format-bytes",
+  "title": "Format byte counts consistently",
+  "timeoutMs": 600000,
+  "prompt": "Fix formatBytes in src/format.js. Use binary units B, KiB, MiB, GiB, TiB. Return 0 B for negative, non-finite, and zero input. Show at most one decimal digit and remove a trailing .0. Keep the current function name and export."
+}

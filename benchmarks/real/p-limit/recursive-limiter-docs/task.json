@@ -1,0 +1,6 @@
+{
+  "id": "recursive-limiter-docs",
+  "title": "Document recursive limiter deadlocks",
+  "prompt": "Document the recursive p-limit deadlock reported in the repository. Explain that calling the same `limit` function from work already running under that limiter can leave inner tasks waiting for a concurrency slot held by the outer task. Add a clear warning and recommend a separate limiter for inner work in both the `limit(fn, ...args)` README section and the callable `LimitFunction` documentation in index.d.ts. Keep this change documentation-only and preserve the runtime behavior and API. Run an appropriate check.",
+  "timeoutMs": 300000
+}

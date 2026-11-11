@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
-import { AgentRuntime } from '../src/core/runtime.js';
+import { AgentRuntime, createRunBudget } from '../src/core/runtime.js';
 import { PROVIDER_RETRY_DELAY_MS } from '../src/providers/retry.js';
 import { OPTIONAL_TOOLS_GUIDANCE } from '../src/core/tool-guidance.js';
 import { compactMessages, estimateTokens } from '../src/core/context.js';
@@ -17,6 +17,7 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { registerBuiltins } from '../src/tools/builtin.js';
 import { SkillsManager } from '../src/integrations/skills.js';
 import { MCPManager } from '../src/integrations/mcp.js';
+import { PluginManager } from '../src/plugins/manager.js';
 import type { LLMProvider, Message, ModelReply, RuntimeEvent, Settings, ToolCall, Usage } from '../src/core/types.js';
 
 type Complete = LLMProvider['complete'];
@@ -59,6 +60,85 @@ test('provider-specific request timeout overrides the global timeout', async t =
   assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Request completed within the provider timeout.');
 });
 
+test('trusted plugin hooks add task context, block tools without bypassing permissions, and observe task completion', async t => {
+  let calls = 0;
+  let sawPluginContext = false;
+  let sawBlockedTool = false;
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) {
+      sawPluginContext = /Supplemental trusted plugin context[\s\S]*review reminder/.test(String(messages[0]?.content ?? ''));
+      return reply('', [{ id: 'blocked-write', name: 'write_file', arguments: { path: 'blocked-by-plugin.txt', content: 'not written' } }]);
+    }
+    sawBlockedTool = messages.some(message => message.role === 'tool' && /blocked write_file: manual review required/.test(message.content));
+    return reply('The write was blocked by the plugin policy.');
+  });
+  const plugins = new PluginManager(h.home);
+  t.after(() => plugins.close());
+  const id = 'runtime-policy';
+  const marker = `__polonrlm_runtime_plugin_${Date.now()}`;
+  const directory = await plugins.create(id);
+  await writeFile(path.join(directory, 'index.mjs'), `
+globalThis[${JSON.stringify(marker)}] = { status: null };
+export default {
+  id: ${JSON.stringify(id)}, version: '1.0.0',
+  activate(api) {
+    api.hooks.beforeTask(() => 'review reminder');
+    api.hooks.beforeTool(({ tool }) => tool === 'write_file' ? 'manual review required' : undefined);
+    api.hooks.afterTask(({ status }) => { globalThis[${JSON.stringify(marker)}].status = status; });
+  },
+};
+`, 'utf8');
+  const preview = await plugins.review(id);
+  assert.equal(plugins.consumeReview(id, preview.sha256), true);
+  await plugins.activate(id, preview.sha256);
+  (h.runtime as any).plugins = plugins;
+
+  assert.equal(await h.runtime.run(h.session, 'Write a new file.', new AbortController().signal), 'The write was blocked by the plugin policy.');
+  assert.equal(sawPluginContext, true);
+  assert.equal(sawBlockedTool, true);
+  await assert.rejects(readFile(path.join(h.workspace.root, 'blocked-by-plugin.txt')), /ENOENT/);
+  assert.equal((globalThis as Record<string, any>)[marker].status, 'complete');
+  assert.ok(h.events.some(event => event.type === 'tool' && event.name === 'write_file' && event.state === 'error'));
+});
+
+test('runtime warns once and stops a repeated five-tool cycle without a model call for completion', async t => {
+  const { z } = await import('zod');
+  let calls = 0;
+  let toolCalls = 0;
+  const cycleTools = ['cycle_alpha', 'cycle_beta', 'cycle_gamma', 'cycle_delta', 'cycle_epsilon'];
+  const cycleResults = ['alpha result', 'beta result', 'gamma result', 'delta result', 'epsilon result'];
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'discover-cycle-tools', name: 'discover_tools', arguments: { query: 'cycle' } }]);
+    if (calls <= 16) {
+      const tool = cycleTools[(calls - 2) % cycleTools.length]!;
+      toolCalls++;
+      return reply('', [{ id: `cycle-${calls}`, name: tool, arguments: { value: tool } }]);
+    }
+    assert.fail('The runtime should stop after the already-warned cycle repeats.');
+  }, { maxSteps: 20 });
+  cycleTools.forEach((tool, index) => h.tools.add(tool, `Tool ${index + 1} in a deterministic cycle.`, z.object({ value: z.string() }), false, async () => cycleResults[index]!));
+
+  const answer = await h.runtime.run(h.session, 'Investigate this by using the cycle tools.', new AbortController().signal);
+  assert.match(answer, /Stopped because the same tool sequence repeated again/);
+  assert.equal(calls, 12, 'the runtime should stop at the first continued cycle phase without another model turn');
+  assert.equal(toolCalls, 11);
+  const results = h.store.messages(h.session).filter(message => message.role === 'tool' && cycleTools.includes(message.name ?? ''));
+  assert.equal(results.length, 11);
+  assert.match(results[9]!.content, /Adaptive tool-cycle guard: the same 5-step tool sequence repeated twice/);
+  assert.match(results[10]!.content, /repeated again after a warning/);
+});
+
+test('zero provider timeout inherits the configured global timeout', async t => {
+  const h = await harness(t, async (_messages, _specs, _onDelta, signal) => {
+    await setTimeout(100, undefined, { signal });
+    return reply('The global timeout was ignored.');
+  }, { timeoutMs: 20, maxSteps: 1 }, 1);
+  h.settings.providers.fake!.requestTimeoutMs = 0;
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /Shared limit of 1 model calls reached while retrying fake/);
+});
+
 test('goal state survives database reopen and only explicit update completes it', async t => {
   let calls = 0;
   const h = await harness(t, async () => ++calls === 1 ? reply('', [{ id: 'complete', name: 'update_goal', arguments: { status: 'complete', evidence: 'All requested outputs exist.' } }]) : reply('Done'));
@@ -67,6 +147,35 @@ test('goal state survives database reopen and only explicit update completes it'
   assert.equal(reopened.workflow(h.session).goal?.usedTokens, 123); reopened.close();
   await h.runtime.run(h.session, 'Finish goal', new AbortController().signal);
   assert.equal(h.store.workflow(h.session).goal?.status, 'complete');
+});
+
+test('session task plans persist through tools and resume with compact active-goal progress', async t => {
+  const plan = [
+    { step: 'Inspect the existing authentication flow', status: 'done' as const },
+    { step: 'Add regression tests', status: 'in_progress' as const },
+    { step: 'Run the verification suite', status: 'pending' as const },
+  ];
+  let calls = 0;
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'discover-plan', name: 'discover_tools', arguments: { query: 'plan_update' } }]);
+    if (calls === 2) return reply('', [{ id: 'save-plan', name: 'plan_update', arguments: { steps: plan } }]);
+    if (calls === 3) {
+      const system = messages.find(message => message.role === 'system')?.content ?? '';
+      assert.match(system, /TASK PLAN PROGRESS: 1\/3 steps marked done; active step: Add regression tests/);
+      return reply('', [{ id: 'read-plan', name: 'plan_status', arguments: {} }]);
+    }
+    const saved = messages.findLast(message => message.role === 'tool' && message.name === 'plan_status')?.content;
+    assert.deepEqual(JSON.parse(saved ?? 'null'), plan);
+    return reply('The persisted task plan is available.');
+  }, { maxSteps: 8 });
+  h.store.saveWorkflow(h.session, { goal: { objective: 'Verify the authentication change', status: 'active', tokenBudget: 0, usedTokens: 0 } });
+
+  assert.equal(await h.runtime.run(h.session, 'Refactor authentication across auth.ts and sessions.ts, add regression tests, and verify it.', new AbortController().signal), 'The persisted task plan is available.');
+  assert.deepEqual(h.store.workflow(h.session).plan, plan);
+  const reopened = new SessionStore(h.home);
+  try { assert.deepEqual(reopened.workflow(h.session).plan, plan); }
+  finally { reopened.close(); }
 });
 
 test('interview timeout never enables implementation under all permissions', async t => {
@@ -93,24 +202,110 @@ async function harness(t: test.TestContext, complete: Complete, overrides: Parti
   await mkdir(home); await mkdir(folder);
   const settings: Settings = {
     ...defaultSettings(), provider: 'fake', providers: { fake: { id: 'fake', kind: 'compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'fake', inputPrice: 0, outputPrice: 0, contextWindow: 64_000 } },
-    cortex: 2, permissions: 'workspace', maxOutputTokens: 128, maxInputTokens: 12_000,
+    cortex: 2, cortexStrategy: 'fixed', permissions: 'workspace', maxOutputTokens: 128, maxInputTokens: 12_000,
     maxSteps: 12, tokenBudget: 100_000, timeoutMs: 5_000, ...overrides,
   };
   const permissions = new Permissions(settings);
   const workspace = await Workspace.open(folder, permissions);
   const store = new SessionStore(home);
   const tools = new ToolRegistry(permissions, settings.toolOutputLimit);
-  registerBuiltins(tools, workspace, settings);
+  registerBuiltins(tools, workspace, settings, { store });
   const skills = new SkillsManager(home, workspace.root);
   const mcp = new MCPManager({});
   const session = store.create(workspace.root);
   const events: RuntimeEvent[] = [];
   const fallback = new Map<string, LLMProvider>();
+  const providerSelections: Array<{ id?: string; model?: string }> = [];
   const primary = provider(complete);
-  const runtime = new AgentRuntime(settings, store, tools, workspace, skills, mcp, async id => fallback.get(id ?? 'fake') ?? primary, event => events.push(event), retryDelayMs);
+  const runtime = new AgentRuntime(settings, store, tools, workspace, skills, mcp, async (id, model) => {
+    providerSelections.push({ id, model });
+    return fallback.get(id ?? 'fake') ?? primary;
+  }, event => events.push(event), retryDelayMs);
   t.after(async () => { await mcp.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
-  return { root, home, settings, workspace, store, tools, skills, mcp, session, events, fallback, runtime };
+  return { root, home, settings, workspace, store, tools, skills, mcp, session, events, fallback, providerSelections, runtime };
 }
+
+test('role model routing passes the selected model override without changing the saved provider', async t => {
+  const h = await harness(t, async () => reply('Routed response.'), {
+    providers: {
+      fake: { id: 'fake', kind: 'compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'fake', inputPrice: 0, outputPrice: 0, contextWindow: 64_000 },
+      alternate: { id: 'alternate', kind: 'compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'saved-model', inputPrice: 0, outputPrice: 0, contextWindow: 64_000 },
+    },
+    modelRoutes: { orchestrator: { provider: 'alternate', model: 'fast-flash' } },
+  });
+  assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Routed response.');
+  assert.deepEqual(h.providerSelections, [{ id: 'alternate', model: 'fast-flash' }]);
+  assert.equal(h.settings.provider, 'fake');
+  assert.equal(h.settings.providers.alternate!.model, 'saved-model');
+  const modelEvidence = h.store.evidenceTimeline(h.session).find(event => event.kind === 'model');
+  assert.ok(modelEvidence);
+  assert.equal(modelEvidence.actor, 'orchestrator');
+  assert.equal(modelEvidence.status, 'done');
+  assert.match(modelEvidence.summary, /alternate\/fast-flash.*15 tokens/);
+});
+
+test('adaptive Cortex skips subagent schemas for simple tasks even at Maximum', async t => {
+  let offered: string[] = [];
+  const h = await harness(t, async (_messages, specs) => { offered = specs.map(spec => spec.name); return reply('Four.'); }, { cortex: 5, cortexStrategy: 'adaptive' });
+  assert.equal(await h.runtime.run(h.session, 'What is 2 + 2?', new AbortController().signal), 'Four.');
+  assert.ok(!offered.includes('delegate'));
+  assert.ok(h.events.some(event => event.type === 'status' && /Adaptive Cortex: Fast strategy/.test(event.text ?? '')));
+});
+
+test('adaptive Cortex keeps delegation available for a cross-file change', async t => {
+  let offered: string[] = [];
+  const h = await harness(t, async (_messages, specs) => { offered = specs.map(spec => spec.name); return reply('Ready for focused parallel work.'); }, { cortex: 5, cortexStrategy: 'adaptive' });
+  await h.runtime.run(h.session, 'Refactor authentication across auth.ts, sessions.ts, and api.ts; add regression tests, verify behavior, and update architecture documentation.', new AbortController().signal);
+  assert.ok(offered.includes('delegate'));
+  assert.ok(h.events.some(event => event.type === 'status' && /Adaptive Cortex: Deep strategy \(complex task\)/.test(event.text ?? '')));
+});
+
+test('fixed Cortex strategy preserves the selected level on a simple task', async t => {
+  let offered: string[] = [];
+  const h = await harness(t, async (_messages, specs) => { offered = specs.map(spec => spec.name); return reply('Four.'); }, { cortex: 5, cortexStrategy: 'fixed' });
+  await h.runtime.run(h.session, 'What is 2 + 2?', new AbortController().signal);
+  assert.ok(offered.includes('delegate'));
+  assert.ok(!h.events.some(event => event.type === 'status' && /Adaptive Cortex/.test(event.text ?? '')));
+});
+
+test('role model call budgets block retries before a second provider request', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => { calls++; throw new Error('The selected provider is temporarily busy.'); }, {
+    modelRoleBudgets: { orchestrator: { maxCalls: 1 } },
+  }, 0);
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /Role budget for orchestrator reached its 1-call limit/);
+  assert.equal(calls, 1);
+  assert.equal(h.store.evidenceTimeline(h.session)[0]?.status, 'error');
+});
+
+test('run reuses a shared task budget across verification repair attempts', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => { calls++; return reply('Repair analysis complete.'); }, { maxSteps: 1 }, 0);
+  const budget = createRunBudget();
+  await h.runtime.run(h.session, 'First bounded repair attempt.', new AbortController().signal, undefined, budget);
+  assert.equal(budget.calls, 1);
+  await assert.rejects(h.runtime.run(h.session, 'Second bounded repair attempt.', new AbortController().signal, undefined, budget), /Shared limit of 1 model calls reached/);
+  assert.equal(calls, 1);
+});
+
+test('role token budgets stop an oversized request before contacting the provider', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => { calls++; return reply('Should not be requested.'); }, {
+    modelRoleBudgets: { orchestrator: { maxTokens: 100 } },
+  });
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /Role budget for orchestrator reached its 100-token limit/);
+  assert.equal(calls, 0);
+});
+
+test('role cost budgets preflight against configured provider prices', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => { calls++; return reply('Should not be requested.'); }, {
+    providers: { fake: { id: 'fake', kind: 'compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'fake', inputPrice: 10, outputPrice: 10, contextWindow: 64_000 } },
+    modelRoleBudgets: { orchestrator: { maxCost: 0.000001 } },
+  });
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /Role budget for orchestrator reached its \$0\.000001 cost limit/);
+  assert.equal(calls, 0);
+});
 
 test('temporary provider errors retry the selected model and show the retry countdown', async t => {
   const calls: number[] = [];
@@ -233,6 +428,75 @@ test('repeated identical read-only calls are short-circuited before they waste m
   assert.equal(toolMessages.filter(message => message.isError).length, 1);
 });
 
+test('read-cycle detection stops A-B-A when no successful state change occurred', async t => {
+  let calls = 0;
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'read-a-1', name: 'read_file', arguments: { path: 'first.txt' } }]);
+    if (calls === 2) {
+      assert.match(messages.at(-1)?.content ?? '', /first file/);
+      return reply('', [{ id: 'read-b', name: 'read_file', arguments: { path: 'second.txt' } }]);
+    }
+    assert.match(messages.at(-1)?.content ?? '', /second file/);
+    return reply('', [{ id: 'read-a-2', name: 'read_file', arguments: { path: 'first.txt' } }]);
+  }, { permissions: 'all' });
+  await writeFile(path.join(h.workspace.root, 'first.txt'), 'first file');
+  await writeFile(path.join(h.workspace.root, 'second.txt'), 'second file');
+
+  const result = await h.runtime.run(h.session, 'Read first.txt, then second.txt, then inspect first.txt again.', new AbortController().signal);
+
+  assert.match(result, /repeated the same read/);
+  assert.equal(calls, 3, 'the runtime stops after detecting the cycle instead of making another model request');
+  const toolMessages = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'read_file');
+  assert.equal(toolMessages.filter(message => !message.isError).length, 2);
+  assert.equal(toolMessages.filter(message => message.isError).length, 1);
+});
+
+test('parallel reads are tracked by the read-cycle guard', async t => {
+  let calls = 0;
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) return reply('', [
+      { id: 'parallel-a', name: 'read_file', arguments: { path: 'first.txt' } },
+      { id: 'parallel-b', name: 'read_file', arguments: { path: 'second.txt' } },
+    ]);
+    const readResults = messages.filter(message => message.role === 'tool' && message.name === 'read_file').map(message => message.content);
+    assert.equal(readResults.length, 2);
+    assert.ok(readResults.some(content => content.includes('first file')));
+    assert.ok(readResults.some(content => content.includes('second file')));
+    return reply('', [{ id: 'parallel-a-repeat', name: 'read_file', arguments: { path: 'first.txt' } }]);
+  }, { permissions: 'all' });
+  await writeFile(path.join(h.workspace.root, 'first.txt'), 'first file');
+  await writeFile(path.join(h.workspace.root, 'second.txt'), 'second file');
+
+  const result = await h.runtime.run(h.session, 'Read first.txt and second.txt, then use those results.', new AbortController().signal);
+
+  assert.match(result, /repeated the same read/);
+  assert.equal(calls, 2);
+  const toolMessages = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'read_file');
+  assert.equal(toolMessages.filter(message => !message.isError).length, 2);
+  assert.equal(toolMessages.filter(message => message.isError).length, 1);
+});
+
+test('a successful file write clears read-cycle history so verification reads can run', async t => {
+  let calls = 0;
+  const h = await harness(t, async messages => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'read-before', name: 'read_file', arguments: { path: 'sample.txt' } }]);
+    if (calls === 2) {
+      assert.match(messages.at(-1)?.content ?? '', /before/);
+      return reply('', [{ id: 'write', name: 'write_file', arguments: { path: 'sample.txt', content: 'after' } }]);
+    }
+    if (calls === 3) return reply('', [{ id: 'read-after', name: 'read_file', arguments: { path: 'sample.txt' } }]);
+    assert.match(messages.at(-1)?.content ?? '', /after/);
+    return reply('Verified the updated file.');
+  }, { permissions: 'all' });
+  await writeFile(path.join(h.workspace.root, 'sample.txt'), 'before');
+
+  assert.equal(await h.runtime.run(h.session, 'Read sample.txt, update it, and verify the new content.', new AbortController().signal), 'Verified the updated file.');
+  assert.equal(calls, 4);
+});
+
 test('independent file reads in one model response run concurrently and keep result order', async t => {
   let calls = 0, active = 0, peak = 0;
   const h = await harness(t, async () => ++calls === 1
@@ -319,6 +583,61 @@ test('test claims require a recognized test command and a zero exit code for a p
     if (exitCode === 0) assert.equal(result, 'Testy przeszły pomyślnie.');
     else assert.match(result, /I cannot confirm that tests passed/);
   }
+});
+
+test('adaptive loop guard warns after three identical test failures and resets after a project change', async t => {
+  const { z } = await import('zod');
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls <= 3 || calls === 5) return reply('', [{ id: `loop-test-${calls}`, name: 'run_tests', arguments: { command: `npm test -- case-${calls}` } }]);
+    if (calls === 4) return reply('', [{ id: 'loop-write', name: 'write_file', arguments: { path: 'progress.txt', content: 'changed' } }]);
+    return reply('The same test failure returned after the edit. I will inspect its cause instead of repeating the same test command.');
+  }, { repeatFailureThreshold: 3 });
+  h.tools.add('run_tests', 'Return a stable failing test diagnostic.', z.object({ command: z.string() }), false, async () => ({ exitCode: 1, stdout: '', stderr: 'Expected true but received false' }));
+  const result = await h.runtime.run(h.session, 'Diagnose and fix the failing test.', new AbortController().signal);
+  const testResults = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'run_tests');
+  assert.equal(testResults.length, 4);
+  assert.match(testResults[2]!.content, /Adaptive loop guard: the same run_tests failure occurred 3 times/);
+  assert.doesNotMatch(testResults[3]!.content, /Adaptive loop guard/);
+  assert.match(result, /inspect its cause/);
+});
+
+test('adaptive loop guard does not reset after a successful no-op write', async t => {
+  const { z } = await import('zod');
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls <= 2 || calls === 4) return reply('', [{ id: `noop-loop-test-${calls}`, name: 'run_tests', arguments: { command: `npm test -- case-${calls}` } }]);
+    if (calls === 3) return reply('', [{ id: 'noop-loop-write', name: 'write_file', arguments: { path: 'progress.txt', content: 'unchanged' } }]);
+    return reply('The failure repeated after a no-op write, so I will inspect it instead of retrying.');
+  }, { repeatFailureThreshold: 3 });
+  await writeFile(path.join(h.workspace.root, 'progress.txt'), 'unchanged');
+  h.tools.add('run_tests', 'Return a stable failing test diagnostic.', z.object({ command: z.string() }), false, async () => ({ exitCode: 1, stdout: '', stderr: 'Expected true but received false' }));
+  const result = await h.runtime.run(h.session, 'Diagnose the repeated test failure.', new AbortController().signal);
+  const writes = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'write_file');
+  const testResults = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'run_tests');
+  assert.match(writes[0]!.content, /No changes\./);
+  assert.equal(testResults.length, 3);
+  assert.match(testResults[2]!.content, /Adaptive loop guard: the same run_tests failure occurred 3 times/);
+  assert.match(result, /inspect it instead of retrying/);
+});
+
+test('adaptive loop guard catches changing test failures when no workspace progress is made', async t => {
+  const { z } = await import('zod');
+  let calls = 0;
+  const diagnostics = ['Expected true but received false', 'Missing export: parseConfig', 'Module not found: plugin-core'];
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls <= diagnostics.length) return reply('', [{ id: `changing-test-${calls}`, name: 'run_tests', arguments: { command: `npm test -- suite-${calls}` } }]);
+    return reply('The test output keeps changing without a code edit, so I will inspect the project before continuing.');
+  }, { repeatFailureThreshold: 3 });
+  h.tools.add('run_tests', 'Return changing test diagnostics.', z.object({ command: z.string() }), false, async () => ({ exitCode: 1, stdout: '', stderr: diagnostics[calls - 1] }));
+  const result = await h.runtime.run(h.session, 'Diagnose the failing tests.', new AbortController().signal);
+  const testResults = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'run_tests');
+  assert.equal(testResults.length, 3);
+  assert.match(testResults[2]!.content, /failed 3 times without verified progress, with changing errors/);
+  assert.match(result, /inspect the project/);
 });
 
 test('factual web answers never stream or persist a made-up conclusion when no source was readable', async t => {
@@ -912,6 +1231,75 @@ test('agent_apply rollback preserves an external change and reports the unfinish
   assert.match(mergeResult, /"applied":\["first\.txt"\]/);
   assert.match(mergeResult, /"rollbackFailures":\[\{"path":"first\.txt"/);
   assert.match(mergeResult, /"changesRetained":true/);
+});
+
+test('task graph waits for prerequisites, stages their files, and exposes one reviewable atomic result', { timeout: 15_000 }, async t => {
+  let rootCalls = 0;
+  const childCalls = new Map<string, number>();
+  const h = await harness(t, async (messages, specs) => {
+    const role = /Role: (\w+)\./.exec(messages[0]!.content)?.[1] ?? '';
+    const userTask = messages.find(message => message.role === 'user')?.content ?? '';
+    if (role === 'orchestrator') {
+      if (++rootCalls === 1) return reply('', [{ id: 'graph', name: 'delegate', arguments: { tasks: [
+        { id: 'analysis', role: 'researcher', task: 'Inspect the project API contract and report the interface.' },
+        { id: 'backend', dependsOn: ['analysis'], role: 'coder', task: 'Build the backend slice from the analysis.' },
+        { id: 'frontend', dependsOn: ['analysis'], role: 'coder', task: 'Build the frontend slice from the analysis.' },
+        { id: 'integration', dependsOn: ['backend', 'frontend'], role: 'coder', task: 'Check the integration of both slices.' },
+      ] } }]);
+      if (rootCalls === 2) {
+        const delegation = JSON.parse(messages.findLast(message => message.name === 'delegate')!.content) as { graphId: string; status: string; tasks: { status: string }[]; changedFiles: string[] };
+        assert.equal(delegation.status, 'done', JSON.stringify(delegation));
+        assert.equal(delegation.tasks.length, 4);
+        assert.ok(delegation.tasks.every(task => task.status === 'done'));
+        assert.deepEqual(delegation.changedFiles, ['backend.txt', 'frontend.txt']);
+        assert.ok(specs.some(spec => spec.name === 'agent_apply'));
+        return reply('', [{ id: 'graph-changes', name: 'agent_changes', arguments: { agentId: delegation.graphId } }]);
+      }
+      if (rootCalls === 3) {
+        const changes = JSON.parse(messages.findLast(message => message.name === 'agent_changes')!.content) as { path: string }[];
+        assert.deepEqual(changes.map(change => change.path), ['backend.txt', 'frontend.txt']);
+        return reply('', [{ id: 'graph-apply', name: 'agent_apply', arguments: { agentId: JSON.parse(messages.findLast(message => message.name === 'delegate')!.content).graphId, paths: changes.map(change => change.path) } }]);
+      }
+      return reply('The dependency graph completed and both changes were reviewed and applied.');
+    }
+
+    const taskKey = role === 'coder' ? /Build the backend slice/.test(userTask) ? 'backend' : /Build the frontend slice/.test(userTask) ? 'frontend' : 'integration' : role;
+    const taskCall = (childCalls.get(taskKey) ?? 0) + 1;
+    childCalls.set(taskKey, taskCall);
+    if (role === 'researcher') {
+      assert.match(userTask, /Inspect the project API contract/);
+      return reply('The API returns JSON records with stable IDs.');
+    }
+    if (/Build the backend slice/.test(userTask)) {
+      assert.match(userTask, /stable IDs/);
+      if (taskCall === 1) return reply('', [{ id: 'backend-write', name: 'write_file', arguments: { path: 'backend.txt', content: 'backend slice' } }]);
+      assert.match(messages.at(-1)?.content ?? '', /backend\.txt/);
+      return reply('Backend slice complete.');
+    }
+    if (/Build the frontend slice/.test(userTask)) {
+      assert.match(userTask, /stable IDs/);
+      if (taskCall === 1) return reply('', [{ id: 'frontend-write', name: 'write_file', arguments: { path: 'frontend.txt', content: 'frontend slice' } }]);
+      assert.match(messages.at(-1)?.content ?? '', /frontend\.txt/);
+      return reply('Frontend slice complete.');
+    }
+    assert.match(userTask, /backend slice/i);
+    assert.match(userTask, /frontend slice/i);
+    if (taskCall === 1) return reply('', [{ id: 'integration-read-backend', name: 'read_file', arguments: { path: 'backend.txt' } }]);
+    if (taskCall === 2) {
+      assert.match(messages.at(-1)?.content ?? '', /backend slice/);
+      return reply('', [{ id: 'integration-read-frontend', name: 'read_file', arguments: { path: 'frontend.txt' } }]);
+    }
+    assert.match(messages.at(-1)?.content ?? '', /frontend slice/);
+    return reply('Integration checked both staged slices.');
+  }, { maxAgents: 2, maxDepth: 1 });
+
+  assert.equal(await h.runtime.run(h.session, 'Build and then integrate the dependent slices.', new AbortController().signal), 'The dependency graph completed and both changes were reviewed and applied.');
+  assert.equal(await readFile(path.join(h.workspace.root, 'backend.txt'), 'utf8'), 'backend slice');
+  assert.equal(await readFile(path.join(h.workspace.root, 'frontend.txt'), 'utf8'), 'frontend slice');
+  const graph = h.runtime.agents.find(agent => agent.role === 'task-graph');
+  assert.equal(graph?.status, 'done');
+  assert.equal(childCalls.get('researcher'), 1);
+  assert.equal((childCalls.get('backend') ?? 0) + (childCalls.get('frontend') ?? 0) + (childCalls.get('integration') ?? 0), 7, 'two writers and an integrator with two reads and a final response');
 });
 
 test('parallel delegates share tools and budget while reviewer remains read-only', { timeout: 10_000 }, async t => {

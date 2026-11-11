@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { safeText, subprocessEnvironment } from '../core/secrets.js';
 import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
+import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
 
 export class ProcessOutputBuffer {
   private readonly decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
@@ -31,14 +32,21 @@ export class ProcessOutputBuffer {
   }
 }
 
-export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0): void {
-  type Job = { id: string; command: string; interactive: boolean; stdin?: NodeJS.WritableStream; buffer: ProcessOutputBuffer; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
+export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0, sandbox?: SandboxExecutor): void {
+  type Job = { id: string; command: string; execution: string; interactive: boolean; stdin?: NodeJS.WritableStream; buffer: ProcessOutputBuffer; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
   const jobs = new Map<string, Job>();
   const find = (id: string) => { const job = jobs.get(id); if (!job) throw new Error('Unknown process for this run.'); return job; };
-  const snapshot = (job: Job) => { job.output = job.buffer.output; job.truncated = job.buffer.truncated; return { id: job.id, command: job.command, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated }; };
+  const snapshot = (job: Job) => { job.output = job.buffer.output; job.truncated = job.buffer.truncated; return { id: job.id, command: job.command, execution: job.execution, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated }; };
   registry.onClose(async () => { jobs.forEach(job => job.abort.abort()); await Promise.all([...jobs.values()].map(job => job.done)); });
-  registry.add('process_start', 'Start an approved shell command in the background. Timeout and output are unlimited by default; configured global limits apply. Only owned jobs can be stopped. Jobs stop on task cancellation, timeout or app exit.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
-    await workspace.permissions.check('process_start', 'shell', 'Run a command in the background outside a sandbox.', args.command, context.mode, context.signal);
+  registry.add('process_start', 'Start a shell command in the background under the configured permission policy. Uses OS isolation when available; host fallback follows the permission policy and is reported. Timeout and output are unlimited by default; configured global limits apply. Only owned jobs can be stopped.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
+    let status: Awaited<ReturnType<SandboxExecutor['status']>> | undefined;
+    let prepared: PreparedCommand | undefined;
+    if (sandbox) {
+      status = await sandbox.status(workspace.root);
+      if (sandbox.mode === 'required' && !status.available) throw new Error(`OS sandbox is required but unavailable: ${status.reason ?? status.backend}. No command was run.`);
+      await workspace.permissions.check('process_start', 'shell', status.available ? `Run this background command inside the ${status.backend} OS sandbox.${status.reason ? ` Setup note: ${status.reason}` : ''}` : `The OS sandbox is unavailable (${status.reason ?? status.backend}). Run this command with host permissions only after approval.`, args.command, context.mode, context.signal);
+      if (!status.available && sandbox.needsFallbackApproval('process_start')) await workspace.permissions.check('sandbox_fallback', 'shell', 'The selected process tool is set to auto, but OS isolation is unavailable. Approve running directly on the host.', args.command, context.mode, context.signal);
+    } else await workspace.permissions.check('process_start', 'shell', 'Run a background command on the host after approval. No OS sandbox is configured for this tool.', args.command, context.mode, context.signal);
     context.signal.throwIfAborted();
     const processLimit = maxProcesses();
     const active = [...jobs.values()].filter(job => job.running).length;
@@ -49,15 +57,30 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
     const id = randomUUID();
     const configuredTimeout = globalTimeoutMs();
     const timeoutMs = configuredTimeout > 0 ? (args.timeoutMs > 0 ? Math.min(configuredTimeout, args.timeoutMs) : configuredTimeout) : args.timeoutMs;
-    const child = execa(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoLogo', '-NoProfile', ...(args.interactive ? [] : ['-NonInteractive']), '-Command', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + args.command] : ['-c', args.command], { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' });
+    const command = process.platform === 'win32' ? 'powershell.exe' : '/bin/sh';
+    const commandArgs = process.platform === 'win32' ? ['-NoLogo', '-NoProfile', ...(args.interactive ? [] : ['-NonInteractive']), '-Command', '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);' + args.command] : ['-c', args.command];
+    try {
+      if (sandbox) {
+        try { prepared = await sandbox.prepare(command, commandArgs, workspace.root, context.signal); }
+        catch (error: any) {
+          if (sandbox.mode === 'required') throw error;
+          await workspace.permissions.check('sandbox_fallback', 'shell', `Sandbox setup failed (${String(error?.message ?? error)}). Approve running this background command directly on the host.`, args.command, context.mode, context.signal);
+        }
+      }
+    } catch (error) { context.signal.removeEventListener('abort', cancel); throw error; }
+    const launch: PreparedCommand = prepared ?? { command, args: commandArgs, env: subprocessEnvironment(context.isolated), sandboxed: false, cleanup: async () => {}, annotate: (stderr: string) => stderr };
+    let child: ReturnType<typeof execa>;
+    try { child = execa(launch.command, launch.args, { cwd: workspace.root, env: launch.sandboxed ? launch.env : subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' }); }
+    catch (error) { await launch.cleanup(); context.signal.removeEventListener('abort', cancel); throw error; }
     const buffer = new ProcessOutputBuffer(outputLimit);
-    const job: Job = { id, command: safeText(args.command), interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), buffer, output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
+    const execution = launch.sandboxed ? `sandboxed (${status?.backend ?? 'OS'})` : `host${launch.reason ? ` (sandbox fallback: ${launch.reason})` : sandbox?.mode === 'off' ? ' (sandbox off)' : ''}`;
+    const job: Job = { id, command: safeText(args.command), execution, interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), buffer, output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
     const publishOutput = () => { job.output = buffer.output; job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); };
     child.stdout?.on('data', (chunk: Buffer) => { buffer.write('stdout', chunk); publishOutput(); });
     child.stderr?.on('data', (chunk: Buffer) => { buffer.write('stderr', chunk); publishOutput(); });
     child.stdout?.on('end', () => { buffer.end('stdout'); publishOutput(); });
     child.stderr?.on('end', () => { buffer.end('stderr'); publishOutput(); });
-    job.done = child.then(result => { job.exitCode = result.exitCode; if (result.timedOut) job.error = 'Timeout'; if (result.isCanceled) job.error = 'Cancelled'; }, error => { job.error = safeText(error.message); }).finally(() => { job.running = false; job.output = safeText(buffer.output); job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); job.cleanup(); });
+    job.done = child.then(result => { job.exitCode = result.exitCode; if (result.timedOut) job.error = 'Timeout'; if (result.isCanceled) job.error = 'Cancelled'; }, error => { job.error = safeText(error.message); }).finally(async () => { job.running = false; job.output = safeText(buffer.output); job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); try { await launch.cleanup(); } finally { job.cleanup(); } });
     jobs.set(id, job); return { id, running: true, interactive: job.interactive };
   });
   registry.add('process_list', 'List background jobs started by this agent.', z.object({}), true, async () => [...jobs.values()].map(job => ({ ...snapshot(job), output: undefined })));

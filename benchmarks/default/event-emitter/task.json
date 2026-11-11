@@ -1,0 +1,6 @@
+{
+  "id": "event-emitter",
+  "title": "Implement a predictable event emitter",
+  "timeoutMs": 600000,
+  "prompt": "Implement EventEmitter in src/emitter.js and export it from src/index.js. `on(event, callback)` and `once(event, callback)` return an idempotent unsubscribe function. `emit(event, ...args)` calls listeners in registration order and returns the number called. A once listener must be removed before its callback runs, so reentrant emit cannot call it twice. Changes to subscriptions during an emit affect only later emits. `clear(event)` removes one event; `clear()` removes all. Reject non-string event names and non-function callbacks with TypeError. Keep the API and pass `npm test`."
+}

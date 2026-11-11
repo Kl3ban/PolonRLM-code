@@ -5,13 +5,14 @@ import { z } from 'zod';
 import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
 import { subprocessEnvironment } from '../core/secrets.js';
+import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
 
 const actions = ['hover', 'definition', 'implementation', 'type_definition', 'references', 'symbols', 'workspace_symbols', 'prepare_call_hierarchy', 'incoming_calls', 'outgoing_calls', 'diagnostics'] as const;
 const positionActions = new Set(['hover', 'definition', 'implementation', 'type_definition', 'references', 'symbols', 'prepare_call_hierarchy', 'incoming_calls', 'outgoing_calls', 'diagnostics']);
 
 /** A bounded stdio LSP client. Server requests never execute edits, commands or UI actions. */
-export function registerLspTool(registry: ToolRegistry, workspace: Workspace): void {
-  registry.add('lsp_request', 'Use an installed stdio language server for hover, definitions, implementations, type definitions, references, document/workspace symbols, call hierarchy or diagnostics. Call hierarchy actions prepare and inspect a symbol in one server session. Workspace symbol search needs a query; all other actions need a file path, language ID and 1-based UTF-16 position. Starting the server follows permissions. No automatic installation or server-requested edits.', z.object({
+export function registerLspTool(registry: ToolRegistry, workspace: Workspace, sandbox?: SandboxExecutor): void {
+  registry.add('lsp_request', 'Use an installed stdio language server for hover, definitions, implementations, type definitions, references, document/workspace symbols, call hierarchy or diagnostics. Call hierarchy actions prepare and inspect a symbol in one server session. Workspace symbol search needs a query; all other actions need a file path, language ID and 1-based UTF-16 position. Uses OS isolation when available; host fallback follows the permission policy. No automatic installation or server-requested edits.', z.object({
     command: z.string().min(1),
     args: z.array(z.string()).max(30).default([]),
     path: z.string().optional(),
@@ -28,11 +29,26 @@ export function registerLspTool(registry: ToolRegistry, workspace: Workspace): v
     const needsDocument = positionActions.has(args.action);
     const filename = needsDocument ? await workspace.resolve(args.path!) : workspace.root;
     const text = needsDocument ? await workspace.readText(args.path!) : undefined;
-    await workspace.permissions.check('lsp_request', 'shell', `Start the language server for ${args.action}.`, JSON.stringify({ command: args.command, args: args.args, path: args.path, query: args.query }), context.mode, context.signal);
+    const details = JSON.stringify({ command: args.command, args: args.args, path: args.path, query: args.query });
+    const sandboxStatus = sandbox ? await sandbox.status(workspace.root) : undefined;
+    if (sandbox?.mode === 'required' && sandboxStatus && !sandboxStatus.available) throw new Error(`OS sandbox is required but unavailable: ${sandboxStatus.reason ?? sandboxStatus.backend}. No language server was started.`);
+    await workspace.permissions.check('lsp_request', 'shell', sandboxStatus?.available ? `Start the language server for ${args.action} inside the ${sandboxStatus.backend} OS sandbox.${sandboxStatus.reason ? ` Setup note: ${sandboxStatus.reason}` : ''}` : `OS sandbox is unavailable${sandboxStatus?.reason ? ` (${sandboxStatus.reason})` : ''}; start the language server on the host only after approval.`, details, context.mode, context.signal);
     context.signal.throwIfAborted();
 
     const abort = new AbortController(); const onAbort = () => abort.abort(); context.signal.addEventListener('abort', onAbort, { once: true });
-    const child = execa(args.command, args.args, { cwd: workspace.root, env: subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: args.timeoutMs, buffer: false, reject: false });
+    let launch: PreparedCommand | undefined;
+    if (sandbox) {
+      if (sandboxStatus?.available) {
+        try { launch = await sandbox.prepare(args.command, args.args, workspace.root, context.signal); }
+        catch (error: any) {
+          if (sandbox.mode === 'required') { context.signal.removeEventListener('abort', onAbort); throw error; }
+          await workspace.permissions.check('sandbox_fallback', 'shell', `Sandbox setup failed (${String(error?.message ?? error)}). Approve starting this language server on the host.`, details, context.mode, context.signal);
+        }
+      } else if (sandbox.needsFallbackApproval('lsp_request')) {
+        await workspace.permissions.check('sandbox_fallback', 'shell', 'The language server tool is set to auto, but OS isolation is unavailable. Approve starting it directly on the host.', details, context.mode, context.signal);
+      }
+    }
+    const child = execa(launch?.command ?? args.command, launch?.args ?? args.args, { cwd: workspace.root, env: launch?.sandboxed ? launch.env : subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: args.timeoutMs, buffer: false, reject: false });
     let sequence = 0, buffer = Buffer.alloc(0); const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
     let diagnostics: unknown[] | undefined;
     const send = (message: unknown) => { const body = Buffer.from(JSON.stringify(message)); child.stdin!.write(`Content-Length: ${body.length}\r\n\r\n`); child.stdin!.write(body); };
@@ -97,6 +113,6 @@ export function registerLspTool(registry: ToolRegistry, workspace: Workspace): v
         prepare_call_hierarchy: 'textDocument/prepareCallHierarchy', diagnostics: 'textDocument/diagnostic',
       };
       return await request(methods[args.action]!, { ...position, ...(args.action === 'references' ? { context: { includeDeclaration: true } } : {}) });
-    } finally { abort.abort(); await outcome; context.signal.removeEventListener('abort', onAbort); }
+    } finally { abort.abort(); await outcome; context.signal.removeEventListener('abort', onAbort); await launch?.cleanup(); }
   });
 }

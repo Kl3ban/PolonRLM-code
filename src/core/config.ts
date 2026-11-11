@@ -4,17 +4,31 @@ import path from 'node:path';
 import os from 'node:os';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { z } from 'zod';
-import type { Settings } from './types.js';
+import { AGENT_MODEL_ROLES, type Settings } from './types.js';
 import { PROVIDER_PRESETS } from '../providers/provider.js';
 import { isSecretEnvironmentName } from './secrets.js';
 
 // Node timers clamp larger delays to 1 ms; zero continues to mean no timeout.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const CURRENT_CONFIG_VERSION = 2;
 
+// Keep stored configs readable for legacy recovery. New entries and connections use the stricter schema below.
 const mcpServerSchema = z.object({
   type: z.enum(['stdio', 'http']), command: z.string().optional(), args: z.array(z.string()).optional(), url: z.url().optional(),
   env: z.record(z.string(), z.string()).optional(), headersEnv: z.record(z.string(), z.string()).optional(), timeoutMs: z.number().int().positive().optional(),
 });
+function validateMcpTransport(config: { type: 'stdio' | 'http'; command?: string; args?: string[]; url?: string; env?: Record<string, string>; headersEnv?: Record<string, string> }, context: z.RefinementCtx): void {
+  if (config.type === 'stdio') {
+    if (!config.command?.trim()) context.addIssue({ code: 'custom', path: ['command'], message: 'MCP stdio requires a non-empty command.' });
+    if (config.url !== undefined) context.addIssue({ code: 'custom', path: ['url'], message: 'MCP stdio cannot use a URL.' });
+    if (config.headersEnv !== undefined) context.addIssue({ code: 'custom', path: ['headersEnv'], message: 'MCP stdio uses env, not headersEnv.' });
+  } else {
+    if (!config.url) context.addIssue({ code: 'custom', path: ['url'], message: 'MCP HTTP requires a URL.' });
+    if (config.command !== undefined) context.addIssue({ code: 'custom', path: ['command'], message: 'MCP HTTP cannot use a command.' });
+    if (config.args !== undefined) context.addIssue({ code: 'custom', path: ['args'], message: 'MCP HTTP cannot use process arguments.' });
+    if (config.env !== undefined) context.addIssue({ code: 'custom', path: ['env'], message: 'MCP HTTP uses headersEnv, not env.' });
+  }
+}
 const secureMcpUrlSchema = z.url().refine(value => {
   try {
     const url = new URL(value);
@@ -36,7 +50,8 @@ export const secureMcpServerSchema = z.object({
   type: z.enum(['stdio', 'http']), command: z.string().optional(), args: z.array(z.string()).optional(), url: secureMcpUrlSchema.optional(),
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).refine(values => Object.entries(values).every(([key, value]) => !isSecretEnvironmentName(key) || /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)), 'Pass MCP secrets as ${ENV_NAME}, not as plaintext.').optional(),
   headersEnv: z.record(z.string().regex(/^[A-Za-z0-9-]+$/), z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)).optional(), timeoutMs: z.number().int().positive().optional(),
-}).refine(config => !hasInlineSecretArgument(config.args), 'Pass MCP secrets through environment variables or headersEnv, not as process arguments.');
+}).refine(config => !hasInlineSecretArgument(config.args), 'Pass MCP secrets through environment variables or headersEnv, not as process arguments.')
+  .superRefine(validateMcpTransport);
 
 const providerSchema = z.object({
   id: z.string().min(1), kind: z.enum(['openai', 'compatible', 'anthropic', 'google']),
@@ -46,11 +61,22 @@ const providerSchema = z.object({
   reasoningEfforts: z.array(z.string().min(1).max(32).regex(/^[A-Za-z0-9][A-Za-z0-9_. -]*$/)).max(16).optional(),
   temperature: z.number().min(0).max(2).optional(), inputPrice: z.number().nonnegative().optional(), outputPrice: z.number().nonnegative().optional(),
   contextWindow: z.number().int().positive().optional(), maxOutputTokens: z.number().int().positive().optional(), reasoningSupported: z.boolean().optional(), toolCalling: z.boolean().optional(), vision: z.boolean().optional(),
-  requestTimeoutMs: z.number().int().min(1000).max(MAX_TIMER_DELAY_MS).optional()
+  requestTimeoutMs: z.number().int().nonnegative().max(MAX_TIMER_DELAY_MS).optional()
 });
+export const sandboxDomainSchema = z.string().min(1).max(253).regex(/^(?:\*\.)?[A-Za-z0-9.-]+(?::\d{1,5})?$/).refine(value => {
+  const [host = '', port] = value.replace(/^\*\./, '').split(/:(?=\d+$)/, 2);
+  if (!host || host.startsWith('.') || host.endsWith('.') || host.includes('..')) return false;
+  if (port !== undefined && (Number(port) < 1 || Number(port) > 65535)) return false;
+  try { return new URL(`https://${host}`).hostname.toLowerCase() === host.toLowerCase(); } catch { return false; }
+}, 'Enter a hostname or *.hostname with an optional port from 1 to 65535.');
+const modelRouteSchema = z.object({ provider: z.string().min(1), model: z.string().trim().min(1).optional() });
+const modelRoleBudgetSchema = z.object({ maxCalls: z.number().int().nonnegative().safe().optional(), maxTokens: z.number().int().nonnegative().safe().optional(), maxCost: z.number().nonnegative().optional() }).refine(value => Object.values(value).some(limit => limit !== undefined), 'Set at least one role budget limit.');
+const trustedPluginSchema = z.object({ enabled: z.boolean(), sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional() }).strict();
 export const settingsSchema = z.object({
+  configVersion: z.literal(CURRENT_CONFIG_VERSION),
   provider: z.string(), providers: z.record(z.string(), providerSchema), fallback: z.array(z.string()),
-  mode: z.enum(['PLAN', 'BUILD', 'REVIEW']), cortex: z.number().int().min(0).max(5),
+  mode: z.enum(['PLAN', 'BUILD', 'REVIEW']), cortex: z.number().int().min(0).max(5), cortexStrategy: z.enum(['adaptive', 'fixed']).default('adaptive'),
+  repeatFailureThreshold: z.number().int().min(0).max(20).default(3),
   maxSteps: z.number().int().nonnegative().safe(), maxInputTokens: z.number().int().nonnegative().safe(),
   maxOutputTokens: z.number().int().nonnegative().safe(), tokenBudget: z.preprocess(value => value === null ? 0 : value, z.number().int().nonnegative().safe().refine(value => value === 0 || value >= 1000, 'Minimum 1,000 or 0 for unlimited')),
   dollarBudget: z.number().nonnegative(), maxAgents: z.number().int().nonnegative().safe(), maxProcesses: z.number().int().nonnegative().safe(), maxDepth: z.number().int().min(-1).safe(),
@@ -59,26 +85,40 @@ export const settingsSchema = z.object({
   webSearchMode: z.preprocess(value => value === 'duckduckgo' ? 'auto' : value, z.enum(['auto', 'bing', 'brave', 'yahoo']).default('auto')),
   browserEngine: z.enum(['auto', 'chromium', 'chrome', 'edge', 'brave', 'firefox']).default('auto'),
   verificationCommands: z.array(z.string().trim().min(1)).default([]),
+  verificationMode: z.enum(['manual', 'after_changes']).default('after_changes'),
+  verificationRepairAttempts: z.number().int().min(0).max(3).default(1),
   agentToolProfiles: z.record(z.string().regex(/^(planner|coder|researcher|reviewer|tester|debugger)$/), z.array(z.string().min(1).max(100)).max(256).refine(names => new Set(names).size === names.length, 'Tool names must be unique.')).default({}),
+  modelRoutes: z.partialRecord(z.enum(AGENT_MODEL_ROLES), modelRouteSchema).default({}),
+  modelRoleBudgets: z.partialRecord(z.enum(AGENT_MODEL_ROLES), modelRoleBudgetSchema).default({}),
+  plugins: z.record(z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), trustedPluginSchema).default({}),
+  sandboxMode: z.enum(['off', 'auto', 'required']).default('auto'),
+  sandboxNetworkDomains: z.array(sandboxDomainSchema).max(256).refine(values => new Set(values).size === values.length, 'Sandbox domains must be unique.').default([]),
   mcp: z.record(z.string(), mcpServerSchema)
 }).superRefine((settings, context) => {
   if (!Object.hasOwn(settings.providers, settings.provider)) context.addIssue({ code: 'custom', path: ['provider'], message: 'Selected provider is not configured.' });
   for (const [index, provider] of settings.fallback.entries()) {
     if (!Object.hasOwn(settings.providers, provider)) context.addIssue({ code: 'custom', path: ['fallback', index], message: `Fallback provider ${provider} is not configured.` });
   }
+  for (const [role, route] of Object.entries(settings.modelRoutes)) {
+    if (!Object.hasOwn(settings.providers, route.provider)) context.addIssue({ code: 'custom', path: ['modelRoutes', role, 'provider'], message: `Model route provider ${route.provider} is not configured.` });
+  }
 });
 export function defaultSettings(): Settings {
-  return { provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1,
+  return { configVersion: CURRENT_CONFIG_VERSION, provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1, cortexStrategy: 'adaptive', repeatFailureThreshold: 3,
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', verificationCommands: [], mcp: {}, agentToolProfiles: {} };
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', verificationCommands: [], verificationMode: 'after_changes', verificationRepairAttempts: 1, mcp: {}, agentToolProfiles: {}, modelRoutes: {}, modelRoleBudgets: {}, plugins: {}, sandboxMode: 'auto', sandboxNetworkDomains: [] };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
-function migrateDefaultLimits(saved: unknown): unknown {
+function migrateConfig(saved: unknown): unknown {
   if (!isRecord(saved)) return saved;
   const migrated = { ...saved };
-  for (const [key, previousDefault] of Object.entries(previousDefaultLimits)) {
-    if (migrated[key] === previousDefault) migrated[key] = key === 'maxDepth' ? -1 : 0;
+  const version = Object.hasOwn(saved, 'configVersion') ? saved.configVersion : 1;
+  if (version === 1) {
+    for (const [key, previousDefault] of Object.entries(previousDefaultLimits)) {
+      if (migrated[key] === previousDefault) migrated[key] = key === 'maxDepth' ? -1 : 0;
+    }
+    migrated.configVersion = CURRENT_CONFIG_VERSION;
   }
   return migrated;
 }
@@ -180,7 +220,8 @@ export class ConfigManager {
       }
       try {
         const data = JSON.parse(await readFile(path.join(stage, 'config.json'), 'utf8'));
-        settingsSchema.parse({ ...defaultSettings(), ...data });
+        const migrated = migrateConfig(data);
+        settingsSchema.parse({ ...defaultSettings(), ...(isRecord(migrated) ? migrated : {}) });
       } catch (error: unknown) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       if (await this.exists(this.home)) { await rm(stage, { recursive: true, force: true }); return; } // Another start or user-created destination owns its data.
       try { await rename(stage, this.home); }
@@ -200,7 +241,7 @@ export class ConfigManager {
     await this.migrateLegacy();
     await mkdir(this.home, { recursive: true });
     try {
-      const saved = migrateDefaultLimits(JSON.parse(await readFile(path.join(this.home, 'config.json'), 'utf8')));
+      const saved = migrateConfig(JSON.parse(await readFile(path.join(this.home, 'config.json'), 'utf8')));
       const config = isRecord(saved) ? saved : {};
       this.settings = settingsSchema.parse({ ...defaultSettings(), ...config, providers: mergeProviderConfigs(config.providers) });
     }
@@ -240,7 +281,7 @@ export class ConfigManager {
   }
   private async readCurrentSettings(target: string): Promise<Settings> {
     try {
-      const saved = migrateDefaultLimits(JSON.parse(await readFile(target, 'utf8')));
+      const saved = migrateConfig(JSON.parse(await readFile(target, 'utf8')));
       const config = isRecord(saved) ? saved : {};
       return settingsSchema.parse({ ...defaultSettings(), ...config, providers: mergeProviderConfigs(config.providers) });
     } catch (error: any) {

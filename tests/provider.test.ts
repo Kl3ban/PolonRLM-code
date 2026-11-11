@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createProvider, isRetryableProviderError, PROVIDER_PRESETS, PROVIDER_RETRY_DELAY_MS } from '../src/providers/provider.js';
+import { createProvider, isRetryableProviderError, providerConfigForModel, PROVIDER_PRESETS, PROVIDER_RETRY_DELAY_MS } from '../src/providers/provider.js';
 import type { ProviderConfig } from '../src/core/types.js';
 
 async function server(handler: (request: IncomingMessage, response: ServerResponse) => void) {
@@ -92,6 +92,24 @@ test('compatible provider streams text and tool arguments with real HTTP SSE', a
     assert.equal(reply.usage.cost, 0.00014);
     assert.equal(requestBody.stream, true);
     assert.equal((requestBody.tools as unknown[]).length, 1);
+  } finally { await local.close(); }
+});
+
+test('routed model override reaches the provider request and drops stale model metadata', async () => {
+  let requestBody: any;
+  const local = await server(async (request, response) => {
+    let body = ''; for await (const part of request) body += part; requestBody = JSON.parse(body);
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    event(response, chunk({ content: 'Routed model response.' }, 'stop')); response.end('data: [DONE]\n\n');
+  });
+  try {
+    const selected = providerConfigForModel({ ...config(local.baseURL), model: 'saved-model', contextWindow: 64000, maxOutputTokens: 4096, toolCalling: false, vision: false, inputPrice: 1, outputPrice: 2 }, 'routed-model');
+    assert.equal(selected.model, 'routed-model');
+    assert.equal(selected.contextWindow, undefined);
+    assert.equal(selected.toolCalling, undefined);
+    assert.equal(selected.inputPrice, undefined);
+    await createProvider(selected, undefined, 0).complete([{ role: 'user', content: 'Use the routed model.' }], [], () => {}, new AbortController().signal);
+    assert.equal(requestBody.model, 'routed-model');
   } finally { await local.close(); }
 });
 

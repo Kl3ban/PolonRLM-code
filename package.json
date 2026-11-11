@@ -8,6 +8,12 @@
   },
   "homepage": "https://github.com/Kl3ban/PolonRLM-code#readme",
   "type": "module",
+  "exports": {
+    "./plugin": {
+      "types": "./dist/plugins/api.d.ts",
+      "import": "./dist/plugins/api.js"
+    }
+  },
   "license": "MIT",
   "bin": {
     "PolonRLM": "bin/polonrlm.cjs",
@@ -20,12 +26,15 @@
     "src",
     "tests",
     "scripts",
+    "benchmarks",
     "docs/ARCHITECTURE.md",
     "docs/COMMANDS.md",
     "docs/COMPUTER-USE.md",
     "docs/LOCAL-WEB.md",
     "docs/PROVIDERS.md",
     "docs/TOOLS.md",
+    "docs/PLUGIN-SDK.md",
+    "docs/SANDBOX.md",
     "tsconfig.json",
     "README.md",
     "LICENSE"
@@ -42,6 +51,7 @@
     "test": "tsx --test tests/*.test.ts",
     "start": "node bin/polonrlm.cjs",
     "bench": "node scripts/benchmark.mjs",
+    "bench:agent": "npm run build && node bin/polonrlm.cjs benchmark run",
     "bench:live": "tsx scripts/live-tool-review.ts",
     "test:live": "node scripts/live-smoke.mjs",
     "test:web:local": "tsx scripts/check-local-web.ts",
@@ -53,6 +63,7 @@
     "@ai-sdk/google": "^4.0.113",
     "@ai-sdk/openai": "^4.0.110",
     "@ai-sdk/openai-compatible": "^3.0.86",
+    "@anthropic-ai/sandbox-runtime": "0.0.82",
     "@inquirer/prompts": "^8.7.5",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@vscode/ripgrep": "^1.18.0",

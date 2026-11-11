@@ -1,0 +1,11 @@
+{
+  "id": "tail-after-empty",
+  "title": "Release the queue tail after it empties",
+  "prompt": "Fix the memory retention defect when the queue becomes empty. Removing the last item with dequeue or draining the queue must release the old tail node and its value so the garbage collector can reclaim them. Keep enqueue and dequeue constant-time, preserve FIFO order and the public API, and add regression coverage. Run the project tests.",
+  "timeoutMs": 600000,
+  "setup": {
+    "command": ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+    "timeoutMs": 300000,
+    "networkDomains": ["registry.npmjs.org"]
+  }
+}

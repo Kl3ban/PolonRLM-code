@@ -12,20 +12,31 @@ PolonRLM setup                   Configure a provider, API key, and model
 PolonRLM setup web               Set up local web tools (Python 3.11+)
 PolonRLM run "task"              Run a task without the TUI
 PolonRLM doctor                  Check the installation
+PolonRLM benchmark run           Run hidden-test coding tasks in a required OS sandbox
+PolonRLM benchmark matrix        Compare configured models and benchmark profiles
+PolonRLM benchmark compare       Compare saved benchmark reports without API calls
 
 --workspace <path>               Project directory (defaults to the current directory)
 --provider <preset>              Select a provider
 --model <id>                      Set a custom model ID
 --mode PLAN|BUILD|REVIEW          Set the work mode
 --session <id>                    Resume a saved session
+--case <id>                       Run one benchmark case
+--task-pack <path>                Use another benchmark task pack
+--profile single|adaptive|fixed  Compare the one-agent or Cortex harness (default: single)
+benchmark compare <report...>    Compare two or more saved JSON reports
+benchmark matrix --models <id,id> [--profiles single,adaptive,fixed]
+                                 Run the selected model/profile combinations sequentially
+benchmark matrix --targets <provider=model,...> [--profiles ...]
+                                 Compare configured providers and their models
 --permission ask|workspace|readonly|all
 --approve-tools <a,b>             Explicitly approve tools for run mode
 --json                            Print NDJSON events without API keys
 --help, --version
 
-In the TUI: /connect, /key, /models, /model, /effort, /help. Tab changes mode; Alt+M opens the menu; Alt+D opens providers; Alt+L opens models.
+In the TUI: /connect, /key, /models, /model, /route, /fallback, /effort, /help. Tab changes mode; Alt+M opens the menu; Alt+D opens providers; Alt+L opens models.
 Alt+Enter or Ctrl+J adds a line. Ctrl+C cancels work, then exits if idle.
-Terminal commands run with your user permissions and are not sandboxed.`;
+Terminal commands follow the configured permission policy. Check /sandbox status for OS isolation readiness.`;
 
 async function setup(root: string): Promise<void> {
   const { select, input, password } = await import('@inquirer/prompts');
@@ -58,13 +69,35 @@ async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, workspace: { type: 'string', short: 'w' },
     provider: { type: 'string' }, model: { type: 'string' }, mode: { type: 'string' }, permission: { type: 'string' },
-    session: { type: 'string' }, 'approve-tools': { type: 'string' }, json: { type: 'boolean' }
+    session: { type: 'string' }, 'approve-tools': { type: 'string' }, 'task-pack': { type: 'string' }, profile: { type: 'string' }, profiles: { type: 'string' }, models: { type: 'string' }, targets: { type: 'string' }, case: { type: 'string' }, json: { type: 'boolean' }
   } });
   if (values.help) { console.log(help); return; }
   if (values.version) { console.log('0.5.0'); return; }
   const root = values.workspace ?? process.cwd();
    if (positionals[0] === 'setup' && positionals[1] === 'web') { const { setupNetworkRuntime } = await import('./tools/network.js'); console.log(`Local web tools ready: ${await setupNetworkRuntime()}`); return; }
    if (positionals[0] === 'setup') { await setup(root); return; }
+  if (positionals[0] === 'benchmark') {
+    if (positionals[1] === 'compare') {
+      if (positionals.length < 4) throw new Error('Use PolonRLM benchmark compare <report.json> <report.json> [...].');
+      const { loadBenchmarkReports, formatBenchmarkComparison } = await import('./benchmarks/reports.js');
+      console.log(formatBenchmarkComparison(await loadBenchmarkReports(positionals.slice(2))));
+      return;
+    }
+    if (positionals[1] === 'matrix') {
+      if (positionals.length > 2) throw new Error('Use PolonRLM benchmark matrix (--models <id,id> [--provider <id>] | --targets <provider=model,...>) [--profiles single,adaptive,fixed] [--case <id>] [--task-pack <path>].');
+      if ((values.models === undefined) === (values.targets === undefined)) throw new Error('Provide exactly one of --models or --targets. Matrix runs make real provider requests.');
+      if (values.targets !== undefined && values.provider !== undefined) throw new Error('Do not combine --provider with --targets; each target already names its provider.');
+      if (values.model !== undefined || values.profile !== undefined) throw new Error('Use --models and --profiles for benchmark matrix; --model and --profile are for a single run.');
+      const { runAgentBenchmarkMatrix } = await import('./core/agent-benchmark.js');
+      await runAgentBenchmarkMatrix({ provider: values.provider, models: values.models, targets: values.targets, profiles: values.profiles, caseId: values.case, taskPack: values['task-pack'] });
+      return;
+    }
+    if (positionals[1] !== 'run' || positionals.length > 2) throw new Error('Use PolonRLM benchmark run [--provider <id>] [--model <id>] [--case <id>] [--task-pack <path>] [--profile single|adaptive|fixed], or PolonRLM benchmark compare <report.json> <report.json> [...].');
+    if (values.profile !== undefined && !['single', 'adaptive', 'fixed'].includes(values.profile)) throw new Error('--profile must be single, adaptive, or fixed.');
+    const { runAgentBenchmark } = await import('./core/agent-benchmark.js');
+    await runAgentBenchmark({ provider: values.provider, model: values.model, caseId: values.case, taskPack: values['task-pack'], profile: values.profile as 'single' | 'adaptive' | 'fixed' | undefined });
+    return;
+  }
   const overrides: Partial<Settings> = {};
   if (values.provider) overrides.provider = values.provider;
   if (values.mode) overrides.mode = values.mode.toUpperCase() as Settings['mode'];
