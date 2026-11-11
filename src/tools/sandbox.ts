@@ -9,6 +9,7 @@ import {
   type WindowsInstallOptions,
   type SandboxRuntimeConfig,
 } from '@anthropic-ai/sandbox-runtime';
+import { execa } from 'execa';
 import type { Settings } from '../core/types.js';
 import { isSecretEnvironmentName } from '../core/secrets.js';
 import { dockerRunArgs, dockerStatus, pullDockerImage } from './docker-sandbox.js';
@@ -81,11 +82,30 @@ export class SandboxExecutor {
   private activePreparations = 0;
   private closeWaiters: (() => void)[] = [];
   private windowsDeniedGrantRoots: string[] = [];
+  private windowsLaunchProbe?: Promise<{ available: boolean; reason?: string }>;
 
   constructor(private readonly settings: Settings, private readonly workspaceRoot: string) {}
 
   get mode(): Settings['sandboxMode'] { return this.settings.sandboxMode; }
   needsFallbackApproval(tool: string): boolean { return this.settings.toolPermissions[tool] === 'auto' && this.settings.permissions !== 'all'; }
+
+  private windowsProbe(): Promise<{ available: boolean; reason?: string }> {
+    if (this.windowsLaunchProbe) return this.windowsLaunchProbe;
+    this.windowsLaunchProbe = (async () => {
+      try {
+        const srtWin = resolveSrtWin({ path: VENDORED_SRT_WIN_EXE });
+        const result = await execa(srtWin.exe, ['exec', '--quiet', '--write-restricted-token', '--write-root', this.workspaceRoot, '--', process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe', '/c', 'exit'], {
+          cwd: this.workspaceRoot, timeout: 8_000, reject: false, windowsHide: true,
+        });
+        if (result.exitCode === 0) return { available: true };
+        const detail = String(result.stderr || result.stdout || '').trim().split(/\r?\n/).at(-1) || `exit code ${result.exitCode ?? 'unknown'}`;
+        return { available: false, reason: `SRT is installed but cannot launch in this workspace: ${detail.slice(0, 800)}` };
+      } catch (error: any) {
+        return { available: false, reason: `SRT launch probe failed: ${String(error?.message ?? error)}` };
+      }
+    })();
+    return this.windowsLaunchProbe;
+  }
 
   async status(cwd: string, mode = this.settings.sandboxMode): Promise<SandboxStatus> {
     if (mode === 'off') return { mode, available: false, backend: 'host', reason: 'OS sandbox is disabled in settings.' };
@@ -111,6 +131,8 @@ export class SandboxExecutor {
           return { mode, available: false, backend: 'srt-win', reason: `Existing Windows sandbox ACL grants could not be enumerated: ${userStatus.persistentGrants.reason ?? 'unknown status'}. No command was run.` };
         }
         this.windowsDeniedGrantRoots = windowsGrantReadDenies(this.workspaceRoot, userStatus.persistentGrants?.roots ?? []);
+        const probe = await this.windowsProbe();
+        if (!probe.available) return { mode, available: false, backend: 'srt-win', reason: probe.reason ?? 'SRT launch probe failed.' };
         const notes = [
           'Windows keeps this project ACL grant between sessions. Existing grants outside this workspace are denied for this command. Other sandbox programs that do not apply those denials may read kept grants. Remove this project grant with srt-win acl forget <project path>.',
           ...dependencies.warnings,

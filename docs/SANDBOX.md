@@ -4,6 +4,8 @@ PolonRLM can run selected project commands under an operating-system sandbox. Th
 
 The current integration applies to `execute_command`, `execute_powershell`, `run_tests`, `install_dependencies`, `inspect_errors`, `execute_python`, `process_start`, and `lsp_request`. Built-in read-only Git and process inspection commands are not sandboxed but are read-only. Browser automation, desktop control, MCP servers and ordinary file writes are not covered by this OS sandbox; in `required` mode PolonRLM **refuses** those unisolated actions instead of pretending they are isolated. Use `auto` with the normal permission policy when they are needed.
 
+The Windows backend runs a short launch probe before reporting ready. If SRT is installed but cannot start in the current workspace — for example on a mapped/network drive where the sandbox logon has no drive mapping — `/sandbox status` reports unavailable with the exact reason, and `required` mode refuses commands instead of hanging or falling back silently.
+
 ## Modes
 
 `/settings sandboxMode auto` is the default. On macOS and Linux it uses the OS backend when its dependencies are available. On Windows, `auto` uses the SRT backend when the one-time setup is already provisioned; it never installs or elevates anything by itself. If setup is missing, PolonRLM shows the reason and applies the normal permission policy before host fallback. `/permissions all` intentionally allows commands without prompts. It never installs OS packages automatically.
