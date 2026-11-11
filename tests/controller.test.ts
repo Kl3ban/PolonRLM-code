@@ -67,6 +67,48 @@ test('/goal continues work, tracks cumulative usage and persists completion', as
   assert.equal(store.workflow(controller.snapshot().sessionId).goal, undefined);
 });
 
+test('/agents shows active and persisted subagent runs', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  await controller.submit('/agents');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Active: none\.\nRecent persisted runs: none\./);
+  const store = (controller as any).store as SessionStore;
+  store.saveAgentRun({ session: controller.snapshot().sessionId, id: 'saved-1', role: 'reviewer', task: 'Review the parser', status: 'done', output: 'Reviewed.', changedFiles: ['src/parser.ts'], startedAt: 1, updatedAt: 2 });
+  await controller.submit('/agents');
+  const output = controller.snapshot().messages.at(-1)?.text ?? '';
+  assert.match(output, /Recent persisted runs:/);
+  assert.match(output, /saved-1 · reviewer · done · 1 file/);
+});
+
+test('/sandbox on, off, and auto switch isolation and explain readiness', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  const sandbox = (controller as any).sandbox;
+  sandbox.status = async (_cwd: string, mode: string) => ({ mode, available: true, backend: 'test-sandbox', reason: 'test backend ready' });
+
+  await controller.submit('/sandbox on');
+  assert.equal(controller.config.settings.sandboxMode, 'required');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /required \(test-sandbox\)/);
+
+  await controller.submit('/sandbox status');
+  const status = controller.snapshot().messages.at(-1)?.text ?? '';
+  assert.match(status, /Ready: yes/);
+  assert.match(status, /Execution: test-sandbox isolation is ready/);
+  assert.match(status, /Network: sandboxed commands may reach no hosts/);
+
+  await controller.submit('/sandbox off');
+  assert.equal(controller.config.settings.sandboxMode, 'off');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /host under the normal permission policy/);
+
+  await controller.submit('/sandbox auto');
+  assert.equal(controller.config.settings.sandboxMode, 'auto');
+
+  sandbox.status = async (_cwd: string, mode: string) => ({ mode, available: false, backend: 'test-sandbox', reason: 'not provisioned' });
+  await controller.submit('/sandbox on');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Cannot enable required isolation: not provisioned/);
+  assert.equal(controller.config.settings.sandboxMode, 'auto', 'a failed switch must not change the saved mode');
+});
+
 test('/settings persists validated subagent tool profiles', async t => {
   const f = await fixture();
   const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });

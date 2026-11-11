@@ -11,6 +11,12 @@ import type { EvidenceTimelineEntry } from './evidence.js';
 import { describeToolCall } from './tool-display.js';
 import type { RecoveryChange, RecoveryChangeState, RecoveryCheckpoint, RecoveryGroup, RecoveryGroupState } from './recovery.js';
 
+export interface AgentRunRecord {
+  session: string; id: string; role: string; task: string; status: string;
+  output?: string; error?: string; changedFiles: string[];
+  startedAt: number; updatedAt: number;
+}
+
 function execWithBusyRetry(db: DatabaseSync, sql: string): void {
   const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const deadline = Date.now() + 10_000;
@@ -94,6 +100,21 @@ function acquireRecoveryLock(filename: string): () => void {
   }
 }
 
+function renameWithRetry(source: string, destination: string): void {
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try { renameSync(source, destination); return; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Windows can keep the SQLite handle briefly after close, especially when
+      // another test process is initializing the same directory.
+      if ((code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES') || Date.now() >= deadline) throw error;
+      Atomics.wait(waitCell, 0, 0, 25);
+    }
+  }
+}
+
 function quarantineCorruptDatabase(filename: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = `${filename}.corrupt-${stamp}-${randomUUID().slice(0, 8)}`;
@@ -102,7 +123,7 @@ function quarantineCorruptDatabase(filename: string): string {
     const source = `${filename}${suffix}`;
     const destination = `${backup}${suffix}`;
     try {
-      renameSync(source, destination);
+      renameWithRetry(source, destination);
       moved.push([source, destination]);
     } catch (error) {
       if (suffix && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
@@ -170,6 +191,8 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS memory(workspace TEXT, name TEXT, body TEXT, PRIMARY KEY(workspace,name));
       CREATE TABLE IF NOT EXISTS verification_reports(id TEXT PRIMARY KEY, session TEXT NOT NULL, created INTEGER NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS verification_session_created ON verification_reports(session,created DESC);
+      CREATE TABLE IF NOT EXISTS agent_runs(session TEXT NOT NULL, id TEXT NOT NULL, updated INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(session,id));
+      CREATE INDEX IF NOT EXISTS agent_runs_session_updated ON agent_runs(session,updated DESC);
       CREATE TABLE IF NOT EXISTS change_groups(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, name TEXT NOT NULL, created INTEGER NOT NULL, process_id INTEGER NOT NULL, state TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS change_groups_workspace_created ON change_groups(workspace,created DESC);
       CREATE TABLE IF NOT EXISTS file_changes(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, group_id TEXT, path TEXT NOT NULL, tool TEXT NOT NULL, created INTEGER NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL);
@@ -286,6 +309,16 @@ export class SessionStore {
     if (matches.length > 1) throw new Error('That report prefix is ambiguous. Use a longer ID.');
     return matches[0];
   }
+  saveAgentRun(run: AgentRunRecord): void {
+    if (!this.db.prepare('SELECT id FROM sessions WHERE id=?').get(run.session)) throw new Error('Cannot save a subagent run for an unknown session.');
+    this.db.prepare('INSERT INTO agent_runs(session,id,updated,data) VALUES(?,?,?,?) ON CONFLICT(session,id) DO UPDATE SET updated=excluded.updated,data=excluded.data')
+      .run(run.session, run.id, run.updatedAt, redact(JSON.stringify(run)));
+  }
+  agentRuns(session: string, limit = 20): AgentRunRecord[] {
+    if (!Number.isFinite(limit) || limit < 1) throw new Error('Subagent history limit must be positive.');
+    return this.db.prepare('SELECT data FROM agent_runs WHERE session=? ORDER BY updated DESC LIMIT ?').all(session, Math.floor(limit))
+      .map(row => JSON.parse((row as { data: string }).data) as AgentRunRecord);
+  }
   projectIndex(workspace: string, target: string): unknown | undefined {
     const row = this.db.prepare('SELECT data FROM project_indexes WHERE workspace=? AND target=?').get(workspace, target) as { data: string } | undefined;
     if (!row) return undefined;
@@ -372,7 +405,7 @@ export class SessionStore {
   forget(id: string, workspace: string): void {
     if (!this.exists(id, workspace)) throw new Error('Session does not belong to this project.');
     this.db.exec('BEGIN IMMEDIATE');
-    try { for (const table of ['messages', 'audit', 'usage', 'context', 'workflows', 'verification_reports']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(id); this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); this.db.exec('COMMIT'); }
+    try { for (const table of ['messages', 'audit', 'usage', 'context', 'workflows', 'verification_reports', 'agent_runs']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(id); this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); this.db.exec('COMMIT'); }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   memories(workspace: string): { name: string; body: string }[] { return this.db.prepare('SELECT name,body FROM memory WHERE workspace=?').all(workspace) as any; }

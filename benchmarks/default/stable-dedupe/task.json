@@ -1,0 +1,6 @@
+{
+  "id": "stable-dedupe",
+  "title": "Deduplicate objects by id without changing order",
+  "timeoutMs": 600000,
+  "prompt": "Implement dedupe in src/dedupe.js. It receives an array of objects with an id and returns a new array that keeps only the first object for each id, in first-seen order. Do not mutate the input. Throw TypeError if the argument is not an array. Keep the existing named export."
+}

@@ -1,0 +1,6 @@
+{
+  "id": "chunk-array",
+  "title": "Split an array into fixed-size chunks",
+  "timeoutMs": 600000,
+  "prompt": "Implement chunk in src/chunk.js. It receives an array and a positive integer size, and returns a new array of consecutive chunks; the last chunk may be shorter. An empty array returns an empty array. Do not mutate the input. Throw TypeError if the input is not an array or size is not a positive integer. Keep the existing named export."
+}

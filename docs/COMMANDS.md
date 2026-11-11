@@ -57,7 +57,10 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/settings modelRoutes {"reviewer":{"provider":"google","model":"gemini-3.5-flash"}}` | Sets role-specific provider and optional model IDs. |
 | `/settings modelRoleBudgets {"coder":{"maxTokens":50000,"maxCost":1,"maxCalls":30}}` | Sets optional per-role caps shared across agents of that role. Omitted values and 0 are unlimited. They remain inside the task-wide budget; cost caps need provider pricing to be known. |
 | `/timeline [count]` | Shows recent model requests, tool outcomes, and saved verification evidence for this chat. It does not show full prompts or tool arguments. |
-| `/sandbox status` | Checks the OS command sandbox and shows its current mode. |
+| `/sandbox status` | Checks the OS command sandbox and shows its current mode, readiness, execution path, and network allowlist. |
+| `/sandbox on` | Enables required isolation after verifying that the backend is ready. Refuses and explains what is missing when it is not. |
+| `/sandbox off` | Disables OS isolation; commands run on the host under the normal permission policy. |
+| `/sandbox auto` | Uses the OS backend when ready and falls back to host execution under the normal permission policy when it is not. |
 | `/sandbox setup` | Previews the Windows sandbox system changes. Nothing runs yet. |
 | `/sandbox setup confirm` | Explicitly starts the Windows installer, skips user-profile read access, verifies readiness, and enables required isolation. Windows will ask for administrator approval. |
 | `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token or cost cap. |
@@ -65,7 +68,7 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/settings cortexStrategy adaptive\|fixed` | Adaptive lowers delegation for simple tasks without adding a hard call limit. Fixed always uses the selected `/cortex` level. |
 | `/settings repeatFailureThreshold 3` | Warns the agent after the same tool or test failure repeats three times. A successful project change or passing test resets the counter. Set `0` to disable. |
 | `/settings agentToolProfiles {"reviewer":["read_file","search_files"]}` | Restricts that subagent role to the listed tools. Omitted roles keep the normal tool set; an empty list disables tools for that role. |
-| `/verify` | Runs configured or detected checks, gathers diagnostics for changed TypeScript/JavaScript files, and records file hashes and exit codes. |
+| `/verify` | Runs configured or detected checks, gathers diagnostics for changed TypeScript/JavaScript files and their direct or transitive importers, and records file hashes and exit codes. |
 | `/verify <command>` | Runs one explicit project command through the normal shell approval rules. |
 | `/verify repair [attempts]` | After a failed check, asks the selected model to repair the reported failure, then independently reruns verification. Defaults to one repair attempt; accepts 1 to 3. Repair calls share the same token, cost, model-call, and role budgets; tool calls still follow normal permissions and approvals. |
 | `/verify history [count]` | Shows saved verification reports for this chat. |
@@ -75,7 +78,7 @@ The runtime also detects repeated two to eight step tool sequences with matching
 
 Shell, Python, background-process and LSP commands use OS isolation when available. In `auto` mode an unavailable backend is reported and host execution follows the configured permission policy; `/permissions all` intentionally bypasses prompts. `required` mode blocks the command instead of falling back. See [SANDBOX.md](SANDBOX.md) and `/sandbox status`.
 
-With no configured verification commands, `/verify` detects standard scripts in `package.json`, Cargo, Go, Python, .NET, Gradle, or Maven manifests. Detection does not install dependencies. A passing command is evidence for that command only; it does not prove correctness against hidden tests or guarantee that every project change is covered.
+With no configured verification commands, `/verify` detects standard scripts in `package.json`, Cargo, Go, Python, .NET, Gradle, or Maven manifests. Detection does not install dependencies. A passing command is evidence for that command only; it does not prove correctness against hidden tests or guarantee that every project change is covered. When changed TypeScript/JavaScript files are present, the report also includes bounded reverse-import dependents from `project_map` so diagnostics and hashes cover code that imports the change.
 
 ## Files, images and research
 

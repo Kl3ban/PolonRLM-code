@@ -2,10 +2,27 @@ import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
 import { z } from 'zod';
 import { StringDecoder } from 'node:string_decoder';
+import type { IPty } from 'node-pty';
 import { safeText, subprocessEnvironment } from '../core/secrets.js';
 import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
 import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
+
+// node-pty on Windows keeps a worker thread and ConPTY sockets referenced after
+// the child exits. These are not public API, so keep the cleanup best-effort and
+// pinned to the exact optional dependency version.
+function releasePty(pty: IPty): void {
+  const internal = pty as unknown as {
+    _agent?: {
+      _inSocket?: { destroy?: () => void };
+      _outSocket?: { destroy?: () => void };
+      _conoutSocketWorker?: { _destroySocket?: () => Promise<void> };
+    };
+  };
+  try { internal._agent?._inSocket?.destroy?.(); } catch { /* Best-effort cleanup. */ }
+  try { internal._agent?._outSocket?.destroy?.(); } catch { /* Best-effort cleanup. */ }
+  try { void internal._agent?._conoutSocketWorker?._destroySocket?.(); } catch { /* Best-effort cleanup. */ }
+}
 
 export class ProcessOutputBuffer {
   private readonly decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
@@ -33,12 +50,13 @@ export class ProcessOutputBuffer {
 }
 
 export function registerProcessTools(registry: ToolRegistry, workspace: Workspace, maxProcesses: () => number = () => 0, globalTimeoutMs: () => number = () => 0, outputLimit: () => number = () => 0, sandbox?: SandboxExecutor): void {
-  type Job = { id: string; command: string; execution: string; interactive: boolean; stdin?: NodeJS.WritableStream; buffer: ProcessOutputBuffer; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
+  type Job = { id: string; command: string; execution: string; interactive: boolean; pty?: IPty; stdin?: NodeJS.WritableStream; buffer: ProcessOutputBuffer; output: string; truncated: boolean; running: boolean; exitCode?: number; error?: string; abort: AbortController; done: Promise<void>; waiters: Set<() => void>; cleanup: () => void };
   const jobs = new Map<string, Job>();
   const find = (id: string) => { const job = jobs.get(id); if (!job) throw new Error('Unknown process for this run.'); return job; };
-  const snapshot = (job: Job) => { job.output = job.buffer.output; job.truncated = job.buffer.truncated; return { id: job.id, command: job.command, execution: job.execution, interactive: job.interactive, running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated }; };
+  const snapshot = (job: Job) => { job.output = job.buffer.output; job.truncated = job.buffer.truncated; return { id: job.id, command: job.command, execution: job.execution, interactive: job.interactive, pty: Boolean(job.pty), running: job.running, exitCode: job.exitCode, error: job.error, output: job.output, truncated: job.truncated }; };
   registry.onClose(async () => { jobs.forEach(job => job.abort.abort()); await Promise.all([...jobs.values()].map(job => job.done)); });
-  registry.add('process_start', 'Start a shell command in the background under the configured permission policy. Uses OS isolation when available; host fallback follows the permission policy and is reported. Timeout and output are unlimited by default; configured global limits apply. Only owned jobs can be stopped.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false) }), false, async (args, context) => {
+  registry.add('process_start', 'Start a shell command in the background under the configured permission policy. Uses OS isolation when available; host fallback follows the permission policy and is reported. Timeout and output are unlimited by default; configured global limits apply. Only owned jobs can be stopped. Set pty=true with interactive=true for a real terminal (TTY) when node-pty is installed.', z.object({ command: z.string().min(1).max(10000), timeoutMs: z.number().int().nonnegative().max(2_147_483_647).default(0), interactive: z.boolean().default(false), pty: z.boolean().default(false) }), false, async (args, context) => {
+    if (args.pty && !args.interactive) throw new Error('pty=true requires interactive=true.');
     let status: Awaited<ReturnType<SandboxExecutor['status']>> | undefined;
     let prepared: PreparedCommand | undefined;
     if (sandbox) {
@@ -69,11 +87,50 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
       }
     } catch (error) { context.signal.removeEventListener('abort', cancel); throw error; }
     const launch: PreparedCommand = prepared ?? { command, args: commandArgs, env: subprocessEnvironment(context.isolated), sandboxed: false, cleanup: async () => {}, annotate: (stderr: string) => stderr };
+    const buffer = new ProcessOutputBuffer(outputLimit);
+    const execution = launch.sandboxed ? `sandboxed (${status?.backend ?? 'OS'})` : `host${launch.reason ? ` (sandbox fallback: ${launch.reason})` : sandbox?.mode === 'off' ? ' (sandbox off)' : ''}`;
+    if (args.pty) {
+      let ptyModule: typeof import('node-pty');
+      try { ptyModule = await import('node-pty'); }
+      catch {
+        await launch.cleanup(); context.signal.removeEventListener('abort', cancel);
+        throw new Error('PTY mode requires the optional node-pty dependency. Reinstall PolonRLM with optional dependencies enabled, or use interactive=true without pty.');
+      }
+      const environment = Object.fromEntries(Object.entries(launch.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+      let ptyProcess: IPty;
+      try {
+        ptyProcess = ptyModule.spawn(launch.command, launch.args, { name: 'xterm-256color', cols: 120, rows: 30, cwd: workspace.root, env: environment });
+      } catch (error) {
+        await launch.cleanup(); context.signal.removeEventListener('abort', cancel); throw error;
+      }
+      let resolveDone!: () => void;
+      const done = new Promise<void>(resolve => { resolveDone = resolve; });
+      const job: Job = { id, command: safeText(args.command), execution, interactive: true, pty: ptyProcess, buffer, output: '', truncated: false, running: true, abort, done, waiters: new Set(), cleanup: () => {} };
+      const publishOutput = () => { job.output = buffer.output; job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); };
+      const onAbort = () => { job.error = 'Cancelled'; try { ptyProcess.kill(); } catch { /* Process may have exited between the abort and the kill. */ } releasePty(ptyProcess); };
+      job.cleanup = () => { context.signal.removeEventListener('abort', cancel); abort.signal.removeEventListener('abort', onAbort); };
+      ptyProcess.onData(chunk => { buffer.write('stdout', chunk); publishOutput(); });
+      ptyProcess.onExit(({ exitCode }) => {
+        job.exitCode = exitCode;
+        // Let the last data event flush before tearing down the ConPTY handles.
+        const release = setTimeout(() => releasePty(ptyProcess), 100);
+        release.unref?.();
+        resolveDone();
+      });
+      abort.signal.addEventListener('abort', onAbort, { once: true });
+      job.done = done.finally(async () => {
+        job.running = false; job.output = safeText(buffer.output); job.truncated = buffer.truncated; job.waiters.forEach(wake => wake());
+        try { await launch.cleanup(); } finally { job.cleanup(); }
+      });
+      if (timeoutMs > 0) {
+        const timer = setTimeout(() => { job.error = 'Timeout'; try { ptyProcess.kill(); } catch { /* The process may already have exited. */ } }, timeoutMs);
+        job.cleanup = ((previous: () => void) => () => { clearTimeout(timer); previous(); })(job.cleanup);
+      }
+      jobs.set(id, job); return { id, running: true, interactive: true, pty: true };
+    }
     let child: ReturnType<typeof execa>;
     try { child = execa(launch.command, launch.args, { cwd: workspace.root, env: launch.sandboxed ? launch.env : subprocessEnvironment(context.isolated), windowsHide: true, cancelSignal: abort.signal, killDescendants: true, timeout: timeoutMs, maxBuffer: 1, buffer: false, reject: false, stdin: args.interactive ? 'pipe' : 'ignore' }); }
     catch (error) { await launch.cleanup(); context.signal.removeEventListener('abort', cancel); throw error; }
-    const buffer = new ProcessOutputBuffer(outputLimit);
-    const execution = launch.sandboxed ? `sandboxed (${status?.backend ?? 'OS'})` : `host${launch.reason ? ` (sandbox fallback: ${launch.reason})` : sandbox?.mode === 'off' ? ' (sandbox off)' : ''}`;
     const job: Job = { id, command: safeText(args.command), execution, interactive: args.interactive, ...(args.interactive && child.stdin ? { stdin: child.stdin } : {}), buffer, output: '', truncated: false, running: true, abort, done: Promise.resolve(), waiters: new Set(), cleanup: () => context.signal.removeEventListener('abort', cancel) };
     const publishOutput = () => { job.output = buffer.output; job.truncated = buffer.truncated; job.waiters.forEach(wake => wake()); };
     child.stdout?.on('data', (chunk: Buffer) => { buffer.write('stdout', chunk); publishOutput(); });
@@ -107,10 +164,16 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
     context.signal.throwIfAborted();
     return { id: job.id, matched: job.output.includes(args.text), running: job.running, exitCode: job.exitCode, output: safeText(job.output) };
   });
-  registry.add('process_input', 'Send text or a newline to stdin of an interactive process_start job. Pipe-based interaction; this is not a terminal emulator/PTY.', z.object({ id: z.string(), input: z.string().max(10000), closeStdin: z.boolean().default(false) }), false, async (args, context) => {
+  registry.add('process_input', 'Send text or a newline to stdin of an interactive process_start job. Uses a real PTY when the job was started with pty=true; otherwise pipe-based input.', z.object({ id: z.string(), input: z.string().max(10000), closeStdin: z.boolean().default(false) }), false, async (args, context) => {
     const job = find(args.id); await workspace.permissions.check('process_input', 'external', `Input to process ${job.id}; exact content is hidden.`, '[input content hidden]', context.mode, context.signal);
     if (!job.running) throw new Error('Process has already exited.');
-    if (!job.interactive || !job.stdin) throw new Error('Process was not started with interactive=true.');
+    if (!job.interactive) throw new Error('Process was not started with interactive=true.');
+    if (job.pty) {
+      job.pty.write(args.input);
+      if (args.closeStdin) job.pty.write('\x04');
+      return { id: job.id, sent: args.input.length, closed: args.closeStdin, pty: true };
+    }
+    if (!job.stdin) throw new Error('Process was not started with interactive=true.');
     await new Promise<void>((resolve, reject) => job.stdin!.write(args.input, error => error ? reject(error) : resolve()));
     if (args.closeStdin) job.stdin.end();
     return { id: job.id, sent: args.input.length, closed: args.closeStdin };

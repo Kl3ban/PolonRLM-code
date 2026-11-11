@@ -93,17 +93,15 @@ export class SandboxExecutor {
       return { mode, available: false, backend: 'srt-win', reason: 'The Windows sandbox session grants access only to the main project; this temporary subagent workspace is outside it.' };
     }
     try {
-      if (process.platform === 'win32' && mode === 'auto') {
-        const bundled = resolveSrtWin({ path: VENDORED_SRT_WIN_EXE });
-        const dependencies = await checkWindowsDependenciesAsync({ srtWin: bundled, allowLoopback: false });
-        if (dependencies.errors.length) return { mode, available: false, backend: 'srt-win', reason: dependencies.errors.join('; ') };
-        return { mode, available: false, backend: 'srt-win', reason: 'Windows ACL grants are a system-level setup step. Set sandboxMode to required to explicitly enable them.' };
-      }
       if (process.platform === 'win32') {
         const srtWin = resolveSrtWin({ path: VENDORED_SRT_WIN_EXE });
         const dependencies = await checkWindowsDependenciesAsync({ srtWin, allowLoopback: false });
         if (dependencies.errors.length) return { mode, available: false, backend: 'srt-win', reason: dependencies.errors.join('; ') };
         const userStatus = await getWindowsSandboxUserStatusAsync({ srtWin });
+        if (!userStatus.provisioned || !userStatus.credPresent) {
+          const missing = [!userStatus.provisioned ? 'sandbox account' : '', !userStatus.credPresent ? 'credential' : ''].filter(Boolean).join(' and ');
+          return { mode, available: false, backend: 'srt-win', reason: `Windows sandbox is not provisioned (${missing}). Run /sandbox setup to review the one-time installer, then /sandbox setup confirm.` };
+        }
         if (userStatus.persistentGrants?.state === 'unknown') {
           return { mode, available: false, backend: 'srt-win', reason: `Existing Windows sandbox ACL grants could not be enumerated: ${userStatus.persistentGrants.reason ?? 'unknown status'}. No command was run.` };
         }

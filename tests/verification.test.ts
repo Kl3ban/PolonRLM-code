@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Workspace } from '../src/tools/workspace.js';
 import { Permissions } from '../src/core/permissions.js';
 import { defaultSettings } from '../src/core/config.js';
-import { discoverVerificationPlan, hashWorkspaceFiles, parseGitStatusPaths } from '../src/core/verification.js';
+import { affectedDependents, discoverVerificationPlan, hashWorkspaceFiles, parseGitStatusPaths } from '../src/core/verification.js';
 
 async function withWorkspace(run: (workspace: Workspace) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), 'polonrlm-verify-'));
@@ -67,4 +67,19 @@ test('Git status parser decodes quoted, renamed, unicode, and deleted paths', ()
   ].join('\n');
   assert.deepEqual(parseGitStatusPaths(status), ['space name.ts', 'zażółć.ts', 'new name.ts', 'tab\tname.ts', 'deleted.ts']);
   assert.deepEqual(parseGitStatusPaths('R  "a -> b.ts" -> "c -> d.ts"\n'), ['c -> d.ts']);
+});
+
+test('change impact analysis walks reverse imports with depth and size bounds', () => {
+  const edges = [
+    { from: 'src/api.ts', to: 'src/client.ts' },
+    { from: 'src/page.ts', to: 'src/api.ts' },
+    { from: 'tests/api.test.ts', to: 'src/api.ts' },
+    { from: 'src/unrelated.ts', to: 'lib/x.ts' },
+    { from: 'src\\windows.ts', to: 'src\\client.ts' },
+  ];
+  assert.deepEqual(affectedDependents(edges, ['src/client.ts']).sort(), ['src/api.ts', 'src/page.ts', 'src/windows.ts', 'tests/api.test.ts']);
+  assert.deepEqual(affectedDependents(edges, ['src/client.ts'], 1).sort(), ['src/api.ts', 'src/windows.ts']);
+  assert.equal(affectedDependents(edges, ['src/client.ts'], 3, 2).length, 2);
+  assert.deepEqual(affectedDependents(edges, ['src/client.ts'], 3, 2).filter(path => path === 'src/client.ts'), []);
+  assert.deepEqual(affectedDependents([], ['src/client.ts']), []);
 });

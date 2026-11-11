@@ -216,6 +216,17 @@ export class AgentRuntime {
     controller.abort(new Error('Subagent stopped by the user.'));
   }
 
+  private recordAgentRun(session: string, id: string, role: string, task: string, status: string, startedAt: number, details: { output?: string; error?: string; changedFiles?: string[] } = {}): void {
+    try {
+      this.store.saveAgentRun({
+        session, id, role, task: clip(task, 500), status,
+        ...(details.output ? { output: clip(details.output, 4000) } : {}),
+        ...(details.error ? { error: clip(details.error, 2000) } : {}),
+        changedFiles: details.changedFiles ?? [], startedAt, updatedAt: Date.now(),
+      });
+    } catch { /* Persisting subagent history must never fail the task. */ }
+  }
+
   private async delegateTasks(session: string, value: unknown, workspace: Workspace, mode: Mode, depth: number, signal: AbortSignal, budget: RunBudget): Promise<string> {
     const { tasks } = z.object({ tasks: z.array(delegationTaskSchema).min(1) }).parse(value);
     const graphMode = tasks.some(task => task.id !== undefined || Boolean(task.dependsOn?.length));
@@ -225,10 +236,14 @@ export class AgentRuntime {
     if (!graphMode && tasks.length > slots) throw new Error('Subagent limit reached. Reduce the number of independent tasks or configure a higher maxAgents value.');
 
     const graphId = graphMode ? randomUUID().slice(0, 8) : undefined;
+    const graphStartedAt = Date.now();
     const graphState: AgentInfo | undefined = graphId ? {
       id: graphId, role: 'task-graph', status: 'running', task: `${tasks.length} dependency-managed tasks`, progress: 0, totalSteps: waves.length, changedFiles: [],
     } : undefined;
-    if (graphState) { this.agents.push(graphState); this.emit({ type: 'agent', id: graphState.id, name: graphState.role, state: 'running' }); }
+    if (graphState) {
+      this.agents.push(graphState); this.emit({ type: 'agent', id: graphState.id, name: graphState.role, state: 'running' });
+      this.recordAgentRun(session, graphState.id, graphState.role, graphState.task ?? 'Dependency graph', 'running', graphStartedAt);
+    }
 
     const completed = new Map<string, { role: string; status: string; output?: string; changedFiles?: string[] }>();
     const rows: Array<Record<string, unknown>> = [];
@@ -260,14 +275,15 @@ export class AgentRuntime {
           const members = batch.map(node => {
             const id = randomUUID().slice(0, 8);
             const state: AgentInfo = { id, role: node.task.role, status: 'running', task: clip(node.task.task.replace(/\s+/g, ' ').trim(), 180), progress: 0, totalSteps: 0, changedFiles: [] };
-            return { node, id, state, childAbort: new AbortController() };
+            return { node, id, state, startedAt: Date.now(), childAbort: new AbortController() };
           });
           const team = new AgentTeam(members.map(member => member.state));
-          for (const { id, state, childAbort } of members) {
+          for (const { id, state, startedAt, childAbort } of members) {
             this.agentControllers.set(id, childAbort); this.agentTeams.set(id, team);
             this.agents.push(state); this.emit({ type: 'agent', id, name: state.role, state: 'running' });
+            this.recordAgentRun(session, id, state.role, state.task ?? state.role, 'running', startedAt);
           }
-          const batchResults = await Promise.all(members.map(async ({ node, id, state, childAbort }) => {
+          const batchResults = await Promise.all(members.map(async ({ node, id, state, startedAt, childAbort }) => {
             let overlay: AgentWorktree | undefined;
             let isolatedTools: ToolRegistry | undefined;
             let changes: OverlayChange[] = [];
@@ -288,9 +304,12 @@ export class AgentRuntime {
               changes = await overlay.changes();
               state.changedFiles = changes.map(change => change.path);
               state.status = 'done';
+              const changedPaths = changes.map(change => change.path);
+              this.recordAgentRun(session, id, node.task.role, node.task.task, 'done', startedAt, { output, changedFiles: changedPaths });
               return { taskId: node.id, id, role: node.task.role, state, team, status: 'done', output: clip(output, 3500), changes, changedFiles: changes.map(change => ({ path: change.path, binary: change.binary })) };
             } catch (error: any) {
               state.status = signal.aborted || childAbort.signal.aborted ? 'cancelled' : 'error';
+              this.recordAgentRun(session, id, node.task.role, node.task.task, state.status, startedAt, { error: redact(error.message ?? String(error)) });
               return { taskId: node.id, id, role: node.task.role, state, team, status: state.status, error: redact(error.message ?? String(error)), changes: [], changedFiles: [] };
             } finally {
               this.agentControllers.delete(id); this.agentTeams.delete(id);
@@ -334,9 +353,14 @@ export class AgentRuntime {
       const status = rows.every(row => row.status === 'done') ? 'done' : 'partial';
       graphState!.status = status === 'done' ? 'done' : 'error';
       this.emit({ type: 'agent', id: graphState!.id, name: graphState!.role, state: graphState!.status });
+      this.recordAgentRun(session, graphState!.id, graphState!.role, graphState!.task ?? 'Dependency graph', graphState!.status, graphStartedAt, { output: `Dependency graph ${status}: ${rows.filter(row => row.status === 'done').length}/${rows.length} tasks done.`, changedFiles: integratedChanges.map(change => change.path) });
       return JSON.stringify({ graphId, status, tasks: rows, changeCount: integratedChanges.length, changedFiles: integratedChanges.map(change => change.path) });
     } catch (error) {
-      if (graphState) { graphState.status = signal.aborted ? 'cancelled' : 'error'; this.emit({ type: 'agent', id: graphState.id, name: graphState.role, state: graphState.status }); }
+      if (graphState) {
+        graphState.status = signal.aborted ? 'cancelled' : 'error';
+        this.emit({ type: 'agent', id: graphState.id, name: graphState.role, state: graphState.status });
+        this.recordAgentRun(session, graphState.id, graphState.role, graphState.task ?? 'Dependency graph', graphState.status, graphStartedAt, { error: redact((error as Error)?.message ?? String(error)) });
+      }
       throw error;
     } finally { if (graphBranch) await graphBranch.remove().catch(() => {}); }
   }

@@ -1,0 +1,6 @@
+{
+  "id": "merge-intervals",
+  "title": "Merge overlapping closed intervals",
+  "timeoutMs": 600000,
+  "prompt": "Implement mergeIntervals in src/intervals.js. It receives an array of [start, end] closed intervals and returns a new array sorted by start, with overlapping or touching intervals merged. Do not mutate the input. An empty array returns an empty array. Throw TypeError for a non-array or a malformed interval where start/end are not finite numbers or start > end. Keep the existing named export."
+}

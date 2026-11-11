@@ -99,6 +99,42 @@ function splitGitPathTokens(value: string): string[] {
   return tokens;
 }
 
+function normalizedGitPath(value: string): string {
+  return value.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/+/g, '/');
+}
+
+/** Walk the reverse import graph from changed files and return bounded dependents. */
+export function affectedDependents(edges: Array<{ from: string; to: string }>, changed: string[], maxDepth = 3, limit = 40): string[] {
+  if (!changed.length || limit <= 0) return [];
+  const reverse = new Map<string, string[]>();
+  for (const edge of edges) {
+    const from = normalizedGitPath(edge.from), to = normalizedGitPath(edge.to);
+    if (!from || !to) continue;
+    const list = reverse.get(to) ?? [];
+    list.push(from);
+    reverse.set(to, list);
+  }
+  const changedSet = new Set(changed.map(normalizedGitPath));
+  const seen = new Set(changedSet);
+  const found: string[] = [];
+  let frontier = [...changedSet];
+  for (let depth = 0; depth < maxDepth && frontier.length && found.length < limit; depth++) {
+    const next: string[] = [];
+    for (const path of frontier) {
+      for (const dependent of reverse.get(path) ?? []) {
+        if (seen.has(dependent)) continue;
+        seen.add(dependent);
+        if (found.length >= limit) break;
+        found.push(dependent);
+        next.push(dependent);
+      }
+      if (found.length >= limit) break;
+    }
+    frontier = next;
+  }
+  return found;
+}
+
 export function parseGitStatusPaths(output: string): string[] {
   const paths = new Set<string>();
   for (const line of output.split(/\r?\n/)) {

@@ -194,6 +194,24 @@ test('SQLite persists separate workspace sessions, redacts secrets and keeps arc
   store.forget(a, 'workspace-a'); assert.deepEqual(store.messages(a), []); assert.deepEqual(store.context(a), []); store.close();
 });
 
+test('subagent run history persists and redacts secrets across a database reopen', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'polon-agent-history-'));
+  try {
+    registerSecret('agent-history-secret-never-save-123');
+    let store = new SessionStore(home);
+    const session = store.create('workspace');
+    store.saveAgentRun({ session, id: 'run-1', role: 'coder', task: 'Fix agent-history-secret-never-save-123', status: 'running', changedFiles: [], startedAt: 1, updatedAt: 2 });
+    store.saveAgentRun({ session, id: 'run-1', role: 'coder', task: 'Fix the parser', status: 'done', output: 'done agent-history-secret-never-save-123', changedFiles: ['src/parser.ts'], startedAt: 1, updatedAt: 3 });
+    store.close(); store = new SessionStore(home);
+    const runs = store.agentRuns(session);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.status, 'done');
+    assert.deepEqual(runs[0]!.changedFiles, ['src/parser.ts']);
+    assert.doesNotMatch(JSON.stringify(runs), /agent-history-secret-never-save-123/);
+    store.close();
+  } finally { await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+
 test('concurrent PolonRLM processes preserve SQLite sessions and messages', { timeout: 30000 }, async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-store-concurrency-'));
   t.after(async () => {

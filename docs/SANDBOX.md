@@ -6,7 +6,9 @@ The current integration applies to `execute_command`, `execute_powershell`, `run
 
 ## Modes
 
-`/settings sandboxMode auto` is the default. On macOS and Linux it uses the OS backend when its dependencies are available. If setup is missing, PolonRLM shows the reason and applies the normal permission policy before host fallback. `/permissions all` intentionally allows commands without prompts. It never installs OS packages automatically.
+`/settings sandboxMode auto` is the default. On macOS and Linux it uses the OS backend when its dependencies are available. On Windows, `auto` uses the SRT backend when the one-time setup is already provisioned; it never installs or elevates anything by itself. If setup is missing, PolonRLM shows the reason and applies the normal permission policy before host fallback. `/permissions all` intentionally allows commands without prompts. It never installs OS packages automatically.
+
+`/sandbox on` is the explicit switch for required isolation. It verifies the backend first, refuses with the concrete reason when setup is missing, and otherwise saves `sandboxMode required`. `/sandbox status` shows whether commands will run isolated, fall back to the host, or be blocked. `/sandbox off` saves `off`; `/sandbox auto` saves `auto`. These commands only change the setting and never run the installer.
 
 `/settings sandboxMode required` refuses to start a command unless the OS backend is ready. On Windows it enables the bundled SRT backend. `/sandbox setup` previews the machine changes; `/sandbox setup confirm` explicitly starts the installer and triggers Windows UAC. It creates a dedicated local sandbox account and a machine-wide WFP network filter. The installer skips user-profile read grants. PolonRLM refuses to elevate the bundled installer if it is inside the writable project. After setup succeeds, PolonRLM verifies readiness and enables `required` mode. No setup runs on app startup.
 

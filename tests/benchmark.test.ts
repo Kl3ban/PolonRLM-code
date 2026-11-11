@@ -274,11 +274,66 @@ export class LruTtlCache {
 }
 `,
     },
+    'stable-dedupe': {
+      'src/dedupe.js': `export function dedupe(items) {
+  if (!Array.isArray(items)) throw new TypeError('items must be an array');
+  const seen = new Set(); const output = [];
+  for (const item of items) { if (!item || typeof item !== 'object') throw new TypeError('item must be an object'); if (seen.has(item.id)) continue; seen.add(item.id); output.push(item); }
+  return output;
+}
+`,
+    },
+    'parse-duration': {
+      'src/duration.js': `export function parseDuration(value) {
+  if (typeof value !== 'string' || !value) throw new TypeError('invalid duration');
+  const match = /^(?:(\\d+)d)?(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?(?:(\\d+)ms)?$/.exec(value);
+  if (!match || !match.slice(1).some(Boolean)) throw new TypeError('invalid duration');
+  const [days, hours, minutes, seconds, millis] = match.slice(1).map(part => part === undefined ? 0 : Number(part));
+  return days * 86_400_000 + hours * 3_600_000 + minutes * 60_000 + seconds * 1_000 + millis;
+}
+`,
+    },
+    'chunk-array': {
+      'src/chunk.js': `export function chunk(items, size) {
+  if (!Array.isArray(items)) throw new TypeError('items must be an array');
+  if (!Number.isInteger(size) || size < 1) throw new TypeError('size must be a positive integer');
+  const output = [];
+  for (let index = 0; index < items.length; index += size) output.push(items.slice(index, index + size));
+  return output;
+}
+`,
+    },
+    'merge-intervals': {
+      'src/intervals.js': `export function mergeIntervals(intervals) {
+  if (!Array.isArray(intervals)) throw new TypeError('intervals must be an array');
+  const rows = intervals.map(row => {
+    if (!Array.isArray(row) || row.length !== 2) throw new TypeError('interval must have two values');
+    const [start, end] = row;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) throw new TypeError('invalid interval');
+    return [start, end];
+  }).sort((left, right) => left[0] - right[0]);
+  const output = [];
+  for (const [start, end] of rows) {
+    const last = output.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else output.push([start, end]);
+  }
+  return output;
+}
+`,
+    },
+    'slugify': {
+      'src/slug.js': `export function slugify(value) {
+  if (typeof value !== 'string') throw new TypeError('value must be a string');
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+`,
+    },
   };
   const tasks = await loadBenchmarkTasks(defaultPack);
   const root = await mkdtemp(path.join(os.tmpdir(), 'polonrlm-benchmark-solutions-'));
   try {
-    assert.equal(Object.keys(solutions).length, 4);
+    assert.equal(Object.keys(solutions).length, 9);
     for (const task of tasks.filter(value => Object.hasOwn(solutions, value.id))) {
       const workspace = path.join(root, task.id);
       await copyBenchmarkWorkspace(task.workspace, workspace);

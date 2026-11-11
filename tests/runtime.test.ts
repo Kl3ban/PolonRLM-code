@@ -1312,6 +1312,12 @@ test('task graph waits for prerequisites, stages their files, and exposes one re
   assert.equal(graph?.status, 'done');
   assert.equal(childCalls.get('researcher'), 1);
   assert.equal((childCalls.get('backend') ?? 0) + (childCalls.get('frontend') ?? 0) + (childCalls.get('integration') ?? 0), 7, 'two writers and an integrator with two reads and a final response');
+  const runs = h.store.agentRuns(h.session, 10);
+  assert.equal(runs.filter(run => run.role !== 'task-graph').length, 4, 'every delegated task is persisted');
+  assert.ok(runs.every(run => run.status === 'done'), JSON.stringify(runs));
+  const graphRun = runs.find(run => run.role === 'task-graph');
+  assert.ok(graphRun);
+  assert.deepEqual([...graphRun!.changedFiles].sort(), ['backend.txt', 'frontend.txt']);
 });
 
 test('parallel delegates share tools and budget while reviewer remains read-only', { timeout: 10_000 }, async t => {

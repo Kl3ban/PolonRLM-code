@@ -143,6 +143,28 @@ test('background jobs return output and exit code; denial never starts a job', a
   await assert.rejects(f.run('process_stop', { id: 'unowned-process' }), /Unknown/);
 });
 
+test('background process can run inside a real PTY', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.run('process_start', { command: 'echo nope', pty: true }), /requires interactive=true/);
+  const job = await f.run('process_start', { command: process.platform === 'win32' ? 'Write-Output PTY-OK' : 'echo PTY-OK', interactive: true, pty: true, timeoutMs: 30000 });
+  assert.equal(job.pty, true);
+  const output = await f.run('process_output', { id: job.id, waitMs: 30000 });
+  assert.equal(output.running, false);
+  assert.equal(output.exitCode, 0);
+  assert.match(output.output, /PTY-OK/);
+});
+
+test('PTY input reaches an interactive program', async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'pty-input.js'), "process.stdin.setEncoding('utf8');\nprocess.stdin.once('data', value => { process.stdout.write('GOT:' + value.trim()); process.exit(0); });\n");
+  const job = await f.run('process_start', { command: 'node pty-input.js', interactive: true, pty: true, timeoutMs: 30000 });
+  const sent = await f.run('process_input', { id: job.id, input: 'hello\r' });
+  assert.equal(sent.pty, true);
+  const output = await f.run('process_output', { id: job.id, waitMs: 30000 });
+  assert.equal(output.exitCode, 0);
+  assert.match(output.output, /GOT:hello/);
+});
+
 test('background process count is unlimited by default and a configured limit is enforced', async t => {
   const f = await fixture(t);
   const schema = f.registry.getSpec('process_start')!.parameters;

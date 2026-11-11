@@ -24,7 +24,8 @@ for (const file of pack.files) {
     runtimePackages.add(specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0]);
   }
 }
-const missingRuntimeDependencies = [...runtimePackages].filter(name => !manifest.dependencies?.[name]);
+const declaredRuntime = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {})]);
+const missingRuntimeDependencies = [...runtimePackages].filter(name => !declaredRuntime.has(name));
 assert.deepEqual(missingRuntimeDependencies, [], `Runtime imports missing from dependencies:\n${missingRuntimeDependencies.join('\n')}`);
 
 const unexpected = pack.files

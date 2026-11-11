@@ -1,0 +1,6 @@
+{
+  "id": "slugify",
+  "title": "Create stable URL slugs",
+  "timeoutMs": 600000,
+  "prompt": "Implement slugify in src/slug.js. It receives a string, lowercases it, trims it, replaces each run of characters outside [a-z0-9] with one hyphen, removes leading and trailing hyphens, and returns the result. An empty string or a string with no usable characters returns \"\". Throw TypeError for a non-string input. Keep the existing named export."
+}

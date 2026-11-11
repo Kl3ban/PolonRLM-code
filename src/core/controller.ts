@@ -22,7 +22,7 @@ import { formatLimit, formatTokenBudget, parseTokenBudget, parseUnlimitedLimit, 
 import { SETTINGS_FIELDS } from './settings-fields.js';
 import { describeToolCall } from './tool-display.js';
 import { formatEvidenceTimeline } from './evidence.js';
-import { discoverVerificationPlan, formatVerificationHistory, formatVerificationReport, hashWorkspaceFiles, makeVerificationReport, parseGitStatusPaths, type VerificationCheck, type VerificationDiagnostic, type VerificationStatus } from './verification.js';
+import { discoverVerificationPlan, affectedDependents, formatVerificationHistory, formatVerificationReport, hashWorkspaceFiles, makeVerificationReport, parseGitStatusPaths, type VerificationCheck, type VerificationDiagnostic, type VerificationStatus } from './verification.js';
 import { SandboxExecutor } from '../tools/sandbox.js';
 import { PluginManager } from '../plugins/manager.js';
 
@@ -45,7 +45,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /history changes [count]         Browse persistent file change history
 /rollback <change-or-group-id>   Restore saved file changes after hash checks
 /settings [name] [value]          Settings and budgets
-/sandbox [status|setup [confirm]] Show readiness or explicitly configure Windows isolation
+/sandbox [status|on|off|auto|setup [confirm]] Show readiness, switch isolation, or configure Windows isolation
 /budget [tokens] [USD]            Set the next task's budget
 /settings provider.<field> <value> Reasoning, request timeout, temperature, pricing, and capabilities
 /agents                           List subagents and limits
@@ -579,6 +579,26 @@ export class Controller implements UIController {
       if (signal.aborted) throw error;
       notes.push(`Could not collect Git changed paths: ${redact(error.message ?? String(error))}`);
     }
+    const changedCodePaths = [...paths].filter(filename => /\.[cm]?[jt]sx?$/i.test(filename));
+    if (changedCodePaths.length) {
+      try {
+        const raw = await this.registry.execute('project_map', { maxFiles: 300 }, { signal, mode: settings.mode, outputLimit: 0 });
+        const map = JSON.parse(raw) as { importEdges?: unknown };
+        const edges = Array.isArray(map.importEdges) ? map.importEdges.flatMap(edge => {
+          if (!edge || typeof edge !== 'object') return [];
+          const row = edge as Record<string, unknown>;
+          return typeof row.from === 'string' && typeof row.to === 'string' ? [{ from: row.from, to: row.to }] : [];
+        }) : [];
+        const dependents = affectedDependents(edges, changedCodePaths);
+        if (dependents.length) {
+          dependents.forEach(filename => paths.add(filename));
+          notes.push(`Impact analysis: also checking ${dependents.length} file(s) that import changed code.`);
+        }
+      } catch (error: any) {
+        if (signal.aborted) throw error;
+        notes.push(`Impact analysis was unavailable: ${redact(error.message ?? String(error))}`);
+      }
+    }
     const before = await hashWorkspaceFiles(this.workspace, [...paths]);
     const checks: VerificationCheck[] = [];
     const diagnostics: VerificationDiagnostic[] = [];
@@ -701,6 +721,26 @@ export class Controller implements UIController {
       }
       case '/help': this.note(HELP); break;
       case '/sandbox': {
+        const action = args[0];
+        if (action === 'on' || action === 'required' || action === 'auto' || action === 'off') {
+          if (args.length !== 1) throw new Error('Use /sandbox on, /sandbox off, or /sandbox auto.');
+          const mode = action === 'on' ? 'required' : action;
+          let backend = 'host';
+          if (mode !== 'off') {
+            const status = await this.sandbox.status(this.workspace.root, mode);
+            if (mode === 'required' && !status.available) {
+              throw new Error(`Cannot enable required isolation: ${status.reason ?? status.backend}. Run /sandbox status, then /sandbox setup on Windows.`);
+            }
+            backend = status.backend;
+          }
+          await this.updateSetting('sandboxMode', mode);
+          this.note(mode === 'off'
+            ? 'OS sandbox disabled. Shell and code commands run on the host under the normal permission policy.'
+            : mode === 'auto'
+              ? 'OS sandbox automatic. Commands use the backend when it is ready; otherwise they follow the normal host permission policy.'
+              : `OS sandbox required (${backend}). Commands are blocked when the backend is unavailable.`);
+          break;
+        }
         if (args[0] === 'setup') {
           if (args.length === 1) {
             this.note([
@@ -743,9 +783,27 @@ export class Controller implements UIController {
           this.note('Windows sandbox setup completed. Required isolation is enabled. Use /sandbox status to review it.');
           break;
         }
-        if (args.length > 1 || (args[0] && args[0] !== 'status')) throw new Error('Use /sandbox, /sandbox status, or /sandbox setup.');
+        if (args.length > 1 || (args[0] && args[0] !== 'status')) throw new Error('Use /sandbox, /sandbox status, /sandbox on, /sandbox off, /sandbox auto, or /sandbox setup.');
         const status = await this.sandbox.status(this.workspace.root);
-        this.note([`OS sandbox: ${status.mode}`, `Backend: ${status.backend}`, `Ready: ${status.available ? 'yes' : 'no'}`, status.reason ? `Details: ${status.reason}` : 'Network: sandboxed processes can reach only /settings sandboxNetworkDomains.', 'On Windows, use /sandbox setup to review and explicitly configure isolation.'].join('\n'));
+        const execution = status.mode === 'off'
+          ? 'Execution: host only, under the normal tool permission policy.'
+          : status.available
+            ? `Execution: ${status.backend} isolation is ready.`
+            : status.mode === 'required'
+              ? 'Execution: blocked because required isolation is unavailable.'
+              : 'Execution: host fallback under the normal tool permission policy until the backend is ready.';
+        const network = status.mode === 'off'
+          ? 'Network: not sandboxed; normal host network access.'
+          : `Network: sandboxed commands may reach ${settings.sandboxNetworkDomains.length ? settings.sandboxNetworkDomains.join(', ') : 'no hosts (deny by default)'}.`;
+        this.note([
+          `OS sandbox: ${status.mode}`,
+          `Backend: ${status.backend}`,
+          `Ready: ${status.available ? 'yes' : 'no'}`,
+          execution,
+          network,
+          status.reason ? `Details: ${status.reason}` : '',
+          'Switch with /sandbox on, /sandbox off, or /sandbox auto. On Windows, /sandbox setup provisions the one-time backend.',
+        ].filter(Boolean).join('\n'));
         break;
       }
       case '/cancel': this.cancel(); break;
@@ -945,7 +1003,18 @@ export class Controller implements UIController {
         if (!match) throw new Error('Use /steer <id> <message>.');
         this.steerAgent(match[1]!, match[2]!); break;
       }
-      case '/agents': this.note(`Parallel limit: ${displayLimit('maxAgents', settings.maxAgents)}; delegation depth: ${displayLimit('maxDepth', settings.maxDepth)}; Cortex ${settings.cortex} effort: ${CORTEX[settings.cortex]!.name}.\n${this.runtime.agents.map(agent => `${agent.id} · ${agent.role} · ${agent.status}`).join('\n') || 'No subagents.'}`); break;
+      case '/agents': {
+        const active = this.runtime.agents;
+        const recent = this.store.agentRuns(this.session, 5).filter(run => !active.some(agent => agent.id === run.id));
+        const activeLines = active.map(agent => `${agent.id} · ${agent.role} · ${agent.status}`);
+        const recentLines = recent.map(run => `${run.id} · ${run.role} · ${run.status} · ${run.changedFiles.length} file(s) · ${new Date(run.updatedAt).toLocaleString('en-US')}`);
+        this.note([
+          `Parallel limit: ${displayLimit('maxAgents', settings.maxAgents)}; delegation depth: ${displayLimit('maxDepth', settings.maxDepth)}; Cortex ${settings.cortex} effort: ${CORTEX[settings.cortex]!.name}.`,
+          activeLines.length ? `Active:\n${activeLines.join('\n')}` : 'Active: none.',
+          recentLines.length ? `Recent persisted runs:\n${recentLines.join('\n')}` : 'Recent persisted runs: none.',
+        ].join('\n'));
+        break;
+      }
       case '/permissions': {
         const [action, tool] = args;
         const registered = new Set([...this.registry.discovery(settings.mode).map(item => item.name), ...this.mcp.tools().map(item => item.name), 'ask_question', 'get_goal', 'update_goal', 'finish_interview', 'discover_tools', 'request_tool', 'search_history', 'delegate', 'agent_message', 'agent_changes', 'agent_apply', 'load_skill', 'remember', 'sandbox_fallback']);

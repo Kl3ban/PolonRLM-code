@@ -1,0 +1,6 @@
+{
+  "id": "parse-duration",
+  "title": "Parse compact duration strings",
+  "timeoutMs": 600000,
+  "prompt": "Implement parseDuration in src/duration.js. It receives a compact duration such as \"1h30m\", \"45s\", \"2d4h\", or \"250ms\" and returns milliseconds. Supported units are d, h, m, s, and ms, each appearing at most once, in that order. An empty, malformed, repeated-unit, or out-of-order string must throw TypeError. Keep the existing named export."
+}
