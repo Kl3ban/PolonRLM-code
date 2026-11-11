@@ -295,6 +295,7 @@ ${skills.join('\n')}`;
       }
       const available = tools.specs(mode);
       const specs = available.filter(spec => enabled.has(spec.name));
+      const connectedMcpTools = mode === 'BUILD' && !isolated ? this.mcp.tools() : [];
       const wantsComputer = !depth && (!research || /kursor|mysz|cursor|mouse|pulpit|desktop|klik/i.test(task)) && (desktopIntent.test(task) || enabled.has('computer_use'));
       const computerAvailable = wantsComputer && available.some(spec => spec.name === 'computer_use');
       if (wantsComputer) {
@@ -310,7 +311,7 @@ ${skills.join('\n')}`;
         }
         if (workflow.grill?.active) specs.push({ name: 'finish_interview', description: 'After user confirms implementation via ask_question, save the agreed design and allow implementation.', parameters: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] } });
       }
-      if (!(wantsComputer && emptyDesktopDiscovery)) specs.push({ name: 'discover_tools', description: 'Find additional tools by keyword. For screen, mouse, window, taskbar or app tasks, computer_use is directly available; call it instead of searching.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
+      if (!(wantsComputer && emptyDesktopDiscovery)) specs.push({ name: 'discover_tools', description: 'Find additional built-in or connected MCP tools by keyword. For screen, mouse, window, taskbar or app tasks, computer_use is directly available; call it instead of searching.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
       if (unavailableTools.size) specs.push({ name: 'request_tool', description: 'Ask the user to approve exactly one invocation of a discovered disabled registered tool. Approval pauses the run, does not change settings, and authorizes only these arguments once.', parameters: { type: 'object', properties: { tool: { type: 'string', minLength: 1, maxLength: 100 }, arguments: { type: 'object', additionalProperties: true }, reason: { type: 'string', minLength: 4, maxLength: 1000 } }, required: ['tool', 'arguments', 'reason'], additionalProperties: false } });
       if (!depth && messages.some(message => message.name === 'polonrlm_context')) specs.push(historySearchToolSpec);
       const agentSlots = this.settings.maxAgents > 0 ? this.settings.maxAgents - budget.active : undefined;
@@ -322,7 +323,7 @@ ${skills.join('\n')}`;
         if (peers.length) specs.push({ name: 'agent_message', description: 'Queue one short direct note for another member of this delegation batch. A working peer sees it at the next model-step boundary; a finished peer message is included in the coordinator results. The message shares no files or tools.', parameters: { type: 'object', properties: { to: { type: 'string', enum: peers.map(peer => peer.id), description: peers.map(peer => `${peer.id} (${peer.role}${['running', 'working'].includes(peer.status) ? '' : `, ${peer.status}`})`).join(', ') }, message: { type: 'string', minLength: 1, maxLength: 700 } }, required: ['to', 'message'], additionalProperties: false } });
       }
       if (mode === 'BUILD' && !isolated) specs.push({ name: 'remember', description: 'Store a verified short project procedure; no secrets. User can inspect /memory.', parameters: { type: 'object', properties: { name: { type: 'string' }, body: { type: 'string' } }, required: ['name', 'body'], additionalProperties: false } });
-      if (mode === 'BUILD' && !isolated) specs.push(...this.mcp.tools());
+      if (connectedMcpTools.length) specs.push(...connectedMcpTools.filter(spec => enabled.has(spec.name)));
       if (!isolated && workspace.permissions.available('agent_changes', false, mode)) {
         specs.push({ name: 'agent_changes', description: 'Inspect isolated subagent file changes and unified diffs before applying them to the main workspace.', parameters: { type: 'object', properties: { agentId: { type: 'string' }, path: { type: 'string' } }, required: ['agentId'], additionalProperties: false } });
         if (mode === 'BUILD' && workspace.permissions.available('agent_apply', true, mode)) specs.push({ name: 'agent_apply', description: 'Apply selected isolated subagent changes after checking every original file is still unchanged. Each write uses normal permissions.', parameters: { type: 'object', properties: { agentId: { type: 'string' }, paths: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'string' } } }, required: ['agentId', 'paths'], additionalProperties: false } });
@@ -596,9 +597,24 @@ ${skills.join('\n')}`;
           } else if (call.name === 'discover_tools') {
             const { query } = z.object({ query: z.string().max(200) }).parse(call.arguments);
             const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-            const found = tools.discovery(mode).filter(spec => !taskRestrictedTools.has(spec.name) && words.some(word => `${spec.name} ${spec.description}`.toLowerCase().includes(word))).slice(0, 5);
+            const localCandidates = tools.discovery(mode).filter(spec => !taskRestrictedTools.has(spec.name));
+            const mcpCandidates = connectedMcpTools.map(spec => {
+              const reason = workspace.permissions.unavailableReason(spec.name, true, mode);
+              return { ...spec, available: !reason, ...(reason ? { reason } : {}), requestable: false };
+            });
+            const found = [...localCandidates, ...mcpCandidates]
+              .map((spec, index) => {
+                const name = spec.name.toLowerCase();
+                const description = spec.description.toLowerCase();
+                const score = words.reduce((value, word) => value + (name === word ? 8 : name.includes(word) ? 5 : description.includes(word) ? 1 : 0), 0);
+                return { spec, index, score };
+              })
+              .filter(item => item.score > 0)
+              .sort((left, right) => right.score - left.score || left.index - right.index)
+              .slice(0, 5)
+              .map(item => item.spec);
             found.filter(spec => spec.available).forEach(spec => enabled.add(spec.name));
-            found.filter(spec => !spec.available && spec.reason).forEach(spec => unavailableTools.set(spec.name, spec.reason!));
+            found.filter(spec => !spec.available && spec.reason && !('requestable' in spec && spec.requestable === false)).forEach(spec => unavailableTools.set(spec.name, spec.reason!));
             result = taskRestrictedTools.size && /browser|przegl[aą]dark|computer|desktop|screen|mouse|cursor/i.test(query) ? 'Interactive browser and desktop tools are unavailable for ordinary web research. Use web_search and read_webpage.'
               : found.length ? JSON.stringify(found.map(spec => ({ ...spec })))
               : desktopIntent.test(query) ? `computer_use: unavailable. ${this.computerAvailability(mode, tools, isolated)}`

@@ -4,6 +4,8 @@ Local web tools run on demand: `web_search`, `read_webpage`, `download_to_disk`,
 
 Run `/tools` or `/tools <filter>` in the terminal to see the current catalog for the selected mode and permissions. The agent uses `discover_tools` to load additional schemas when needed. If a tool is blocked and the user explicitly wants that action, the model can ask for one-time approval with `request_tool`. The approval prompt shows the exact arguments. Approval runs that call only; a rejected request is not retried.
 
+Connected MCP schemas are loaded only when `discover_tools` finds them by server or tool name. This keeps unrelated integrations out of provider requests. MCP calls still use their normal permission checks and external-action approvals.
+
 Use `/permissions` to manage tool access. With no argument, it shows effective rules. `/permissions <tool> ask|auto|off` sets a per-tool rule, and `default` removes that override. `/permissions all` permanently approves every tool without asking. This includes the terminal, desktop, browser, and MCP tools, and overrides PLAN, REVIEW, and readonly restrictions. `/permissions reset` restores the safer `ask` mode and removes overrides. A per-tool `auto` rule still respects PLAN, REVIEW, and readonly restrictions. A per-tool `off` rule also blocks one-time approval requests.
 
 ## Development and project tools
