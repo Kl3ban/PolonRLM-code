@@ -50,7 +50,7 @@ The user can steer an agent during work with `/steer <id> <message>`. The ID is 
 
 `read_document` reads PDF, DOCX, XLSX, and common text formats. It does not run macros or formulas. PDF pages and spreadsheet row ranges can be selected. A scanned PDF without a text layer must first be converted to an image. `ocr_image` uses local Tesseract when installed and recognizes Polish and English.
 
-Transactions group file-tool changes in the current process. `transaction_rollback` reverts them in reverse order after checking current contents and requesting the normal approvals. Processes started with `interactive=true` accept input through a pipe with `process_input`; they do not emulate a PTY, so tools that require a real terminal may not work.
+Transactions group file-tool changes in the durable project journal. `transaction_rollback` reverts them in reverse order after checking current contents and requesting the normal approvals. A transaction left open by a crash appears in `/recover`; PolonRLM never reruns its shell commands. Processes started with `interactive=true` accept input through a pipe with `process_input`; they do not emulate a PTY, so tools that require a real terminal may not work.
 
 ## Requirements and limits
 
@@ -58,8 +58,8 @@ Transactions group file-tool changes in the current process. `transaction_rollba
 - Built-in semantic and AST tools support TS/JS. The index is limited to 500 files and 20 MB and skips dependencies in `node_modules`. It reads local `compilerOptions`, without loading plugins or extending `tsconfig`. Missing dependency types can cause unknown-module diagnostics.
 - `lsp_request` runs the selected, already-installed stdio server for the operation. It supports hover, definitions, implementations, type definitions, references, document/workspace symbols, call hierarchy, and diagnostics. Workspace symbol search needs only a query. Incoming/outgoing call queries prepare and inspect the selected symbol within one server session. Starting the program requires approval. It does not install language servers. Missing diagnostics are reported explicitly.
 - PDF.js, Mammoth, and ExcelJS are included for supported documents. OCR requires a separate Tesseract install and its `pol`/`eng` language data.
-- Checkpoints and plans stay in memory for the current run. A checkpoint stores up to 100 named files and 20 MB; up to 5 checkpoints are kept. Restore requires the current hashes from `checkpoint_diff`.
-- A semantic rename or a multi-file checkpoint restore is not one atomic transaction. Tools report partial progress and conflicts instead of hiding errors. Transactions group writes made through PolonRLM, not changes from external commands.
+- Checkpoints are encrypted in the project-local journal and persist across restarts. There is no checkpoint-count or total-size cap; each file must be a supported text file up to 5 MB. Restore requires the current hashes from `checkpoint_diff`. Task plans remain in memory.
+- Semantic rename reports partial progress if a filesystem write fails. A multi-file checkpoint restore is grouped, journals each write, and compensates earlier writes if a later file fails; external changes are preserved and reported as conflicts. It cannot make unrelated shell commands transactional.
 - Background processes run real commands outside a sandbox after approval. The limits are 8 active jobs, 10 minutes per job, and 64,000 characters of recent output. Cancelling a task or closing the app stops jobs started through this mechanism. `process_stop` does not accept an arbitrary PID.
 - PLAN and REVIEW block project writes and program execution. `computer_use` is available in every mode, but each desktop action needs separate approval. Permissions still apply after a tool is discovered.
 
