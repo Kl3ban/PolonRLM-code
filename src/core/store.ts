@@ -7,6 +7,7 @@ import { redact, safeText } from './secrets.js';
 import { clip } from './context.js';
 import type { WorkflowState } from './workflows.js';
 import type { VerificationReport } from './verification.js';
+import type { RecoveryChange, RecoveryChangeState, RecoveryCheckpoint, RecoveryGroup, RecoveryGroupState } from './recovery.js';
 
 function execWithBusyRetry(db: DatabaseSync, sql: string): void {
   const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
@@ -148,7 +149,14 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS context(session TEXT PRIMARY KEY, data TEXT, watermark INTEGER);
       CREATE TABLE IF NOT EXISTS memory(workspace TEXT, name TEXT, body TEXT, PRIMARY KEY(workspace,name));
       CREATE TABLE IF NOT EXISTS verification_reports(id TEXT PRIMARY KEY, session TEXT NOT NULL, created INTEGER NOT NULL, data TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS verification_session_created ON verification_reports(session,created DESC);`);
+      CREATE INDEX IF NOT EXISTS verification_session_created ON verification_reports(session,created DESC);
+      CREATE TABLE IF NOT EXISTS change_groups(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, name TEXT NOT NULL, created INTEGER NOT NULL, process_id INTEGER NOT NULL, state TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS change_groups_workspace_created ON change_groups(workspace,created DESC);
+      CREATE TABLE IF NOT EXISTS file_changes(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, group_id TEXT, path TEXT NOT NULL, tool TEXT NOT NULL, created INTEGER NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS file_changes_workspace_created ON file_changes(workspace,created DESC);
+      CREATE INDEX IF NOT EXISTS file_changes_group ON file_changes(workspace,group_id,created);
+      CREATE TABLE IF NOT EXISTS file_checkpoints(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, name TEXT NOT NULL, created INTEGER NOT NULL, payload TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS file_checkpoints_workspace_created ON file_checkpoints(workspace,created DESC);`);
   }
   create(workspace: string, title = 'New session'): string {
     const id = randomUUID(); this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(id, workspace, safeText(title).replace(/\s+/g, ' ').trim().slice(0, 100) || 'New session', Date.now()); return id;
@@ -222,6 +230,59 @@ export class SessionStore {
       .map(row => JSON.parse(row.data) as VerificationReport).filter(report => report.id.startsWith(prefix));
     if (matches.length > 1) throw new Error('That report prefix is ambiguous. Use a longer ID.');
     return matches[0];
+  }
+  prepareRecoveryChange(change: RecoveryChange): void {
+    this.db.prepare('INSERT INTO file_changes(id,workspace,group_id,path,tool,created,state,payload) VALUES(?,?,?,?,?,?,?,?)')
+      .run(change.id, change.workspace, change.groupId, safeText(change.path), safeText(change.tool), change.createdAt, 'prepared', change.payload);
+  }
+  setRecoveryChangeState(workspace: string, id: string, state: RecoveryChangeState): void {
+    const result = this.db.prepare('UPDATE file_changes SET state=? WHERE workspace=? AND id=?').run(state, workspace, id);
+    if (!result.changes) throw new Error('Recovery change was not found in this project.');
+  }
+  recoveryChange(workspace: string, id: string): RecoveryChange | undefined {
+    const row = this.db.prepare('SELECT id,workspace,group_id AS groupId,path,tool,created AS createdAt,state,payload FROM file_changes WHERE workspace=? AND id=?').get(workspace, id) as RecoveryChange | undefined;
+    return row;
+  }
+  recoveryChanges(workspace: string, groupId?: string, states?: RecoveryChangeState[], limit?: number): RecoveryChange[] {
+    const clauses = ['workspace=?']; const values: (string | number)[] = [workspace];
+    if (groupId !== undefined) { clauses.push('group_id=?'); values.push(groupId); }
+    if (states?.length) { clauses.push(`state IN (${states.map(() => '?').join(',')})`); values.push(...states); }
+    const descending = limit !== undefined;
+    const limitClause = descending ? ' LIMIT ?' : '';
+    if (descending) values.push(Math.max(1, Math.floor(limit!)));
+    return this.db.prepare(`SELECT id,workspace,group_id AS groupId,path,tool,created AS createdAt,state,payload FROM file_changes WHERE ${clauses.join(' AND ')} ORDER BY created ${descending ? 'DESC' : 'ASC'},id ${descending ? 'DESC' : 'ASC'}${limitClause}`).all(...values) as unknown as RecoveryChange[];
+  }
+  latestRecoveryChange(workspace: string, states: RecoveryChangeState[] = ['applied']): RecoveryChange | undefined {
+    if (!states.length) return undefined;
+    return this.db.prepare(`SELECT id,workspace,group_id AS groupId,path,tool,created AS createdAt,state,payload FROM file_changes WHERE workspace=? AND state IN (${states.map(() => '?').join(',')}) ORDER BY created DESC,id DESC LIMIT 1`).get(workspace, ...states) as RecoveryChange | undefined;
+  }
+  startRecoveryGroup(group: RecoveryGroup): void {
+    this.db.prepare('INSERT INTO change_groups(id,workspace,name,created,process_id,state) VALUES(?,?,?,?,?,?)')
+      .run(group.id, group.workspace, safeText(group.name), group.createdAt, group.processId, 'running');
+  }
+  setRecoveryGroupState(workspace: string, id: string, state: RecoveryGroupState): void {
+    const result = this.db.prepare('UPDATE change_groups SET state=? WHERE workspace=? AND id=?').run(state, workspace, id);
+    if (!result.changes) throw new Error('Recovery group was not found in this project.');
+  }
+  recoveryGroup(workspace: string, id: string): RecoveryGroup | undefined {
+    return this.db.prepare('SELECT id,workspace,name,created AS createdAt,process_id AS processId,state FROM change_groups WHERE workspace=? AND id=?').get(workspace, id) as RecoveryGroup | undefined;
+  }
+  recoveryGroups(workspace: string): RecoveryGroup[] {
+    return this.db.prepare('SELECT id,workspace,name,created AS createdAt,process_id AS processId,state FROM change_groups WHERE workspace=? ORDER BY created DESC').all(workspace) as unknown as RecoveryGroup[];
+  }
+  saveCheckpoint(checkpoint: RecoveryCheckpoint): void {
+    this.db.prepare('INSERT INTO file_checkpoints(id,workspace,name,created,payload) VALUES(?,?,?,?,?)')
+      .run(checkpoint.id, checkpoint.workspace, safeText(checkpoint.name), checkpoint.createdAt, checkpoint.payload);
+  }
+  checkpoint(workspace: string, id: string): RecoveryCheckpoint | undefined {
+    return this.db.prepare('SELECT id,workspace,name,created AS createdAt,payload FROM file_checkpoints WHERE workspace=? AND id=?').get(workspace, id) as RecoveryCheckpoint | undefined;
+  }
+  checkpoints(workspace: string): Omit<RecoveryCheckpoint, 'payload'>[] {
+    return this.db.prepare('SELECT id,workspace,name,created AS createdAt FROM file_checkpoints WHERE workspace=? ORDER BY created DESC').all(workspace) as unknown as Omit<RecoveryCheckpoint, 'payload'>[];
+  }
+  deleteCheckpoint(workspace: string, id: string): void {
+    const result = this.db.prepare('DELETE FROM file_checkpoints WHERE workspace=? AND id=?').run(workspace, id);
+    if (!result.changes) throw new Error('Checkpoint was not found in this project.');
   }
   recordUsage(session: string, usage: Usage): void { this.db.prepare('INSERT INTO usage(session,data) VALUES(?,?)').run(session, JSON.stringify(usage)); }
   usage(session: string): Usage {

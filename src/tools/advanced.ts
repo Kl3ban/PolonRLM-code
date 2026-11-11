@@ -25,7 +25,7 @@ export function registerAdvancedTools(registry: ToolRegistry, workspace: Workspa
   registry.add('plan_status', 'Read the current in-memory task plan.', z.object({}), true, async () => plan);
   registerProcessTools(registry, workspace, maxProcesses, globalTimeoutMs, outputLimit); registerCheckpointTools(registry, workspace); registerCodeTools(registry, workspace); registerLspTool(registry, workspace);
   registerDocumentTools(registry, workspace);
-  registry.add('transaction_begin', 'Start one in-memory file change transaction. Later writes can be committed or rolled back together.', z.object({ name: z.string().min(1).max(100) }), false, async args => workspace.beginTransaction(args.name));
+  registry.add('transaction_begin', 'Start a durable file change transaction. Later writes can be committed or rolled back together, including after restart.', z.object({ name: z.string().min(1).max(100) }), false, async args => workspace.beginTransaction(args.name));
   registry.add('transaction_status', 'Show the active file change transaction and its touched paths.', z.object({}), true, async () => workspace.transactionStatus() ?? { active: false });
   registry.add('transaction_commit', 'Keep all changes in the active transaction and close it. Every file still uses normal write approvals.', z.object({ id: z.string() }), false, async args => workspace.commitTransaction(args.id));
   registry.add('transaction_rollback', 'Reverse active transaction writes in reverse order. Checks each file for outside edits and reports partial progress.', z.object({ id: z.string() }), false, async (args, context) => workspace.rollbackTransaction(args.id, context.mode, context.signal));

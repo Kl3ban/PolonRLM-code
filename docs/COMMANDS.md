@@ -63,7 +63,12 @@ With no configured verification commands, `/verify` detects standard scripts in 
 | `/tools` | Lists available tools. Add a word to filter the list. |
 | `/image <path>` | Adds an image to the next task for a vision capable model. |
 | `/image clear` | Removes images waiting to be sent. |
-| `/undo` | Reverts the most recent file change made through PolonRLM in this process. |
+| `/undo` | Safely reverts the latest file change or complete change group, including changes from a previous run. |
+| `/history changes [count]` | Lists saved file changes. Snapshots are encrypted in local app data. |
+| `/recover` | Shows unfinished groups and conflicts after an interrupted write. |
+| `/rollback <id>` | Reverts a saved change or its complete group after checking current file hashes. |
+| `/recover rollback <id>` | Recovers an unfinished transaction, atomic group, or single pending change. Files changed outside PolonRLM are kept and reported as conflicts. |
+| `checkpoint_create` and related tools | Save, list, compare, restore, or remove project checkpoints. They are encrypted and persist across restarts. |
 | `/compact` | Makes a local extractive summary without another model call. The full transcript stays archived. |
 | `/context` | Shows a local token estimate, the app input cap, and known model context. |
 | `/cost` | Shows token use and known provider costs. Unknown prices stay marked unknown. |

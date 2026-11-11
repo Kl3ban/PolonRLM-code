@@ -88,6 +88,59 @@ test('controller starts on a fresh chat database and reports the preserved corru
   }
 });
 
+test('file recovery journal survives restart, encrypts snapshots and restores an unfinished transaction safely', async t => {
+  const f = await fixture();
+  let controller = await Controller.open(f.root, f.home);
+  try {
+    controller.setApprover(async () => true);
+    const workspace = (controller as any).workspace;
+    const filename = path.join(f.root, 'recovery.txt');
+    await writeFile(filename, 'before snapshot');
+    const group = await workspace.beginTransaction('restart check');
+    await workspace.change('write_file', 'recovery.txt', () => 'after snapshot', 'BUILD');
+    const saved = await readFile(path.join(f.home, 'sessions.sqlite'));
+    assert.equal(saved.includes(Buffer.from('before snapshot')), false);
+    assert.equal(saved.includes(Buffer.from('after snapshot')), false);
+    await controller.close();
+
+    controller = await Controller.open(f.root, f.home);
+    controller.setApprover(async () => true);
+    const reopened = (controller as any).workspace;
+    const status = reopened.recoveryStatus();
+    assert.ok(status.groups.some((item: any) => item.id === group.id && item.state === 'running'));
+    assert.ok(status.changes.some((item: any) => item.path === 'recovery.txt' && item.state === 'applied'));
+    const result = await reopened.rollbackRecovery(group.id.slice(0, 8), 'BUILD');
+    assert.deepEqual(result.restored, ['recovery.txt']);
+    assert.equal(await readFile(filename, 'utf8'), 'before snapshot');
+    assert.equal(reopened.changeHistory(10)[0]?.state, 'rolled_back');
+
+    await reopened.change('write_file', 'recovery.txt', () => 'agent edit', 'BUILD');
+    const edit = reopened.changeHistory(1)[0]!;
+    await writeFile(filename, 'external edit');
+    const conflict = await reopened.rollbackRecovery(edit.id.slice(0, 8), 'BUILD');
+    assert.equal(conflict.failed, 'recovery.txt');
+    assert.equal(await readFile(filename, 'utf8'), 'external edit');
+    assert.equal(reopened.changeHistory(1)[0]?.state, 'conflict');
+
+    const encoded = path.join(f.root, 'encoded.txt');
+    const originalBytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('checkpoint original', 'utf16le')]);
+    await writeFile(encoded, originalBytes);
+    const checkpoint = await reopened.createCheckpoint('encoding restore', ['encoded.txt']);
+    await writeFile(encoded, 'later utf8 content', 'utf8');
+    const diff = await reopened.diffCheckpoint(checkpoint.id);
+    const expected = Object.fromEntries(diff.files.map((file: any) => [file.path, file.currentHash]));
+    await controller.close();
+    controller = await Controller.open(f.root, f.home);
+    controller.setApprover(async () => true);
+    const restored = await (controller as any).workspace.restoreCheckpoint(checkpoint.id.slice(0, 8), expected, 'BUILD');
+    assert.deepEqual(restored.applied, ['encoded.txt']);
+    assert.deepEqual(await readFile(encoded), originalBytes);
+    assert.ok((controller as any).workspace.listCheckpoints().some((item: any) => item.id === checkpoint.id));
+  } finally {
+    await controller.close(); await f.dispose();
+  }
+});
+
 test('/image attaches a local photo to the next prompt without persisting binary data', async () => {
   let request: any;
   const f = await fixture(async (req, response) => { request = await body(req); response.writeHead(200, { 'Content-Type': 'text/event-stream' }); chunk(response, { content: 'Photo received.' }, 'stop'); finish(response); });

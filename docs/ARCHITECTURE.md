@@ -37,7 +37,11 @@ While a team is active, the user can steer one agent with `/steer <id> <message>
 
 The full conversation remains in `messages`. Compacted context is stored separately with the ID of the last included message. New messages are appended when context is read. Automatic compaction preserves the current request and recent tool-call groups, then ranks older facts by requirements, progress, results, and blockers. It does not call a model to write a summary. If a detail is missing, `search_history` finds a few short excerpts in the SQLite archive. Interrupted tool calls receive an explicit interruption result before the next model call. The app does not automatically rerun a command after a crash.
 
-File undo keeps originals in process memory. After a restart, conversation history and the event log remain, but `/undo` cannot restore changes from the earlier process. Registered secrets are removed from messages and logs. This is a filter, not a complete scanner for every possible secret.
+File change snapshots are encrypted before they enter the SQLite journal. Windows protects the local encryption key with DPAPI; other systems keep a user-only key file in local app data. `/undo`, `/history changes`, `/recover`, and `/rollback` work across restarts. Each restore checks the current file hash and keeps any file changed outside PolonRLM. Interrupted shell commands are never rerun automatically. Removing a chat does not remove the separate project change journal.
+
+Named file checkpoints use the same encrypted local store and survive restarts. Restoring selected checkpoint files writes them as one transaction, and the before/after encodings are journaled so rollback can put the original bytes back. A checkpoint restore still uses the regular file-write permission checks.
+
+The encryption key remains available to the same OS user who runs PolonRLM. This protects copied database files but is not a boundary against malware or another process running as that user. Registered secrets are removed from conversation messages and logs; recovery snapshots retain the original file content in encrypted form so a restore can be exact.
 
 The name change from JanuszGPT to PolonRLM uses a copy-based migration. The new data directory receives configuration, keys, skills, and a consistent SQLite backup. The old directory remains available for rollback. Migration never overwrites an existing destination.
 

@@ -16,7 +16,7 @@ Use `/permissions` to manage tool access. With no argument, it shows effective r
 | --- | --- |
 | Batch file reading and search | `read_files`, `search_batch` (both normally run up to four independent operations at once and preserve input order; searches with explicit approval run serially) |
 | Background processes and stdin | `process_start`, `process_list`, `process_output`, `process_wait`, `process_input`, `process_stop` |
-| File checkpoints | `checkpoint_create`, `checkpoint_list`, `checkpoint_diff`, `checkpoint_restore`, `checkpoint_drop` |
+| File checkpoints | `checkpoint_create`, `checkpoint_list`, `checkpoint_diff`, `checkpoint_restore`, `checkpoint_drop`; encrypted and persistent across restarts |
 | TypeScript and JavaScript analysis | `code_diagnostics`, `code_outline`, `symbol_definition`, `symbol_references`, `symbol_hover`, `rename_symbol` |
 | Structural search and edits | `ast_search`, `ast_edit` |
 | Other language servers | `lsp_request` |
@@ -24,7 +24,7 @@ Use `/permissions` to manage tool access. With no argument, it shows effective r
 | Task plan | `plan_update`, `plan_status` |
 | Stateful browser | `browser`, `browser_sessions` |
 | Documents and OCR | `read_document`, `ocr_image` |
-| Grouped file changes | `transaction_begin`, `transaction_status`, `transaction_commit`, `transaction_rollback` |
+| Grouped file changes | `transaction_begin`, `transaction_status`, `transaction_commit`, `transaction_rollback`; durable journal supports `/recover`, `/history changes`, and `/rollback` |
 
 When a provider returns two to four independent file, search, project, or Git reads in one response, PolonRLM runs them concurrently and keeps their results in call order. Explicit approval rules, repeated or previously failed calls, writes, browser actions, and stateful tools stay sequential. This reduces waiting time; it does not reduce provider token billing by itself.
 

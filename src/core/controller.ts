@@ -5,6 +5,7 @@ import type { Approve, LLMProvider, ModelInfo, RuntimeEvent, UIController, UISta
 import { imageFromBuffer, loadUserImage } from './images.js';
 import { ConfigManager, secureMcpServerSchema, settingsSchema } from './config.js';
 import { SessionStore } from './store.js';
+import { RecoveryCipher } from './recovery.js';
 import { SecretVault, isSecretEnvironmentName, redact, registerSecret, safeText } from './secrets.js';
 import { Permissions } from './permissions.js';
 import { Workspace } from '../tools/workspace.js';
@@ -34,6 +35,9 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /image <path>|clear               Attach an image to the next message or clear attachments
 /tools [filter]                   Show available AI tools
 /verify [command|history [count]|report <id>] Verify project checks and inspect saved evidence
+/recover [rollback <id>]         Inspect unfinished changes or safely restore one change group
+/history changes [count]         Browse persistent file change history
+/rollback <change-or-group-id>   Restore saved file changes after hash checks
 /settings [name] [value]          Settings and budgets
 /budget [tokens] [USD]            Set the next task's budget
 /settings provider.<field> <value> Reasoning, request timeout, temperature, pricing, and capabilities
@@ -110,6 +114,7 @@ export class Controller implements UIController {
   private state!: UIState;
   private store!: SessionStore;
   private vault!: SecretVault;
+  private recoveryCipher!: RecoveryCipher;
   private permissions!: Permissions;
   private workspace!: Workspace;
   private registry!: ToolRegistry;
@@ -142,7 +147,7 @@ export class Controller implements UIController {
   private async initialize(root: string): Promise<void> {
     const settings = this.config.settings;
     this.permissions = new Permissions(settings); this.workspace = await Workspace.open(root, this.permissions);
-    this.store = new SessionStore(this.config.home); this.vault = new SecretVault(this.config.home);
+    this.store = new SessionStore(this.config.home); this.recoveryCipher = await RecoveryCipher.open(this.config.home); this.workspace.attachRecovery(this.store, this.recoveryCipher); this.vault = new SecretVault(this.config.home);
     for (const [name, value] of Object.entries(process.env)) if (isSecretEnvironmentName(name)) registerSecret(value);
     const credentialWarnings: string[] = [];
     for (const provider of Object.values(settings.providers)) {
@@ -677,6 +682,33 @@ export class Controller implements UIController {
         const explicit = tail ? tail.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1') : undefined;
         await this.verify(explicit); break;
       }
+      case '/recover': {
+        if (args[0] === 'rollback') {
+          if (!args[1] || args.length !== 2) throw new Error('Use /recover rollback <change-or-group ID>.');
+          const result = await this.workspace.rollbackRecovery(args[1], settings.mode);
+          this.note(result.failed ? `Recovery stopped after ${result.restored.length} file(s). ${result.failed}: ${result.error}` : `Recovered ${result.restored.length} file(s) from group ${result.id.slice(0, 8)}.`);
+          break;
+        }
+        if (args.length) throw new Error('Use /recover or /recover rollback <change-or-group ID>.');
+        const status = this.workspace.recoveryStatus();
+        const lines = ['RECOVERY', ...status.groups.map(group => `Group ${group.id.slice(0, 8)} · ${group.state} · ${group.name}`), ...status.changes.map(change => `Change ${change.id.slice(0, 8)} · ${change.state} · ${change.path}`)];
+        this.note(lines.length === 1 ? 'No unfinished or conflicting file changes. Use /history changes to inspect completed changes.' : lines.join('\n'));
+        break;
+      }
+      case '/history': {
+        if (args[0] !== 'changes' || args.length > 2) throw new Error('Use /history changes [count].');
+        const count = args[1] === undefined ? 50 : Number(args[1]);
+        if (!Number.isInteger(count) || count < 1) throw new Error('History count must be a positive whole number.');
+        const changes = this.workspace.changeHistory(count);
+        this.note(changes.length ? ['FILE CHANGE HISTORY', ...changes.map(change => `${change.id.slice(0, 8)} · ${change.state}${change.groupId ? ` · group ${change.groupId.slice(0, 8)}` : ''} · ${change.tool} · ${change.path}`)].join('\n') : 'No file changes have been recorded for this project.');
+        break;
+      }
+      case '/rollback': {
+        if (!args[0] || args.length !== 1) throw new Error('Use /rollback <change-or-group-ID>.');
+        const result = await this.workspace.rollbackRecovery(args[0], settings.mode);
+        this.note(result.failed ? `Rollback stopped after ${result.restored.length} file(s). ${result.failed}: ${result.error}` : `Rolled back ${result.restored.length} file(s) from ${result.id.slice(0, 8)}.`);
+        break;
+      }
       case '/steer': {
         const match = /^([a-f0-9]{8})\s+([\s\S]+)$/i.exec(tail);
         if (!match) throw new Error('Use /steer <id> <message>.');
@@ -794,7 +826,7 @@ export class Controller implements UIController {
     this.closing = true; this.cancel();
     this.closeOperation = (async () => {
       await this.active;
-      try { await this.mcp.close(); } finally { try { await this.registry.close(); } finally { this.store.close(); this.state.status = 'closed'; this.notify(); } }
+      try { await this.mcp.close(); } finally { try { await this.registry.close(); } finally { this.recoveryCipher.close(); this.store.close(); this.state.status = 'closed'; this.notify(); } }
     })();
     return this.closeOperation;
   }
