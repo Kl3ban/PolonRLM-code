@@ -90,7 +90,7 @@ npm run build
 npm run serve -- --workspace . --port 4317 --token change-me
 ```
 
-The server binds to `127.0.0.1` by default and has `/health`, `/v1/session`, `/v1/tools`, `/v1/messages` (JSON or SSE) and `/v1/cancel`. It is not an ACP implementation; ACP clients need an adapter. See [SDK](docs/SDK.md) and [agent server](docs/AGENT-SERVER.md).
+The server binds to `127.0.0.1` by default and has `/health`, `/v1/session`, `/v1/tools`, `/v1/messages` (JSON or SSE) and `/v1/cancel`. An ACP v1 adapter over stdio is also available with `npm run acp`. See [SDK](docs/SDK.md), [agent server](docs/AGENT-SERVER.md) and [ACP](docs/ACP.md).
 
 ## Web and browser tools
 
@@ -125,6 +125,7 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [Plugin SDK](docs/PLUGIN-SDK.md)
 - [SDK](docs/SDK.md)
 - [Agent server](docs/AGENT-SERVER.md)
+- [ACP adapter](docs/ACP.md)
 - [OS command sandbox](docs/SANDBOX.md)
 - [Local web search](docs/LOCAL-WEB.md)
 - [Browser and desktop control](docs/COMPUTER-USE.md)
