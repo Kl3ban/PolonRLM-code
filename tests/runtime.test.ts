@@ -739,6 +739,22 @@ test('compact optional-tool guidance retains discovery cues and loads an exact s
   assert.equal(calls, 2);
 });
 
+test('required sandbox mode refuses MCP tools instead of running them unisolated', async t => {
+  let calls = 0, executions = 0;
+  const tool = { name: 'mcp_required_probe', description: '[MCP probe] External call.', parameters: { type: 'object', properties: {} } };
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'discover-probe', name: 'discover_tools', arguments: { query: 'probe' } }]);
+    if (calls === 2) return reply('', [{ id: 'call-probe', name: tool.name, arguments: {} }]);
+    return reply('The MCP call was refused.');
+  }, { permissions: 'workspace', sandboxMode: 'required' });
+  h.mcp.tools = () => [tool];
+  h.mcp.call = async () => { executions++; return 'should not run'; };
+  assert.equal(await h.runtime.run(h.session, 'Use the connected probe tool.', new AbortController().signal), 'The MCP call was refused.');
+  assert.equal(executions, 0);
+  assert.ok(h.events.some(event => event.type === 'tool' && event.name === tool.name && event.state === 'error'));
+});
+
 test('connected MCP schemas load only after discovery and remain callable for the task', async t => {
   let calls = 0, executions = 0, approvals = 0;
   const tool = {
