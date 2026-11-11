@@ -55,3 +55,16 @@ test('Git paths are parsed without metadata and file hashes reveal edits during 
     assert.notEqual(before.get('src/app.ts'), after.get('src/app.ts'));
   });
 });
+
+test('Git status parser decodes quoted, renamed, unicode, and deleted paths', () => {
+  const status = [
+    '?? "space name.ts"',
+    'A  "za\\305\\274\\303\\263\\305\\202\\304\\207.ts"',
+    'R  "old name.ts" -> "new name.ts"',
+    'D  "tab\\tname.ts"',
+    ' M deleted.ts',
+    '?? ".git/config"',
+  ].join('\n');
+  assert.deepEqual(parseGitStatusPaths(status), ['space name.ts', 'zażółć.ts', 'new name.ts', 'tab\tname.ts', 'deleted.ts']);
+  assert.deepEqual(parseGitStatusPaths('R  "a -> b.ts" -> "c -> d.ts"\n'), ['c -> d.ts']);
+});

@@ -51,17 +51,63 @@ export async function discoverVerificationPlan(workspace: Workspace, configured:
   return { source: 'none', commands: [], notes: ['No known test manifest was found. Configure commands in /settings or pass a command to /verify.'] };
 }
 
+function unquoteGitPath(value: string): string | null {
+  if (!value.startsWith('"')) return value;
+  if (value.length < 2 || !value.endsWith('"')) return null;
+  const bytes: number[] = [];
+  const escapedBytes: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '\\': 92, '"': 34 };
+  for (let index = 1; index < value.length - 1; index++) {
+    const character = value[index]!;
+    if (character !== '\\') { bytes.push(...Buffer.from(character, 'utf8')); continue; }
+    const escaped = value[++index];
+    if (escaped === undefined) return null;
+    if (escaped in escapedBytes) { bytes.push(escapedBytes[escaped]!); continue; }
+    const octal = value.slice(index, index + 3);
+    if (/^[0-7]{3}$/.test(octal)) { bytes.push(parseInt(octal, 8)); index += 2; continue; }
+    return null;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+// Porcelain v1 C-quotes paths with spaces, control characters, quotes, or non-ASCII
+// bytes (core.quotePath). Split the old/new rename pair before unquoting so a
+// quoted path that itself contains " -> " is not truncated.
+function splitGitPathTokens(value: string): string[] {
+  const tokens: string[] = [];
+  let index = 0;
+  while (index < value.length) {
+    while (value[index] === ' ') index++;
+    if (index >= value.length) break;
+    if (value[index] === '"') {
+      let end = index + 1;
+      while (end < value.length) {
+        if (value[end] === '\\') { end += 2; continue; }
+        if (value[end] === '"') { end++; break; }
+        end++;
+      }
+      tokens.push(value.slice(index, end));
+      index = end;
+    } else {
+      const arrow = value.indexOf(' -> ', index);
+      if (arrow < 0) { tokens.push(value.slice(index)); break; }
+      tokens.push(value.slice(index, arrow));
+      index = arrow + 4;
+    }
+    while (value[index] === ' ') index++;
+    if (value.startsWith('->', index)) index += 2;
+  }
+  return tokens;
+}
+
 export function parseGitStatusPaths(output: string): string[] {
   const paths = new Set<string>();
   for (const line of output.split(/\r?\n/)) {
     if (line.length < 4 || line[0] === ' ' && line[1] === ' ') continue;
     const status = line.slice(0, 2);
     if (!/[ MADRCU?!]/.test(status[0]!) && !/[ MADRCU?!]/.test(status[1]!)) continue;
-    let filename = line.slice(3);
-    const rename = filename.lastIndexOf(' -> ');
-    if (rename >= 0) filename = filename.slice(rename + 4);
-    filename = filename.trim();
-    if (!filename || filename.startsWith('"')) continue;
+    const tokens = splitGitPathTokens(line.slice(3));
+    const filename = tokens.length ? unquoteGitPath(tokens.at(-1)!) : null;
+    if (!filename) continue;
     const normalized = filename.replaceAll('\\', '/');
     if (normalized.split('/').some(part => ['.git', '.polonrlm', '.januszgpt'].includes(part.toLowerCase()))) continue;
     paths.add(normalized);
