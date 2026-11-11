@@ -1853,6 +1853,19 @@ test('local compaction keeps a Polish historical requirement and the latest requ
   assert.ok(estimateTokens(compacted.messages) <= 1_800);
 });
 
+test('explicit model compaction asks for a structured summary and records its usage', async t => {
+  let calls = 0;
+  const h = await harness(t, async (messages) => {
+    calls++;
+    assert.match(messages.at(-1)?.content ?? '', /Summarize the following history/);
+    return { ...reply('MODEL_COMPACTION_SUMMARY'), usage: { input: 7, output: 3, cached: 0, cost: 0, costKnown: true } };
+  }, {}, 0);
+  const result = await h.runtime.summarizeContext([{ role: 'user', content: 'Keep the public API stable.' }], 500, new AbortController().signal);
+  assert.equal(calls, 1);
+  assert.equal(result.text, 'MODEL_COMPACTION_SUMMARY');
+  assert.equal(result.usage.input, 7);
+});
+
 test('local compaction retains an explicit decision marker', () => {
   const marker = 'DECISION_KEEP_PUBLIC_API_7712';
   const messages: Message[] = [{ role: 'user', content: `Decision: keep the public API stable and preserve ${marker}. ${'Historical context. '.repeat(300)}` }];

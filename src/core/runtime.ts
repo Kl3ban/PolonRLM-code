@@ -194,6 +194,17 @@ export class AgentRuntime {
     private skills: SkillsManager, private mcp: MCPManager, private provider: (id?: string, model?: string) => Promise<LLMProvider>, private emit: (event: RuntimeEvent) => void,
     private readonly providerRetryDelayMs = PROVIDER_RETRY_DELAY_MS, private readonly sandbox?: SandboxExecutor, private readonly plugins?: PluginManager) {}
 
+  async summarizeContext(messages: Message[], targetTokens: number, signal: AbortSignal): Promise<{ text: string; usage: Usage }> {
+    const provider = await this.provider(this.settings.provider);
+    const transcript = clip(redact(messages.map(message => `${message.role}${message.name ? ` (${message.name})` : ''}: ${clip(message.content, 4_000)}`).join('\n\n')), Math.max(8_000, targetTokens * 8));
+    const reply = await provider.complete([
+      { role: 'system', content: 'You compact an agent conversation. Preserve explicit requirements, decisions, file paths, errors, test results, open tasks and constraints. Do not invent work, tools or results. Reply with a concise structured summary only.' },
+      { role: 'user', content: `Summarize the following history for a ${Math.max(200, Math.floor(targetTokens / 3))}-token context budget.\n\n${transcript}` },
+    ], [], () => {}, signal);
+    if (!reply.text.trim()) throw new Error('The model returned an empty compaction summary.');
+    return { text: reply.text.trim(), usage: reply.usage };
+  }
+
   private async timedQuestion(question: AgentQuestion, signal: AbortSignal): Promise<string> {
     const timer = new AbortController(); const timeout = setTimeout(() => timer.abort(new Error('Question timeout')), 300000);
     try { return await this.askQuestion(question, AbortSignal.any([signal, timer.signal])); }

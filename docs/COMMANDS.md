@@ -97,6 +97,7 @@ With no configured verification commands, `/verify` detects standard scripts in 
 | `/recover rollback <id>` | Recovers an unfinished transaction, atomic group, or single pending change. Files changed outside PolonRLM are kept and reported as conflicts. |
 | `checkpoint_create` and related tools | Save, list, compare, restore, or remove project checkpoints. They are encrypted and persist across restarts. |
 | `/compact` | Makes a local extractive summary without another model call. The full transcript stays archived. |
+| `/compact model` | Makes one explicit provider call to write a structured summary, then archives it. The call uses tokens and may be less reliable than the raw transcript. |
 | `/context` | Shows a local token estimate, the app input cap, and known model context. |
 | `/cost` | Shows token use and known provider costs. Unknown prices stay marked unknown. |
 | `/settings browserEngine auto` | Lets PolonRLM choose an available browser. |
