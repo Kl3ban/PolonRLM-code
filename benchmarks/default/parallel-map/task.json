@@ -1,0 +1,6 @@
+{
+  "id": "parallel-map",
+  "title": "Map concurrently and settle each item",
+  "timeoutMs": 600000,
+  "prompt": "Implement parallelMap in src/parallel-map.js as `parallelMap(items, mapper, options)`. It resolves to an array of settlement objects in input order: `{ status: 'fulfilled', value }` when `mapper(item, index)` resolves and `{ status: 'rejected', reason }` when it throws or rejects. A rejected item never rejects the whole result and never stops other items. At most `options.concurrency` mapper calls (default Infinity, meaning no limit) may be in flight at once; `concurrency` must be a positive integer or Infinity. If `options.signal` is an AbortSignal that is already aborted, reject with `signal.reason` without calling `mapper`. If it aborts while work is running, reject with `signal.reason` as soon as possible, start no further mapper calls, and ignore results that arrive later; already-running calls may keep running. An empty `items` array resolves to an empty array. Throw TypeError for a non-array `items`, a non-function `mapper`, or an invalid `concurrency`. Keep the existing named export."
+}

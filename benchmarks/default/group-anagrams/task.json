@@ -1,0 +1,6 @@
+{
+  "id": "group-anagrams",
+  "title": "Group anagram words in first-seen order",
+  "timeoutMs": 600000,
+  "prompt": "Implement groupAnagrams in src/group-anagrams.js. It receives an array of words, where every word is a non-empty string of lowercase ASCII letters a-z, and returns an array of groups. Each group is an array of the input words that are anagrams of one another, kept in input order, and duplicate words appear as separate entries. Groups are ordered by the position of their first word in the input. An empty array returns an empty array. Do not mutate the input. Throw TypeError if the argument is not an array or if any element is not a non-empty lowercase a-z string (uppercase letters, digits, spaces and empty strings are invalid). Keep the existing named export."
+}

@@ -41,3 +41,9 @@ export function cortexTaskText(task: string, previousUserTasks: string[]): strin
   if (!continuation.test(task.trim())) return task;
   return previousUserTasks.at(-1)?.trim() || task;
 }
+
+/** Raise effort by one level without exceeding the user's selected ceiling. */
+export function escalateCortex(decision: CortexDecision, reason: string): CortexDecision {
+  if (decision.level >= decision.requested) return decision;
+  return { ...decision, level: Math.min(decision.requested, decision.level + 1), reason: `stagnation: ${reason}` };
+}

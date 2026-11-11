@@ -1,0 +1,6 @@
+{
+  "id": "sort-by-field",
+  "title": "Stable sort by a numeric or string field",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export sortByField in src/sort-by-field.js. Signature: sortByField(items, field, direction = 'asc'). It returns a new array of the same items sorted by the value at `item[field]`, leaving the input array and its items untouched. Throw TypeError if items is not an array, if field is not a non-empty string, if direction is not exactly 'asc' or 'desc', or if any item is not a non-null object. Every item must have a defined value at field; a missing value or an undefined value throws TypeError. Within one call the extracted values must be either all finite numbers or all strings; mixing numbers with strings, or using booleans, objects, NaN, or Infinity, throws TypeError. Numbers sort numerically and strings sort by JavaScript string comparison (UTF-16 code units), not by locale. Ties keep their original relative order in both directions (stable sort). An empty array returns a new empty array. Keep the existing export."
+}

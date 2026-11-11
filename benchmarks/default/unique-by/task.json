@@ -1,0 +1,6 @@
+{
+  "id": "unique-by",
+  "title": "Keep the first item per computed key",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export uniqueBy in src/unique-by.js. Signature: uniqueBy(items, keyFn). It returns a new array containing the first item for each distinct computed key, in first-seen order. keyFn is called exactly once per item, in input order, with (item, index). Keys are compared with Map/SameValueZero semantics: NaN equals NaN, 0 equals -0, and object keys are compared by identity rather than deep equality. Do not mutate the input array or its items. Throw TypeError if items is not an array or if keyFn is not a function. An empty array returns a new empty array without calling keyFn. If keyFn throws, let that error propagate unchanged and stop processing. Keep the existing export."
+}

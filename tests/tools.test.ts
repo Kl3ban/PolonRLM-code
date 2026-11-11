@@ -180,6 +180,17 @@ test('project_map rebuilds a safe module graph from current files without return
   assert.ok(refreshed.modules.some((entry: any) => entry.path === 'src/lib/helper.ts' && entry.exports.includes('changed')));
 });
 
+test('project_map reports the exact truncation reason when the byte cap is hit', async t => {
+  const f = await fixture(t);
+  await mkdir(path.join(f.root, 'src'), { recursive: true });
+  await writeFile(path.join(f.root, 'src', 'large.ts'), `export const value = "${'x'.repeat(1_100_000)}";`);
+  const map = JSON.parse(await f.run('project_map', { maxBytes: 1_000_000 }));
+  assert.equal(map.truncated, true);
+  assert.equal(map.truncatedReason, 'byte-limit');
+  assert.equal(map.sourceFilesIndexed, 0);
+  await assert.rejects(f.run('project_map', { maxBytes: 0 }), /Invalid arguments/);
+});
+
 test('project_map indexes best-effort symbols and imports in Python, Go and Rust without source text', async t => {
   const f = await fixture(t);
   await mkdir(path.join(f.root, 'src'), { recursive: true });

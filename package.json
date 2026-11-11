@@ -54,6 +54,7 @@
     "bench:agent": "npm run build && node bin/polonrlm.cjs benchmark run",
     "bench:live": "tsx scripts/live-tool-review.ts",
     "test:live": "node scripts/live-smoke.mjs",
+    "test:groq": "npm run build && node scripts/live-groq-smoke.mjs",
     "test:web:local": "tsx scripts/check-local-web.ts",
     "test:web:browser": "tsx scripts/check-browser-tools.ts",
     "test:web:live": "tsx scripts/live-web-smoke.ts"

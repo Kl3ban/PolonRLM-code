@@ -1,0 +1,6 @@
+{
+  "id": "lru-cache",
+  "title": "Build a bounded LRU cache with Map key semantics",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export the class LruCache in src/lru-cache.js. The constructor takes an options object `{ maxSize }`; maxSize must be a positive safe integer, otherwise the constructor throws TypeError (a missing or non-object options argument also throws TypeError). `get(key)` returns the stored value and marks that key as most recently used, or returns undefined when the key is absent; a missing get must not add an entry. `set(key, value)` inserts or updates the value, marks the key as most recently used, and then evicts least recently used entries until at most maxSize entries remain. Updating an existing key must not increase the number of entries. `has(key)` reports membership without changing recency. `delete(key)` removes the entry and returns true only when the key existed. `clear()` removes all entries. `size` is a getter returning the current number of entries. Keys may be any value, including undefined, null, NaN, and objects, and stored values may be undefined; get, has, and delete must distinguish a stored undefined value from a missing key. Key identity follows Map/SameValueZero semantics (NaN matches NaN, 0 matches -0, objects match by identity). Do not use timers. Keep the existing export."
+}

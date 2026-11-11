@@ -40,7 +40,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /image <path>|clear               Attach an image to the next message or clear attachments
 /tools [filter]                   Show available AI tools
 /timeline [count]                 Review recorded model, tool, and verification evidence
-/verify [command|repair [attempts]|history [count]|report <id>] Verify project checks and inspect saved evidence
+/verify [command|reproduce <command>|repair [attempts]|history [count]|report <id>] Verify project checks and inspect saved evidence
 /recover [rollback <id>]         Inspect unfinished changes or safely restore one change group
 /history changes [count]         Browse persistent file change history
 /rollback <change-or-group-id>   Restore saved file changes after hash checks
@@ -565,6 +565,32 @@ export class Controller implements UIController {
       evidence.slice(0, 9000),
     ].join('\n\n');
   }
+  private async recordReproduction(command: string): Promise<void> {
+    if (this.state.busy || this.closing) throw new Error('Wait for the current task before recording a reproduction.');
+    if (this.config.settings.mode !== 'BUILD') throw new Error('Reproduction commands run project code. Switch to BUILD mode first.');
+    const abort = new AbortController();
+    this.abort = abort; this.state.busy = true; this.state.status = 'Recording reproduction'; this.notify();
+    const operation = (async () => {
+      const raw = await this.registry.execute('run_tests', { command }, { signal: abort.signal, mode: this.config.settings.mode, outputLimit: 0 });
+      const result = JSON.parse(raw) as { exitCode?: unknown; stdout?: unknown; stderr?: unknown };
+      if (typeof result.exitCode !== 'number' || !Number.isInteger(result.exitCode)) throw new Error('The reproduction command did not return an integer exit code.');
+      const output = [result.stdout, result.stderr].filter(value => typeof value === 'string' && value.length).join('\n');
+      const workflow = this.store.workflow(this.session);
+      workflow.verificationRepro = { command, baselineExitCode: result.exitCode, baselineOutput: redact(output).slice(-2000), createdAt: Date.now() };
+      this.store.saveWorkflow(this.session, workflow);
+      this.note(result.exitCode === 0
+        ? 'Reproduction recorded, but it already exited 0 before a fix. It is kept as a baseline and will not prove that a regression was fixed.'
+        : `Reproduction recorded (exit ${result.exitCode}). /verify will rerun it as the first check.`);
+    })();
+    this.active = operation;
+    try { await operation; }
+    catch (error: any) { this.note(redact(abort.signal.aborted ? 'Reproduction recording was cancelled.' : error.message ?? String(error)), 'error'); }
+    finally {
+      if (this.active === operation) this.active = undefined;
+      if (this.abort === abort) this.abort = undefined;
+      this.state.busy = false; this.state.status = 'Ready'; this.notify();
+    }
+  }
   private async performVerification(explicitCommand: string | undefined, signal: AbortSignal): Promise<import('./verification.js').VerificationReport> {
     const settings = this.config.settings;
     const plan = await discoverVerificationPlan(this.workspace, settings.verificationCommands, explicitCommand);
@@ -602,6 +628,29 @@ export class Controller implements UIController {
     const before = await hashWorkspaceFiles(this.workspace, [...paths]);
     const checks: VerificationCheck[] = [];
     const diagnostics: VerificationDiagnostic[] = [];
+    const reproduction = this.store.workflow(this.session).verificationRepro;
+    let reproductionBaselinePassed = false;
+    if (reproduction && !signal.aborted) {
+      this.state.status = 'Verifying reproduction'; this.notify();
+      const started = Date.now();
+      try {
+        const raw = await this.registry.execute('run_tests', { command: reproduction.command }, { signal, mode: settings.mode, outputLimit: 0 });
+        const result = JSON.parse(raw) as { exitCode?: unknown; stdout?: unknown; stderr?: unknown };
+        if (typeof result.exitCode !== 'number' || !Number.isInteger(result.exitCode)) throw new Error('The reproduction command did not return an integer exit code.');
+        const output = [result.stdout, result.stderr].filter(value => typeof value === 'string' && value.length).join('\n');
+        const passed = result.exitCode === 0;
+        if (reproduction.baselineExitCode === 0) {
+          reproductionBaselinePassed = true;
+          notes.push('The reproduction command already exited 0 before the change; it does not prove that a reported regression was fixed.');
+        } else if (passed) notes.push('Reproduction now passes; the reported failure is no longer observed.');
+        checks.push({ label: 'reproduction', command: reproduction.command, status: passed ? 'passed' : 'failed', exitCode: result.exitCode, durationMs: Date.now() - started, output: output.slice(-8000) });
+      } catch (error: any) {
+        const message = redact(error.message ?? String(error));
+        const cancelled = signal.aborted;
+        const blocked = !cancelled && /approval denied|unavailable|disabled|not allowed/i.test(message);
+        checks.push({ label: 'reproduction', command: reproduction.command, status: cancelled ? 'cancelled' : blocked ? 'blocked' : 'failed', exitCode: null, durationMs: Date.now() - started, output: message });
+      }
+    }
     for (const item of plan.commands) {
       if (signal.aborted) break;
       this.state.status = `Verifying ${item.label}`; this.notify();
@@ -653,7 +702,7 @@ export class Controller implements UIController {
     if (signal.aborted || checks.some(check => check.status === 'cancelled')) status = 'cancelled';
     else if (checks.some(check => check.status === 'blocked')) status = 'blocked';
     else if (checks.some(check => check.status === 'failed') || diagnostics.some(item => item.diagnostics.length)) status = 'failed';
-    else if (diagnostics.some(item => item.error) || files.some(file => file.changedDuringCheck)) status = 'incomplete';
+    else if (reproductionBaselinePassed || diagnostics.some(item => item.error) || files.some(file => file.changedDuringCheck)) status = 'incomplete';
     else if (!checks.length) status = 'no-checks';
     else status = 'passed';
     const report = makeVerificationReport({ session: this.session, workspace: this.workspace.root, status, commands: checks, diagnostics, files, notes });
@@ -963,6 +1012,11 @@ export class Controller implements UIController {
           if (!Number.isInteger(attempts) || attempts < 1 || attempts > 3) throw new Error('Verification repair attempts must be a whole number from 1 to 3.');
           await this.verify(undefined, attempts); break;
         }
+        if (args[0] === 'reproduce') {
+          const command = tail.slice('reproduce'.length).trim().replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1');
+          if (!command) throw new Error('Use /verify reproduce <command>.');
+          await this.recordReproduction(command); break;
+        }
         const explicit = tail ? tail.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1') : undefined;
         await this.verify(explicit); break;
       }
@@ -1008,7 +1062,7 @@ export class Controller implements UIController {
         const active = this.runtime.agents;
         const recent = this.store.agentRuns(this.session, 5).filter(run => !active.some(agent => agent.id === run.id));
         const activeLines = active.map(agent => `${agent.id} · ${agent.role} · ${agent.status}`);
-        const recentLines = recent.map(run => `${run.id} · ${run.role} · ${run.status} · ${run.changedFiles.length} file(s) · ${new Date(run.updatedAt).toLocaleString('en-US')}`);
+        const recentLines = recent.map(run => `${run.id} · ${run.role} · ${run.status} · ${run.changedFiles.length} file(s)${run.transcript?.length ? ` · ${run.transcript.length} transcript message(s)` : ''} · ${new Date(run.updatedAt).toLocaleString('en-US')}`);
         this.note([
           `Parallel limit: ${displayLimit('maxAgents', settings.maxAgents)}; delegation depth: ${displayLimit('maxDepth', settings.maxDepth)}; Cortex ${settings.cortex} effort: ${CORTEX[settings.cortex]!.name}.`,
           activeLines.length ? `Active:\n${activeLines.join('\n')}` : 'Active: none.',

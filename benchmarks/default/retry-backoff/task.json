@@ -1,0 +1,6 @@
+{
+  "id": "retry-backoff",
+  "title": "Retry with exponential backoff and cancellation",
+  "timeoutMs": 600000,
+  "prompt": "Implement retry in src/retry-backoff.js as `retry(task, options)`. It calls `task(attempt)` with one-based attempts and resolves with the first successful value. Options: `retries` (retries after the first attempt, default 3), `baseMs` (default 10), `maxMs` (default 100), `delay` (function `(ms, attempt) => Promise`, default resolves after `ms` with setTimeout), and `signal` (an AbortSignal). After a failed attempt that will be retried, wait by calling `delay(min(maxMs, baseMs * 2 ** (attempt - 1)), attempt)` and then try again. When all attempts fail, reject with the error from the last attempt only. If `signal` is already aborted, reject with `signal.reason` without calling `task`; if it aborts while waiting between attempts, reject with `signal.reason` immediately and do not call `task` again. Throw TypeError for a non-function `task`, a `retries` that is not a non-negative integer, a `baseMs` or `maxMs` that is not a finite non-negative number, or a non-function `delay`. Keep the existing named export and defaults."
+}

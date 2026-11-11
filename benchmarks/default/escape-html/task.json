@@ -1,0 +1,6 @@
+{
+  "id": "escape-html",
+  "title": "Escape HTML special characters in a single pass",
+  "timeoutMs": 600000,
+  "prompt": "Implement escapeHtml in src/escape-html.js. It receives a string and returns a new string in which every occurrence of &, <, >, \" and ' is replaced by the exact entity &amp;, &lt;, &gt;, &quot; and &#39; respectively. Perform a single left-to-right pass, so that an input already containing an entity such as &amp; becomes &amp;amp; and the ampersands you produce are never escaped again. All other characters, including Unicode text, digits and whitespace, are copied unchanged. An empty string returns an empty string. Do not rely on a DOM or any package. Throw TypeError if the argument is not a string primitive. Keep the existing named export."
+}

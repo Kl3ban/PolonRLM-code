@@ -1,0 +1,6 @@
+{
+  "id": "deep-equal-json",
+  "title": "Deep-compare JSON-compatible values",
+  "timeoutMs": 600000,
+  "prompt": "Implement deepEqualJson in src/deep-equal-json.js. It receives two JSON-compatible values and returns true when they are deeply equal, otherwise false. Objects are compared by their own enumerable string keys regardless of key order, arrays are compared positionally, and strings, finite numbers, booleans and null are compared by value. An array is never equal to an object, and extra keys or extra elements make values unequal. Values that JSON cannot represent are invalid at any depth and must throw TypeError: undefined, functions, symbols, bigints, NaN, Infinity, -Infinity, non-plain objects such as Date, Map, Set or class instances, and cyclic structures. Do not mutate either argument. Keep the existing named export."
+}

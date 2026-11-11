@@ -1,0 +1,6 @@
+{
+  "id": "parse-query",
+  "title": "Parse a URL query string with decoding",
+  "timeoutMs": 600000,
+  "prompt": "Implement parseQuery in src/parse-query.js. It receives a query string, with or without a leading ?, and returns a new plain object mapping decoded parameter names to decoded values. Pairs are separated by & and empty pairs are ignored. The first = separates a name from its value; a pair without = has the empty string as its value. Names and values are percent-decoded, and + means a space. A pair whose decoded name is empty is skipped. When a name repeats, the last value wins. An empty string or a lone ? returns an empty object. Throw TypeError if the argument is not a string or if any percent-encoding is malformed, for example %ZZ, %E0%A4%A or a lone trailing %. Keep the existing named export."
+}

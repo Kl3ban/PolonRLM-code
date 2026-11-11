@@ -1,0 +1,6 @@
+{
+  "id": "async-pool",
+  "title": "Run an async pool with an exact concurrency limit",
+  "timeoutMs": 600000,
+  "prompt": "Implement asyncPool in src/async-pool.js as `asyncPool(items, limit, worker)`. It returns a promise for an array of results in input order. `items` is an array of inputs, `limit` is the maximum number of worker calls that may be in flight at any moment, and `worker(item, index)` returns a value or a promise. Start at most `limit` calls at first, then start a new call only when an earlier one settles. If a worker throws or rejects, the returned promise rejects with that error and no further worker calls start; calls already in flight may settle and their results are discarded. An empty `items` array resolves to an empty array without calling `worker`. Throw TypeError for a non-array `items`, a `limit` that is not a positive integer, or a `worker` that is not a function. Do not mutate the input array. Keep the existing named export."
+}

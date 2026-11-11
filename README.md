@@ -15,11 +15,13 @@ PolonRLM is written in TypeScript and runs on Node.js 24 or newer. It takes insp
 
 - Reads and searches project files, checks Git, edits code, and runs commands.
 - Uses TypeScript and JavaScript symbol tools, AST tools, and language servers.
-- Hands separate tasks to subagents that share the task budget.
+- Runs background commands in a pipe or a real PTY (when the optional `node-pty` dependency is installed).
+- Hands separate tasks to subagents that share the task budget and keeps their run history.
 - Searches the web, controls a headless browser, connects to MCP servers, and can use the Windows desktop.
 - Saves chat history locally and can compact old context without another model call.
 - Connects to hosted APIs, local model servers, or a custom OpenAI-compatible endpoint.
 - Adds opt-in local lifecycle hooks through a small plugin SDK.
+- Ships a local 50-task coding benchmark with hidden graders and reference solutions.
 
 The model chooses when to use tools. Writes, shell commands, and other actions follow the permission settings. By default, PolonRLM asks before sensitive actions. Selected shell, Python, background-process, and language-server tools use OS isolation when available; `/sandbox status` shows the current state. Windows setup is opt-in with `/sandbox setup` followed by `/sandbox setup confirm`.
 

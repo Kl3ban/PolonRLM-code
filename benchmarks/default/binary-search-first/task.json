@@ -1,0 +1,6 @@
+{
+  "id": "binary-search-first",
+  "title": "Find the first index of a target in a sorted array",
+  "timeoutMs": 600000,
+  "prompt": "Implement binarySearchFirst in src/binary-search-first.js. It receives an array of finite numbers sorted in ascending order (the array may contain duplicates) and a finite number target, and returns the index of the first occurrence of target, or -1 when target is absent. Cover an empty array, a single-element array, targets below and above the range, and duplicate runs at the start, middle and end. Do not mutate the input. Throw TypeError if the first argument is not an array, if any element is not a finite number, or if target is not a finite number. Keep the existing named export."
+}

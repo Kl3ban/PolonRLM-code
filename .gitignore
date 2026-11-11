@@ -25,6 +25,8 @@ docs/STATUS.md
 docs/AUDIT-PROGRESS.md
 docs/tool-review-live*
 docs/live-smoke-report.json
+docs/groq-live-report.json
+docs/harness-live-report.json
 docs/web-live-check.json
 docs/network-integration-check.json
 docs/screenshots/

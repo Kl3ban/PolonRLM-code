@@ -68,7 +68,8 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/settings cortexStrategy adaptive\|fixed` | Adaptive lowers delegation for simple tasks without adding a hard call limit. Fixed always uses the selected `/cortex` level. |
 | `/settings repeatFailureThreshold 3` | Warns the agent after the same tool or test failure repeats three times. A successful project change or passing test resets the counter. Set `0` to disable. |
 | `/settings agentToolProfiles {"reviewer":["read_file","search_files"]}` | Restricts that subagent role to the listed tools. Omitted roles keep the normal tool set; an empty list disables tools for that role. |
-| `/verify` | Runs configured or detected checks, gathers diagnostics for changed TypeScript/JavaScript files and their direct or transitive importers, and records file hashes and exit codes. |
+| `/verify` | Runs configured or detected checks, gathers diagnostics for changed TypeScript/JavaScript files and their direct or transitive importers, and records file hashes and exit codes. If a reproduction command is saved, it runs first as the `reproduction` check. |
+| `/verify reproduce <command>` | Runs a command that demonstrates the reported bug through the normal shell permission and sandbox rules, then saves its exit code and bounded output. A later `/verify` reruns it; a baseline that already exited 0 is reported as incomplete evidence rather than a fix. |
 | `/verify <command>` | Runs one explicit project command through the normal shell approval rules. |
 | `/verify repair [attempts]` | After a failed check, asks the selected model to repair the reported failure, then independently reruns verification. Defaults to one repair attempt; accepts 1 to 3. Repair calls share the same token, cost, model-call, and role budgets; tool calls still follow normal permissions and approvals. |
 | `/verify history [count]` | Shows saved verification reports for this chat. |
@@ -78,7 +79,7 @@ The runtime also detects repeated two to eight step tool sequences with matching
 
 Shell, Python, background-process and LSP commands use OS isolation when available. In `auto` mode an unavailable backend is reported and host execution follows the configured permission policy; `/permissions all` intentionally bypasses prompts. `required` mode blocks the command instead of falling back. See [SANDBOX.md](SANDBOX.md) and `/sandbox status`.
 
-With no configured verification commands, `/verify` detects standard scripts in `package.json`, Cargo, Go, Python, .NET, Gradle, or Maven manifests. Detection does not install dependencies. A passing command is evidence for that command only; it does not prove correctness against hidden tests or guarantee that every project change is covered. When changed TypeScript/JavaScript files are present, the report also includes bounded reverse-import dependents from `project_map` so diagnostics and hashes cover code that imports the change.
+With no configured verification commands, `/verify` detects standard scripts in `package.json`, Cargo, Go, Python, .NET, Gradle, or Maven manifests. Detection does not install dependencies. A passing command is evidence for that command only; it does not prove correctness against hidden tests or guarantee that every project change is covered. When changed TypeScript/JavaScript files are present, the report also includes bounded reverse-import dependents from `project_map` so diagnostics and hashes cover code that imports the change. `/verify reproduce` stores an explicit reproduction command; the controller reruns it during verification and reports `incomplete` when the command already passed before the change.
 
 ## Files, images and research
 

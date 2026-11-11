@@ -1,0 +1,6 @@
+{
+  "id": "memoize-json",
+  "title": "Memoize functions by JSON-serialized arguments",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export memoizeJson in src/memoize-json.js. It receives a function fn and returns a memoized wrapper; if fn is not a function, throw TypeError. The wrapper builds its cache key as JSON.stringify(args), where args is the complete arguments array of the wrapper call, and stores one Map entry per key string. The key does not include `this`. On a cache miss the wrapper calls fn with the same `this` and the same arguments and stores the result, including undefined, null, 0, false, and the empty string. On a cache hit it returns the stored result without calling fn again. Calls with no arguments share a single entry. JSON serialization follows normal JavaScript semantics: if building the key throws (for example for a circular argument or a BigInt), the wrapper propagates that error, does not call fn, and does not cache anything. If fn throws, the error propagates unchanged and nothing is cached for that key, so the next identical call invokes fn again. The wrapper exposes `cache`, the Map used for storage, and `clear()`, which empties that Map and returns undefined. Do not mutate the arguments. Keep the existing export."
+}

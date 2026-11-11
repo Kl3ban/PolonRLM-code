@@ -1,0 +1,6 @@
+{
+  "id": "dedupe-primitives",
+  "title": "Deduplicate primitive values with SameValueZero order",
+  "timeoutMs": 600000,
+  "prompt": "Implement dedupePrimitives in src/dedupe-primitives.js. It receives an array of primitive values (string, number, boolean, null, undefined, symbol or bigint) and returns a new array containing every distinct value once, in first-seen order, keeping the first occurrence of each value. Comparison follows SameValueZero, so NaN is equal to NaN. Different types are never equal, so 1 and '1' are distinct and so are true and 1. An empty array returns an empty array. Do not mutate the input. Throw TypeError if the argument is not an array or if any element is not a primitive value (objects, arrays, functions, dates and map-like values are invalid). Keep the existing named export."
+}

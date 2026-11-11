@@ -1,0 +1,6 @@
+{
+  "id": "roman-to-int",
+  "title": "Convert canonical Roman numerals to integers",
+  "timeoutMs": 600000,
+  "prompt": "Implement romanToInt in src/roman-to-int.js. It receives a string holding a Roman numeral written with the uppercase letters I, V, X, L, C, D and M in standard subtractive notation, and returns its integer value as a number primitive. Only canonical forms for the values 1 to 3999 are valid: letters must run from largest to smallest except for the six subtractive pairs IV, IX, XL, XC, CD and CM; I, X, C and M may repeat at most three times in a row; V, L and D may not repeat; and 0 is not representable. Throw TypeError if the argument is not a string or is not a canonical Roman numeral, for example '', 'IIII', 'VV', 'IC', 'IL', 'XIIX', 'VX', 'MMMM', 'ABC' or lowercase letters. Keep the existing named export."
+}

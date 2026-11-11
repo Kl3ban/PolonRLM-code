@@ -14,6 +14,7 @@ import type { RecoveryChange, RecoveryChangeState, RecoveryCheckpoint, RecoveryG
 export interface AgentRunRecord {
   session: string; id: string; role: string; task: string; status: string;
   output?: string; error?: string; changedFiles: string[];
+  transcript?: Array<{ role: string; name?: string; content: string }>;
   startedAt: number; updatedAt: number;
 }
 

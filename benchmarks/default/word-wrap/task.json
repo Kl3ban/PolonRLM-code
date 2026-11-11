@@ -1,0 +1,6 @@
+{
+  "id": "word-wrap",
+  "title": "Greedily wrap text words to a width",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export wordWrap in src/word-wrap.js. Signature: wordWrap(text, width). It returns an array of lines produced by greedily wrapping the words of text so each line is at most width characters, except that a single word longer than width is placed on its own line and may exceed width. Words are separated by one or more whitespace characters; whitespace runs are collapsed and never appear at the start or end of a line. A word is never split or hyphenated. Build each line by appending a space and the next word while the resulting line length is at most width, otherwise start a new line. Width and length are measured in UTF-16 code units (String.prototype.length). Empty or whitespace-only input returns []. Throw TypeError if text is not a string. Throw TypeError if width is not a safe integer, and RangeError if width is a safe integer smaller than 1. Keep the existing export."
+}

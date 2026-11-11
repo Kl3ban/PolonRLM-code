@@ -615,6 +615,21 @@ test('adaptive loop guard warns after three identical test failures and resets a
   assert.match(result, /inspect its cause/);
 });
 
+test('adaptive Cortex escalates one level after repeated failure without progress', async t => {
+  const { z } = await import('zod');
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls <= 3) return reply('', [{ id: `escalate-test-${calls}`, name: 'run_tests', arguments: { command: `npm test -- case-${calls}` } }]);
+    return reply('Changed the approach after the escalation.');
+  }, { repeatFailureThreshold: 3, cortex: 3, cortexStrategy: 'adaptive' });
+  h.tools.add('run_tests', 'Return a stable failing test diagnostic.', z.object({ command: z.string() }), false, async () => ({ exitCode: 1, stdout: '', stderr: 'Expected true but received false' }));
+  await h.runtime.run(h.session, 'Diagnose and fix the failing test.', new AbortController().signal);
+  assert.ok(h.events.some(event => event.type === 'status' && /Adaptive Cortex: escalating to Advanced after stagnation/.test(event.text ?? '')));
+  const testResults = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'run_tests');
+  assert.match(testResults[2]!.content, /Adaptive Cortex escalated to Advanced/);
+});
+
 test('adaptive loop guard does not reset after a successful no-op write', async t => {
   const { z } = await import('zod');
   let calls = 0;
@@ -1344,6 +1359,7 @@ test('agent_resume continues a persisted subagent run', { timeout: 15_000 }, asy
       if (childCalls === 2) return reply('First coder complete.');
       if (childCalls === 4) return reply('Second coder complete.');
       assert.match(task, /Previous result/);
+      assert.match(task, /Previous transcript excerpt/);
       assert.match(task, /Write second\.txt as the continuation/);
       return reply('', [{ id: 'second-write', name: 'write_file', arguments: { path: 'second.txt', content: 'second' } }]);
     }
@@ -1353,11 +1369,12 @@ test('agent_resume continues a persisted subagent run', { timeout: 15_000 }, asy
   await h.runtime.run(h.session, 'Run the first delegated task.', signal);
   const first = h.store.agentRuns(h.session, 10).find(run => run.role === 'coder');
   assert.ok(first);
+  assert.ok(first.transcript?.some(message => message.content.includes('Write first.txt')));
   await h.runtime.run(h.session, 'Resume the saved coder run.', signal);
   const runs = h.store.agentRuns(h.session, 10).filter(run => run.role === 'coder');
   assert.equal(runs.length, 2, 'the resumed run is a new persisted run');
   const resumed = runs.find(run => run.id !== first!.id);
-  assert.equal(resumed?.status, 'done');
+  assert.equal(resumed?.status, 'done', resumed?.error);
   assert.deepEqual(resumed?.changedFiles, ['second.txt']);
   assert.ok(providerCalls <= 10, `unexpected provider call count: ${providerCalls}`);
 });

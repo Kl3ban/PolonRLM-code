@@ -1,0 +1,6 @@
+{
+  "id": "debounce-async",
+  "title": "Debounce async calls with an injectable clock",
+  "timeoutMs": 600000,
+  "prompt": "Implement debounceAsync in src/debounce-async.js as `debounceAsync(fn, waitMs, options)`. It returns a debounced function. Every call restarts a `waitMs` timer created with `options.clock` (default clock: `{ setTimeout(callback, ms), clearTimeout(handle) }` backed by the global timers); only when a full `waitMs` passes with no newer call is `fn` invoked once with the newest arguments, and every promise returned during that burst resolves with that single invocation's result. If `fn` throws or rejects, every promise in that burst rejects with the same error. `debounced.cancel()` clears a pending timer and rejects the promises waiting in that burst with an error whose `name` is 'AbortError'; it does nothing when no burst is pending. A call after a burst finished starts a fresh burst. Throw TypeError for a non-function `fn`, a `waitMs` that is not a non-negative finite number, or a clock without callable setTimeout and clearTimeout. Keep the existing named export."
+}

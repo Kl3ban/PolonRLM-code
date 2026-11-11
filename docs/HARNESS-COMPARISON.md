@@ -1,0 +1,75 @@
+# Harness comparison — PolonRLM, OpenCode, Qwen Code, DeepSeek Harness, Codex, Aider, Pi
+
+Date: 2026-11-11. This document separates **implemented and tested in PolonRLM** from **documented by another project** and from **not implemented**. A capability listed for OpenCode or Qwen Code is not a claim that PolonRLM has it.
+
+Sources:
+
+- OpenCode: [intro](https://opencode.ai/docs/), [CLI](https://opencode.ai/docs/cli/), [agents](https://opencode.ai/docs/agents/), [plugins](https://opencode.ai/docs/plugins/), [tools](https://opencode.ai/docs/tools/), [permissions](https://opencode.ai/docs/permissions/).
+- Qwen Code: [tools](https://github.com/QwenLM/qwen-code/blob/main/docs/developers/tools/introduction.md), [subagents](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md), [headless](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/headless.md), [model providers](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/model-providers.md).
+- DeepSeek Harness: [README](https://github.com/deepseek-ai/deepseek-harness/blob/master/README.md), [SAFETY](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md).
+- Groq GPT-OSS 120B: [model page](https://console.groq.com/docs/model/openai/gpt-oss-120b).
+- Codex, Aider and Pi: official project documentation, marked below as documentation-only.
+
+## Capability matrix
+
+| Area | PolonRLM (current code) | OpenCode v2.1.1 | Qwen Code | DeepSeek Harness |
+| --- | --- | --- | --- | --- |
+| File read/search | `read_file`, `read_files`, `search_files`, `search_content`, `search_batch`, `project_map`; tested | File tools, glob/grep, LSP integration; docs | `read_file`, `glob`, `grep_search`, `list_directory`, `notebook_edit`; docs | `read`, `glob`, `grep`; implemented in current profile |
+| Editing | Exact text edit, patch, delete, AST edit, TypeScript rename; tested | Edit/write/patch; docs | `write_file`, `edit` with multi-stage correction, notebook edit; docs | `write`, `edit`; implemented |
+| Shell and PTY | `execute_command`, PowerShell, Python, `run_tests`, background jobs, real PTY option; tested | Shell tool; docs | `run_shell_command`, `monitor`; docs | `pwsh` + background jobs; implemented |
+| Git | `git_status/diff/log/show/blame/commit`; tested | Via shell / project snapshot features; docs | Via shell (`run_shell_command`); no dedicated Git tool in tool reference | Via `pwsh`; no dedicated Git tool |
+| LSP / diagnostics | `lsp_request`, TypeScript diagnostics, outline, AST; tested | LSP integration documented | Experimental LSP tool, diagnostics, code actions; docs | Not in current tool list |
+| Web / browser | Web search without API key, fetch, downloads, headless browser sessions; tested | Web search, MCP, browser integration; docs | `web_fetch`, `web_search` (provider-backed), browser/computer use; docs | `web_search`, `web_fetch`; implemented |
+| Images / documents | Image attachments, PDF/DOCX/XLSX reading, OCR; tested | Attachments; docs | Images, PDFs, media, notebook reading; docs | `read_image`, Office skills; implemented |
+| Permissions / sandbox | Approval rules, per-tool policies, OS sandbox when SRT/Seatbelt/Bubblewrap is available; sandbox currently unprovisioned on this Windows machine | Permission/policy system; docs | Approval modes, Docker/macOS sandbox; docs | Approval/sandbox controls; safety notice says no security audit |
+| Subagents | Isolated copies, task graph, atomic apply, persisted runs, transcript-aware resume; tested | Agents/subagents; docs | Named subagents, fork context, background continuation, team/worktree features; docs | `subagent`/`subagent_fork`, workflow; implemented |
+| Planning / goals | `/goal`, persistent plan, task graph; tested | Agents/commands; docs | `/goal`, todo, plan mode; docs | `goal`, `schedule`, `todo_write`; implemented |
+| History / context | SQLite history, local compaction, requirements/blockers retention, archive search; tested | Compaction/snapshots; docs | Compression, memory, session continuation; docs | Session log/compaction; implemented |
+| Plugins / MCP | MCP, lifecycle-hook plugin SDK, skills; tested but plugins cannot register tools | Plugins, MCP, skills; docs | MCP, extensions, hooks, skills, channels; docs | Everything-is-a-plugin Cordis architecture; development preview |
+| Verification / recovery | `/verify`, impact analysis, reproduction command, recovery journal, checkpoints; tested | Snapshots; docs | Approval and tests; no equivalent named verification engine in tool docs | Not a built-in verification engine |
+| Benchmark / comparison | 50-task local pack target, hidden graders, harness matrix; this work | Not a built-in benchmark | Not a built-in benchmark | Not a built-in benchmark |
+| Interfaces | Terminal TUI, local web tooling, no desktop GUI | CLI, desktop app, web, ACP, Docker | CLI, VS Code/Zed/JetBrains, headless, daemon, SDKs, channels | CLI, web UI, desktop |
+
+## Live comparison protocol
+
+The live comparison uses the same Groq model (`openai/gpt-oss-120b`), the same task prompt, the same starter workspace and the same hidden grader. Harnesses are run in separate temporary copies. PolonRLM runs through its `Controller`; OpenCode runs with `opencode run --standalone`; Qwen Code is attempted in headless mode with an isolated `USERPROFILE` and Groq OpenAI-compatible settings. A harness that cannot run is recorded as `not run` with the concrete error, never as a pass.
+
+Live results are stored in `docs/harness-live-report.json` (ignored by Git because it is machine-local evidence). The report records task, harness, pass/fail, duration, and token usage where the harness exposes it.
+
+### Live result — 2026-11-11
+
+Model: `openai/gpt-oss-120b` via Groq. One run per harness/task, same prompt and starter, hidden grader. This is a smoke test, not a ranking.
+
+| Task | PolonRLM | OpenCode v2.1.1 |
+| --- | --- | --- |
+| `retry-status` | FAIL — edited the file, but the hidden grader still failed one group; 222.7 s | PASS — 121.7 s |
+| `group-by` | FAIL — only directory listing calls, no completed edit; 41.8 s | PASS — 224.8 s |
+| `merge-intervals` | FAIL — inspection only, no completed edit; 72.0 s | FAIL — Groq daily token limit reached before the edit; 4.7 s |
+
+PolonRLM reported 25,033 input / 905 output tokens for `retry-status`, 4,693 / 82 for `group-by`, and 7,174 / 135 for `merge-intervals`; cached tokens were zero. Groq reported `costKnown=false`. After these runs the supplied Groq key hit the **200,000 tokens-per-day** limit, so no further benchmark tasks were run.
+
+Qwen Code 0.27.2 was installed in a temporary prefix and answered a text-only probe through Groq in safe mode (4,586 input / 41 output tokens). A non-safe-mode probe hit Groq's 8,000 TPM limit, and the Windows file watcher crashed one attempt with a libuv assertion. Qwen Code was therefore **not run** on the benchmark tasks; the table above must not be read as a Qwen result.
+
+The result is deliberately reported as-is. It shows that the same model can behave differently in two harnesses, but three tasks and one run are far too little to claim a general advantage.
+
+## Real gaps after this work
+
+1. **Exact subagent session restore**: PolonRLM persists a bounded transcript and can resume with it, but it does not restore the deleted worktree or unapplied diff. Qwen Code retains background-agent state and can continue completed agents; OpenCode has session/agent infrastructure.
+2. **Background agent notifications**: Qwen Code can run named agents in the background and deliver completion notifications. PolonRLM subagents are synchronous within a task.
+3. **Formatters, references, snapshots, policies**: OpenCode documents these as first-class configuration surfaces. PolonRLM has checkpoints/recovery but not a formatter pipeline or reference index.
+4. **SDK/daemon/ACP/GUI**: Qwen Code, OpenCode and DSH expose more product surfaces (SDK, daemon, ACP, web/desktop) than PolonRLM's terminal-first CLI.
+5. **Plugin tools**: DSH and OpenCode allow plugins to contribute tools and UI. PolonRLM's plugin SDK currently provides bounded lifecycle hooks, not tool registration.
+6. **Sandbox provisioning and coverage**: PolonRLM's OS sandbox is conditional and does not cover MCP, browser, desktop or plugins. Codex/Qwen/OpenCode document broader sandbox integration. On this Windows machine SRT is not provisioned, so host fallback is the current behaviour.
+7. **Notebook and media breadth**: Qwen Code documents notebook editing, PDF/media handling and computer use. PolonRLM has text/PDF/DOCX/XLSX and images, not notebook editing or audio/video.
+8. **Code index**: PolonRLM caps source indexing and uses best-effort non-JS parsers. It does not have BM25/vector search or monorepo-sharded indexes.
+9. **Benchmark scale**: PolonRLM now has a larger local pack, but it is not a public SWE-bench-style comparison and does not prove parity with any harness.
+10. **Prompt-cache and local-model optimisation**: Qwen Code and OpenCode document provider/caching features; PolonRLM tracks cached usage but does not optimise prompt prefixes per provider.
+
+## What PolonRLM does better or differently
+
+- One repository with built-in Git, AST/LSP, checkpoints, durable recovery, `/verify` evidence and a task-graph subagent model, rather than relying on shell or plugins for all of it.
+- Local web search without a paid search API key, plus browser egress controls.
+- Explicit Windows desktop automation and a local web research worker.
+- A small, readable TypeScript codebase with CI on Windows, Ubuntu and macOS.
+
+These are architectural choices, not proof of better coding results. The live matrix is deliberately small and should not be presented as a ranking.

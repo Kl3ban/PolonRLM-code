@@ -1,0 +1,6 @@
+{
+  "id": "safe-json-parse",
+  "title": "Parse JSON safely with an unchanged fallback",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export safeJsonParse in src/safe-json-parse.js. Signature: safeJsonParse(text, fallback = undefined). It returns JSON.parse(text) when text is a string containing valid JSON, and returns the fallback value unchanged when parsing fails for any reason. Returning the fallback unchanged means the same reference is returned (no cloning or copying) and a function fallback is returned without being called. Valid JSON primitives must be returned exactly as parsed: for example 'null' returns null, 'false' returns false, '0' returns 0, and '\"\"' returns ''. Surrounding whitespace is allowed. Invalid input includes empty or whitespace-only strings, truncated JSON, trailing non-whitespace text, and the literal 'undefined'. Text that is not a string (including undefined, null, numbers, objects, arrays, and booleans) throws TypeError. The fallback is never used for a successful parse. Do not use eval, timers, or I/O. Keep the existing export."
+}

@@ -1,0 +1,6 @@
+{
+  "id": "is-balanced",
+  "title": "Check bracket balance and nesting in text",
+  "timeoutMs": 600000,
+  "prompt": "Implement isBalanced in src/is-balanced.js. It receives a string and returns true when every opening bracket (, [ or { has a matching closing bracket ), ] or } in the correct nested order, and false otherwise. Bracket pairs must not interleave, so ([)] is unbalanced. All other characters, including letters, digits, whitespace and punctuation, are ignored and may appear anywhere. An empty string is balanced, as is a string with no brackets. Always return a boolean primitive. Throw TypeError if the argument is not a string. Keep the existing named export."
+}

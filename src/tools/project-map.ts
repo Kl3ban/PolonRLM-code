@@ -17,6 +17,7 @@ const SECRET_PATH = /(^|\/)(?:\.env(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|credentials
 const TEXT_MANIFESTS = new Set(['package.json', 'tsconfig.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'makefile', 'dockerfile', 'readme.md', 'agents.md', 'qwen.md', 'claude.md', 'contributing.md']);
 const SOURCE_LIMIT = 1000;
 const SOURCE_BYTES_LIMIT = 40_000_000;
+const MAX_SOURCE_BYTES_LIMIT = 100_000_000;
 const MAX_SYMBOLS_PER_FILE = 16;
 const MAX_PROJECT_SYMBOLS = 600;
 const MAX_IMPORT_LENGTH = 120;
@@ -284,7 +285,7 @@ function resolveRelativeImport(from: string, specifier: string, indexed: Set<str
 
 export function registerProjectMap(registry: ToolRegistry, workspace: Workspace, store?: SessionStore): void {
   registry.add('project_map', 'Build or incrementally refresh a read-only architecture index: source inventory, JS/TS import graph and exports, best-effort top-level symbols and imports for Python, Go and Rust, plus root manifests and scripts. The non-JS/TS parser is heuristic, not compiler-grade. Cache stores file metadata, content hashes and summaries, never source text or secrets. Content is re-read for hash validation; unchanged files are not reparsed. Set refresh=true to reparse unchanged files.',
-    z.object({ path: z.string().default('.'), maxFiles: z.number().int().min(20).max(SOURCE_LIMIT).default(120), refresh: z.boolean().default(false) }), true,
+    z.object({ path: z.string().default('.'), maxFiles: z.number().int().min(20).max(SOURCE_LIMIT).default(120), maxBytes: z.number().int().min(1_000_000).max(MAX_SOURCE_BYTES_LIMIT).default(SOURCE_BYTES_LIMIT), refresh: z.boolean().default(false) }), true,
     async (args, context: ToolContext) => {
       const target = await workspace.resolve(args.path);
       await workspace.list(args.path);
@@ -317,7 +318,7 @@ export function registerProjectMap(registry: ToolRegistry, workspace: Workspace,
         catch { /* A damaged optional index must never prevent a fresh project scan. */ }
       }
       const nextFiles: Record<string, CachedFile> = Object.create(null) as Record<string, CachedFile>;
-      let cachedFiles = 0, refreshedFiles = 0, sourceBytesRead = 0, sourceBytesParsed = 0, sourceBytesConsidered = 0, skippedSources = 0;
+      let cachedFiles = 0, refreshedFiles = 0, sourceBytesRead = 0, sourceBytesParsed = 0, sourceBytesConsidered = 0, skippedSources = 0, byteLimitReached = false;
       const sourcePaths = allPaths.filter(absolute => SOURCE.test(absolute)).slice(0, args.maxFiles);
       const moduleMap = new Map<string, { language: ProjectLanguage; imports: string[]; exports: string[]; symbols: ProjectSymbol[] }>();
       const external = new Map<string, number>();
@@ -348,7 +349,8 @@ export function registerProjectMap(registry: ToolRegistry, workspace: Workspace,
           const filename = await workspace.resolve(rel);
           const fingerprinted = await fingerprint(filename);
           const fileBytes = Number(fingerprinted.size);
-          if (!Number.isSafeInteger(fileBytes) || sourceBytesConsidered + fileBytes > SOURCE_BYTES_LIMIT) {
+          if (!Number.isSafeInteger(fileBytes) || sourceBytesConsidered + fileBytes > args.maxBytes) {
+            byteLimitReached = true;
             skippedSources += sourcePaths.length - index; break;
           }
           sourceBytesConsidered += fileBytes;
@@ -411,14 +413,21 @@ export function registerProjectMap(registry: ToolRegistry, workspace: Workspace,
       }
       const rootFiles = allPaths.filter(absolute => path.dirname(absolute) === target && (TEXT_MANIFESTS.has(path.basename(absolute).toLowerCase()) || /\.(?:sln|csproj|xcodeproj)$/i.test(absolute))).map(relative).slice(0, 80);
       const omitted = Math.max(0, allPaths.length - sourcePaths.length - manifestPaths.length);
+      const sourceFilesFound = allPaths.filter(absolute => SOURCE.test(absolute)).length;
+      const truncatedReasons: string[] = [];
+      if (fileListTruncated) truncatedReasons.push('file-list');
+      if (sourcePaths.length < sourceFilesFound) truncatedReasons.push('file-count');
+      if (byteLimitReached) truncatedReasons.push('byte-limit');
+      else if (skippedSources > 0) truncatedReasons.push('unreadable-source');
       return {
         root: workspace.root,
         filesSeen: allPaths.length,
-        sourceFilesFound: allPaths.filter(absolute => SOURCE.test(absolute)).length,
+        sourceFilesFound,
         sourceFilesIndexed: moduleEntries.length,
         sourceBytesRead,
         sourceBytesParsed,
-        truncated: fileListTruncated || sourcePaths.length < allPaths.filter(absolute => SOURCE.test(absolute)).length || skippedSources > 0,
+        truncated: truncatedReasons.length > 0,
+        ...(truncatedReasons.length ? { truncatedReason: truncatedReasons.join(',') } : {}),
         skippedSources,
         topLevelAreas: [...folders].sort((a, b) => b[1] - a[1]).slice(0, 60).map(([name, files]) => ({ name, files })),
         filesByExtension: [...byExtension].sort((a, b) => b[1] - a[1]).slice(0, 35).map(([extension, files]) => ({ extension, files })),

@@ -594,6 +594,27 @@ test('/verify runs configured checks, records diagnostics and file hashes, and k
   } finally { await controller?.close(); await local.dispose(); }
 });
 
+test('/verify reproduce records a failing baseline and gates on the rerun', async t => {
+  const f = await fixture();
+  const controller = await Controller.open(f.root, f.home); t.after(async () => { await controller.close(); await f.dispose(); });
+  controller.setApprover(async () => true);
+  const script = path.join(f.root, 'repro.mjs');
+  await writeFile(script, 'process.exit(1);\n');
+  await controller.submit('/verify reproduce node repro.mjs');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Reproduction recorded \(exit 1\)/);
+  await writeFile(script, 'process.exit(0);\n');
+  await controller.submit('/verify');
+  const passed = controller.snapshot().messages.map(message => message.text).join('\n');
+  assert.match(passed, /VERIFICATION PASSED/);
+  assert.match(passed, /Reproduction now passes/);
+
+  await controller.submit('/verify reproduce node repro.mjs');
+  await controller.submit('/verify');
+  const incomplete = controller.snapshot().messages.map(message => message.text).join('\n');
+  assert.match(incomplete, /VERIFICATION INCOMPLETE/);
+  assert.match(incomplete, /already exited 0 before the change/);
+});
+
 test('/verify repair makes a bounded repair call only after a failed check, then reruns independent verification', { timeout: 20_000 }, async () => {
   const local = await fixture();
   let controller: Controller | undefined;

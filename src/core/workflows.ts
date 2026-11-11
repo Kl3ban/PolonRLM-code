@@ -4,6 +4,7 @@ export interface WorkflowState {
   goal?: { objective: string; status: 'active' | 'paused' | 'complete' | 'limit'; tokenBudget: number; usedTokens: number; evidence?: string };
   grill?: { task: string; summary?: string; active: boolean };
   plan?: { step: string; status: 'pending' | 'in_progress' | 'done' }[];
+  verificationRepro?: { command: string; baselineExitCode: number; baselineOutput: string; createdAt: number };
 }
 export const questionSchema = z.object({
   question: z.string().min(1).max(1500),

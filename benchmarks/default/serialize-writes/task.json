@@ -1,0 +1,6 @@
+{
+  "id": "serialize-writes",
+  "title": "Serialize asynchronous writes in submission order",
+  "timeoutMs": 600000,
+  "prompt": "Implement createWriteQueue in src/serialize-writes.js. `createWriteQueue()` returns an object with `enqueue(operation)`, `pending()`, and `onIdle()`. `enqueue` takes a function that returns a value or a promise, starts it only after every previously enqueued operation has settled, and returns a promise that adopts that operation's result or error. Operations must start in submission order and never overlap; a rejected or throwing operation must not block later ones. `pending()` returns the number of enqueued operations that have not settled yet, including the one currently running. `onIdle()` returns a promise that resolves once the queue is empty and the running operation has settled; it resolves immediately when the queue is already idle, and multiple callers may wait at once. Throw TypeError synchronously when `operation` is not a function. Keep the existing named export."
+}

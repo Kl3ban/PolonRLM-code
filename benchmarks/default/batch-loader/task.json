@@ -1,0 +1,6 @@
+{
+  "id": "batch-loader",
+  "title": "Batch loads made in the same tick",
+  "timeoutMs": 600000,
+  "prompt": "Implement createBatcher in src/batch-loader.js. `createBatcher(loadMany)` returns an object with a single `load(key)` method. Calls to `load` made in the same tick are collected into one batch and passed as a single array of unique keys, in first-seen order, to `loadMany(keys)`, which returns a value or a promise for an array with one value per key. Each `load` promise resolves with the value at its key's position. Repeated keys within one batch are passed to `loadMany` only once and every promise for that key resolves with the same value. If `loadMany` throws or rejects, every promise in that batch rejects with that error. If an entry of the resolved array is an Error instance, only the promise for that key rejects with it. If `loadMany` does not resolve to an array with one entry per key, every promise in that batch rejects with a TypeError. `loadMany` must never be called with an empty keys array, and separate ticks produce separate batches. Throw TypeError synchronously when `loadMany` is not a function. Keep the existing named export."
+}

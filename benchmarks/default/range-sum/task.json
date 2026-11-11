@@ -1,0 +1,6 @@
+{
+  "id": "range-sum",
+  "title": "Answer inclusive range sums from a copied array",
+  "timeoutMs": 600000,
+  "prompt": "Implement and export the class RangeSum in src/range-sum.js. The constructor takes an array of finite numbers and must throw TypeError if the argument is not an array, if it contains a sparse hole, or if any element is not a finite number (typeof 'number' and Number.isFinite). The constructor copies the values so later mutation of the input array does not affect queries. `sumRange(left, right)` returns the sum of the values at inclusive, zero-based indices left through right. It must throw TypeError if left or right is not a safe integer, and RangeError if either index is outside the array, if left > right, or if the array is empty. Empty arrays are allowed by the constructor, but every sumRange call on one throws RangeError. Use no timers and no I/O. Keep the existing export."
+}

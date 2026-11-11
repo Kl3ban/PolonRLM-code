@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -345,6 +345,26 @@ export class LruTtlCache {
       assert.equal(result?.passed, true, `${task.id} hidden grader: ${result?.summary}`);
       await execa(process.execPath, ['--test'], { cwd: workspace, timeout: 30_000, windowsHide: true });
     }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('every task with a reference solution passes its hidden grader', async () => {
+  const tasks = await loadBenchmarkTasks(defaultPack);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'polonrlm-benchmark-references-'));
+  let checked = 0;
+  try {
+    for (const task of tasks) {
+      const reference = path.join(task.directory, 'reference');
+      try { await stat(reference); } catch { continue; }
+      const workspace = path.join(root, task.id);
+      await copyBenchmarkWorkspace(task.workspace, workspace);
+      await cp(reference, workspace, { recursive: true, force: true });
+      const grader = await import(pathToFileURL(task.grader).href + `?reference=${task.id}`);
+      const result = await grader.grade(workspace);
+      assert.equal(result?.passed, true, `${task.id} reference solution failed: ${result?.summary}`);
+      checked++;
+    }
+    assert.ok(checked >= 36, `expected at least 36 reference-backed tasks, found ${checked}`);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -1,0 +1,6 @@
+{
+  "id": "flatten-depth",
+  "title": "Flatten nested arrays by an exact depth",
+  "timeoutMs": 600000,
+  "prompt": "Implement flattenDepth in src/flatten-depth.js. It receives an array and a depth that is a non-negative integer, and returns a new array flattened by exactly that many levels: depth 0 returns a shallow copy of the input, depth 1 unwraps one level of nested arrays, and so on. Elements are never flattened deeper than the given depth, so arrays nested past the limit stay in the result as arrays, and non-array elements such as objects, null and undefined are copied unchanged and keep their identity. An empty array returns an empty array. Do not mutate the input. Throw TypeError if the first argument is not an array or if depth is not a non-negative integer (negative numbers, fractions, numeric strings, NaN, Infinity, null and undefined are invalid). Keep the existing named export."
+}

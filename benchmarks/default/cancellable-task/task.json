@@ -1,0 +1,6 @@
+{
+  "id": "cancellable-task",
+  "title": "Run a task that can be cancelled",
+  "timeoutMs": 600000,
+  "prompt": "Implement createCancellableTask in src/cancellable-task.js. It takes an executor function and returns an object with `start()`, `cancel(reason)`, and `status()`. The first `start()` calls `executor(signal)` synchronously with an AbortSignal and returns a promise for its result; later `start()` calls return that same promise without calling the executor again. `status()` returns 'idle' before the first start, 'running' while the executor is unsettled, 'fulfilled' or 'rejected' after it settles, and 'cancelled' after a cancellation. `cancel(reason)` settles an unsettled task by aborting the signal with `reason` and rejecting the task promise with that same reason, then returns true; if the task already settled or was already cancelled it returns false, leaves the settled result unchanged, and does not abort the signal. A task cancelled before `start()` never calls the executor, and its `start()` returns a promise rejected with the cancellation reason. Cancelling without a reason uses an Error whose `name` is 'AbortError'. An executor rejection that arrives after cancellation must not be surfaced. Throw TypeError if `executor` is not a function. Keep the existing named export."
+}

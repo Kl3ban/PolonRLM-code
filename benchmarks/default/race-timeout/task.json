@@ -1,0 +1,6 @@
+{
+  "id": "race-timeout",
+  "title": "Add a timeout race with an injectable clock",
+  "timeoutMs": 600000,
+  "prompt": "Implement `withTimeout` and `TimeoutError` in src/race-timeout.js. `withTimeout(operation, ms, options)` calls `operation()` once and returns a promise that follows its result. If the operation has not settled within `ms` milliseconds, the returned promise rejects with a `TimeoutError` whose `name` is 'TimeoutError' and whose `timeoutMs` property equals `ms`; a result or error that arrives after the timeout must be ignored and must not cause an unhandled rejection. The timer must be cancelled when the operation settles first. `options.timer` may replace the clock and is a function `(ms) => ({ promise, cancel })` where `promise` resolves when the timeout fires and `cancel()` releases the timer; the default timer resolves with setTimeout and its `cancel` clears the timeout. Throw TypeError for a non-function `operation`, an `ms` that is not a positive finite number, or a `timer` that is not a function. Keep both named exports."
+}
