@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
 import { z } from 'zod';
 import { StringDecoder } from 'node:string_decoder';
+import { chmodSync, readdirSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import type { IPty } from 'node-pty';
 import { safeText, subprocessEnvironment } from '../core/secrets.js';
 import type { ToolRegistry } from './registry.js';
@@ -11,6 +14,26 @@ import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
 // node-pty on Windows keeps a worker thread and ConPTY sockets referenced after
 // the child exits. These are not public API, so keep the cleanup best-effort and
 // pinned to the exact optional dependency version.
+// npm tarballs have lost the execute bit on node-pty's spawn-helper on some
+// POSIX installs, which makes posix_spawnp fail. Repair it before the first PTY.
+function ensurePtyHelperExecutable(): void {
+  if (process.platform === 'win32') return;
+  try {
+    const require = createRequire(import.meta.url);
+    const packageRoot = path.dirname(path.dirname(require.resolve('node-pty')));
+    const candidates = [path.join(packageRoot, 'build', 'Release', 'spawn-helper')];
+    try {
+      for (const prebuild of readdirSync(path.join(packageRoot, 'prebuilds'))) candidates.push(path.join(packageRoot, 'prebuilds', prebuild, 'spawn-helper'));
+    } catch { /* The build-tree helper may be the only one. */ }
+    for (const candidate of candidates) {
+      try {
+        const mode = statSync(candidate).mode;
+        if (!(mode & 0o111)) chmodSync(candidate, mode | 0o755);
+      } catch { /* Missing candidates are expected on other platforms. */ }
+    }
+  } catch { /* Let spawn report the concrete error when the helper cannot be repaired. */ }
+}
+
 function releasePty(pty: IPty): void {
   const internal = pty as unknown as {
     _agent?: {
@@ -97,6 +120,7 @@ export function registerProcessTools(registry: ToolRegistry, workspace: Workspac
         throw new Error('PTY mode requires the optional node-pty dependency. Reinstall PolonRLM with optional dependencies enabled, or use interactive=true without pty.');
       }
       const environment = Object.fromEntries(Object.entries(launch.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+      ensurePtyHelperExecutable();
       let ptyProcess: IPty;
       try {
         ptyProcess = ptyModule.spawn(launch.command, launch.args, { name: 'xterm-256color', cols: 120, rows: 30, cwd: workspace.root, env: environment });

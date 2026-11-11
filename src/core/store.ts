@@ -115,7 +115,7 @@ function renameWithRetry(source: string, destination: string): void {
   }
 }
 
-function quarantineCorruptDatabase(filename: string): string {
+function quarantineCorruptDatabase(filename: string): string | undefined {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = `${filename}.corrupt-${stamp}-${randomUUID().slice(0, 8)}`;
   const moved: [source: string, destination: string][] = [];
@@ -126,6 +126,10 @@ function quarantineCorruptDatabase(filename: string): string {
       renameWithRetry(source, destination);
       moved.push([source, destination]);
     } catch (error) {
+      // Another process that held the recovery lock may have moved the main
+      // database just before this process rechecked it. Reopen instead of
+      // reporting a failed quarantine.
+      if (!suffix && (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       if (suffix && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       for (const [original, preserved] of moved.reverse()) {
         try { renameSync(preserved, original); } catch { /* Keep the original failure; never delete either file. */ }
@@ -162,7 +166,9 @@ export class SessionStore {
         try { this.initializeDatabase(); }
         catch (recoveryError) {
           this.db.close();
-          throw new Error(`The damaged chat database was preserved as ${path.basename(this.recoveryBackupPath)}, but a clean database could not be created.`, { cause: recoveryError });
+          throw new Error(this.recoveryBackupPath
+            ? `The damaged chat database was preserved as ${path.basename(this.recoveryBackupPath)}, but a clean database could not be created.`
+            : 'Another process quarantined the damaged chat database, but a clean database could not be created.', { cause: recoveryError });
         }
       } finally {
         releaseRecoveryLock();
