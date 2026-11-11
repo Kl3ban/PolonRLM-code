@@ -238,11 +238,6 @@ test('concurrent PolonRLM processes preserve SQLite sessions and messages', { ti
 test('concurrent PolonRLM processes serialize writes after the stale-hash check', { timeout: 60000 }, async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-workspace-lock-'));
   const root = path.join(home, 'workspace'); await mkdir(root); await writeFile(path.join(root, 'shared.txt'), 'original');
-  t.after(async () => {
-    assert.equal(path.dirname(home), path.resolve(os.tmpdir()));
-    assert.ok(path.basename(home).startsWith('polon-workspace-lock-'));
-    await rm(home, { recursive: true, force: true });
-  });
   const initialStore = new SessionStore(home); initialStore.close();
 
   const urls = Object.fromEntries(['store', 'permissions', 'config', 'workspace'].map(name => [name, pathToFileURL(path.resolve(`src/${name === 'workspace' ? 'tools/workspace' : `core/${name}`}.ts`)).href]));
@@ -276,9 +271,16 @@ test('concurrent PolonRLM processes serialize writes after the stale-hash check'
     child.on('error', error => errors[index] += String(error));
     child.on('close', code => { exitCodes[index] = code; });
   });
+  // After hooks run in registration order. Stop the workers before deleting the
+  // home directory; Windows keeps sessions.sqlite locked until they exit.
   t.after(async () => {
     for (const child of children) if (child.exitCode === null) child.kill();
     await Promise.all(close);
+  });
+  t.after(async () => {
+    assert.equal(path.dirname(home), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(home).startsWith('polon-workspace-lock-'));
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
   const waitFor = async (condition: () => boolean, description: string) => {
     const deadline = Date.now() + 30000;
