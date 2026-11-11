@@ -703,6 +703,7 @@ export class Controller implements UIController {
           { name: 'load_skill', description: 'Load an enabled skill by name.', parameters: { type: 'object' } }];
         if (settings.mode === 'BUILD') {
           if (settings.cortex > 0 && (settings.maxDepth < 0 || settings.maxDepth > 0) && this.permissions.available('delegate', true, settings.mode)) tools.push({ name: 'delegate', description: 'Run independent subagents in separate project copies.', parameters: { type: 'object' } });
+          if (settings.cortex > 0 && (settings.maxDepth < 0 || settings.maxDepth > 0) && this.permissions.available('delegate', true, settings.mode)) tools.push({ name: 'agent_resume', description: 'Resume a subagent from its persisted result.', parameters: { type: 'object' } });
           if (this.permissions.available('agent_changes', false, settings.mode)) tools.push({ name: 'agent_changes', description: 'Show changes proposed by a subagent.', parameters: { type: 'object' } });
           if (this.permissions.available('agent_apply', true, settings.mode)) tools.push({ name: 'agent_apply', description: 'Apply selected subagent changes after checking for conflicts.', parameters: { type: 'object' } });
           if (this.permissions.available('remember', true, settings.mode)) tools.push({ name: 'remember', description: 'Save a short project procedure to memory.', parameters: { type: 'object' } });
@@ -1012,12 +1013,13 @@ export class Controller implements UIController {
           `Parallel limit: ${displayLimit('maxAgents', settings.maxAgents)}; delegation depth: ${displayLimit('maxDepth', settings.maxDepth)}; Cortex ${settings.cortex} effort: ${CORTEX[settings.cortex]!.name}.`,
           activeLines.length ? `Active:\n${activeLines.join('\n')}` : 'Active: none.',
           recentLines.length ? `Recent persisted runs:\n${recentLines.join('\n')}` : 'Recent persisted runs: none.',
+          'Use agent_resume with a saved run id to continue it from the persisted result; /agents lists only the latest five.',
         ].join('\n'));
         break;
       }
       case '/permissions': {
         const [action, tool] = args;
-        const registered = new Set([...this.registry.discovery(settings.mode).map(item => item.name), ...this.mcp.tools().map(item => item.name), 'ask_question', 'get_goal', 'update_goal', 'finish_interview', 'discover_tools', 'request_tool', 'search_history', 'delegate', 'agent_message', 'agent_changes', 'agent_apply', 'load_skill', 'remember', 'sandbox_fallback']);
+        const registered = new Set([...this.registry.discovery(settings.mode).map(item => item.name), ...this.mcp.tools().map(item => item.name), 'ask_question', 'get_goal', 'update_goal', 'finish_interview', 'discover_tools', 'request_tool', 'search_history', 'delegate', 'agent_resume', 'agent_message', 'agent_changes', 'agent_apply', 'load_skill', 'remember', 'sandbox_fallback']);
         const names = [...new Set([...registered, ...Object.keys(settings.toolPermissions), ...settings.allowTools, ...settings.denyTools])].sort();
         if (!action || action === 'list') {
           const effective = (name: string) => { const rule = settings.toolPermissions[name]; if (rule) return rule; if (settings.permissions === 'all') return 'auto'; if (settings.denyTools.includes(name) || (settings.allowTools.length && !settings.allowTools.includes(name))) return 'off'; return `global:${settings.permissions}`; };

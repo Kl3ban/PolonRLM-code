@@ -118,7 +118,7 @@ The built in search reads ordinary public search result pages. It does not use a
 | `/plugins enable <id> confirm` | Runs the reviewed version and pins its current SHA-256 hash. |
 | `/plugins disable <id>` | Stops a plugin and keeps its files for later. |
 | `/plugins remove <id>` | Removes its PolonRLM config entry; leaves the source files on disk. |
-| `/agents` | Shows subagents and their current state. |
+| `/agents` | Shows active subagents, recent persisted runs, and their states. The model can continue a saved run from its persisted result with `agent_resume`. |
 | `/steer <id> <note>` | Gives an active subagent a short instruction for its next step. |
 | `/goal <task>` | Saves a longer goal and continues it across turns. |
 | `/goal pause` | Pauses the saved goal. |

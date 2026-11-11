@@ -53,6 +53,8 @@ The user can steer an agent during work with `/steer <id> <message>`. The ID is 
 
 `delegate` also accepts task IDs and `dependsOn` IDs to run a dependency graph. It starts independent nodes in parallel up to `maxAgents`, then starts later nodes only after every prerequisite succeeded. Each wave gets a fresh isolated copy; successful changes from completed waves are staged into later copies, while same-wave siblings never see each other's work. Prerequisite outputs are included as untrusted context. Conflicting file changes fail the conflicting node and skip nodes that depend on it. No graph changes reach the project until the model reviews the combined diff with `agent_changes` and applies selected paths with `agent_apply` using the returned `graphId`.
 
+Every delegated run and dependency graph is also persisted in SQLite: role, task, status, bounded output, error, changed paths, and timestamps. `/agents` shows the latest five runs after a restart. `agent_resume` starts a new isolated run using the saved role, original task, and previous result as context; it does not restore the exact old conversation or unapplied change set.
+
 Example delegation payload:
 
 ~~~json

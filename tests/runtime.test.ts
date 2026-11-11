@@ -1320,6 +1320,48 @@ test('task graph waits for prerequisites, stages their files, and exposes one re
   assert.deepEqual([...graphRun!.changedFiles].sort(), ['backend.txt', 'frontend.txt']);
 });
 
+test('agent_resume continues a persisted subagent run', { timeout: 15_000 }, async t => {
+  let mainCalls = 0, childCalls = 0, providerCalls = 0;
+  const h = await harness(t, async messages => {
+    providerCalls++;
+    const role = /Role: (\w+)\./.exec(messages[0]?.content ?? '')?.[1] ?? '';
+    if (role === 'orchestrator') {
+      mainCalls++;
+      if (mainCalls === 1) return reply('', [{ id: 'delegate-first', name: 'delegate', arguments: { tasks: [{ role: 'coder', task: 'Write first.txt from the first run.' }] } }]);
+      if (mainCalls === 2) return reply('First run done.');
+      if (mainCalls === 3) {
+        const saved = h.store.agentRuns(h.session, 10).find(run => run.role === 'coder');
+        assert.ok(saved);
+        return reply('', [{ id: 'resume-second', name: 'agent_resume', arguments: { id: saved.id, instruction: 'Write second.txt as the continuation.' } }]);
+      }
+      assert.match(messages.findLast(message => message.role === 'tool')?.content ?? '', /resumedFrom/);
+      return reply('Resumed run done.');
+    }
+    if (role === 'coder') {
+      childCalls++;
+      const task = messages.find(message => message.role === 'user')?.content ?? '';
+      if (childCalls === 1) { assert.match(task, /Write first\.txt from the first run/); return reply('', [{ id: 'first-write', name: 'write_file', arguments: { path: 'first.txt', content: 'first' } }]); }
+      if (childCalls === 2) return reply('First coder complete.');
+      if (childCalls === 4) return reply('Second coder complete.');
+      assert.match(task, /Previous result/);
+      assert.match(task, /Write second\.txt as the continuation/);
+      return reply('', [{ id: 'second-write', name: 'write_file', arguments: { path: 'second.txt', content: 'second' } }]);
+    }
+    return reply('Unexpected role.');
+  }, { maxAgents: 2, maxDepth: 1, maxSteps: 30 });
+  const signal = new AbortController().signal;
+  await h.runtime.run(h.session, 'Run the first delegated task.', signal);
+  const first = h.store.agentRuns(h.session, 10).find(run => run.role === 'coder');
+  assert.ok(first);
+  await h.runtime.run(h.session, 'Resume the saved coder run.', signal);
+  const runs = h.store.agentRuns(h.session, 10).filter(run => run.role === 'coder');
+  assert.equal(runs.length, 2, 'the resumed run is a new persisted run');
+  const resumed = runs.find(run => run.id !== first!.id);
+  assert.equal(resumed?.status, 'done');
+  assert.deepEqual(resumed?.changedFiles, ['second.txt']);
+  assert.ok(providerCalls <= 10, `unexpected provider call count: ${providerCalls}`);
+});
+
 test('parallel delegates share tools and budget while reviewer remains read-only', { timeout: 10_000 }, async t => {
   let release!: () => void;
   const bothStarted = new Promise<void>(resolve => { release = resolve; });

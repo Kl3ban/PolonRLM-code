@@ -227,6 +227,24 @@ export class AgentRuntime {
     } catch { /* Persisting subagent history must never fail the task. */ }
   }
 
+  private async resumeAgent(session: string, value: unknown, workspace: Workspace, mode: Mode, depth: number, signal: AbortSignal, budget: RunBudget): Promise<string> {
+    const { id, instruction } = z.object({ id: z.string().min(1).max(100), instruction: z.string().max(4000).optional() }).parse(value);
+    const run = this.store.agentRuns(session, 100).find(item => item.id === id);
+    if (!run) throw new Error(`No persisted subagent run ${id} for this chat. Use /agents to list them.`);
+    if (run.status === 'running') throw new Error('That subagent is still marked running. Wait for it to finish before resuming.');
+    const roles = ['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] as const;
+    const role = (roles as readonly string[]).includes(run.role) ? run.role as typeof roles[number] : 'coder';
+    const task = [
+      `Resume the earlier ${role} run ${run.id}.`,
+      `Original task: ${run.task}`,
+      run.output ? `Previous result: ${clip(run.output, 3000)}` : '',
+      run.error ? `Previous error: ${clip(run.error, 1500)}` : '',
+      instruction ? `Additional instruction: ${instruction}` : 'Continue from the previous result, verify the current files, and report concrete next steps or changes.',
+    ].filter(Boolean).join('\n\n');
+    const result = await this.delegateTasks(session, { tasks: [{ role, task }] }, workspace, mode, depth, signal, budget);
+    return JSON.stringify({ resumedFrom: run.id, runs: JSON.parse(result) });
+  }
+
   private async delegateTasks(session: string, value: unknown, workspace: Workspace, mode: Mode, depth: number, signal: AbortSignal, budget: RunBudget): Promise<string> {
     const { tasks } = z.object({ tasks: z.array(delegationTaskSchema).min(1) }).parse(value);
     const graphMode = tasks.some(task => task.id !== undefined || Boolean(task.dependsOn?.length));
@@ -571,6 +589,7 @@ ${skills.join('\n')}`;
       if (!depth && messages.some(message => message.name === 'polonrlm_context')) specs.push(historySearchToolSpec);
       const canDelegate = !isolated && (this.settings.maxDepth < 0 || depth < this.settings.maxDepth) && cortex.level > 0 && (this.settings.maxAgents === 0 || budget.active < this.settings.maxAgents);
       if (canDelegate) specs.push({ name: 'delegate', description: 'Delegate focused subagent work. Independent tasks run together; add id and dependsOn to form a dependency graph. Later tasks inherit successful staged file changes and short results. Review the returned graphId with agent_changes before applying. Each subagent has isolated tools, shared task budgets, and optional per-role model budgets.', parameters: { type: 'object', properties: { tasks: { type: 'array', minItems: 1, items: { type: 'object', properties: { id: { type: 'string', pattern: '^[A-Za-z0-9_.-]{1,80}$' }, dependsOn: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z0-9_.-]{1,80}$' } }, role: { type: 'string', enum: ['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] }, task: { type: 'string', minLength: 10, maxLength: 12000 } }, required: ['role', 'task'], additionalProperties: false } } }, required: ['tasks'], additionalProperties: false } });
+      if (canDelegate) specs.push({ name: 'agent_resume', description: 'Resume a completed or failed subagent from its persisted result. This starts a new isolated run with the same role, original task, and previous result as context; it is not an exact restored conversation.', parameters: { type: 'object', properties: { id: { type: 'string', minLength: 1, maxLength: 100 }, instruction: { type: 'string', maxLength: 4000 } }, required: ['id'], additionalProperties: false } });
       specs.push({ name: 'load_skill', description: 'Load one enabled skill by name only when required.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false } });
       if (team && agentId && isolated) {
         const peers = team.peers(agentId);
@@ -978,6 +997,8 @@ ${skills.join('\n')}`;
             }
           } else if (call.name === 'delegate' && canDelegate) {
             result = await this.delegateTasks(session, call.arguments, workspace, mode, depth, signal, budget);
+          } else if (call.name === 'agent_resume' && canDelegate) {
+            result = await this.resumeAgent(session, call.arguments, workspace, mode, depth, signal, budget);
           } else if (call.name === 'load_skill') { result = await this.skills.load(z.object({ name: z.string() }).parse(call.arguments).name); }
           else if (call.name === 'remember' && mode === 'BUILD' && !isolated) {
             const { name, body } = z.object({ name: z.string().min(1).max(100), body: z.string().max(3000) }).parse(call.arguments);
