@@ -152,6 +152,8 @@ export class SandboxExecutor {
   }
 
   async installDocker(): Promise<void> {
+    const check = await dockerStatus(this.settings.sandboxDockerImage);
+    if (!check.available) throw new Error(`${check.reason ?? 'Docker is unavailable.'} On Windows, Docker Desktop also requires the Workstation/SMB services (LanmanWorkstation and MRxSmb20) to be enabled; this machine currently blocks them.`);
     await pullDockerImage(this.settings.sandboxDockerImage);
   }
 
