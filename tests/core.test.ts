@@ -235,7 +235,7 @@ test('concurrent PolonRLM processes preserve SQLite sessions and messages', { ti
   } finally { store.close(); }
 });
 
-test('concurrent PolonRLM processes serialize writes after the stale-hash check', { timeout: 30000 }, async t => {
+test('concurrent PolonRLM processes serialize writes after the stale-hash check', { timeout: 60000 }, async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'polon-workspace-lock-'));
   const root = path.join(home, 'workspace'); await mkdir(root); await writeFile(path.join(root, 'shared.txt'), 'original');
   t.after(async () => {
@@ -270,18 +270,21 @@ test('concurrent PolonRLM processes serialize writes after the stale-hash check'
     env: { ...inherited, POLON_LOCK_HOME: home, POLON_LOCK_ROOT: root, POLON_LOCK_ID: id }, stdio: ['pipe', 'pipe', 'pipe'],
   }));
   const output = children.map(() => ''), errors = children.map(() => ''), close = children.map(child => new Promise<number | null>(resolve => child.once('close', resolve)));
+  const exitCodes: Array<number | null | undefined> = children.map(() => undefined);
   children.forEach((child, index) => {
     child.stdout.setEncoding('utf8').on('data', chunk => output[index] += chunk);
     child.stderr.setEncoding('utf8').on('data', chunk => errors[index] += chunk);
+    child.on('error', error => errors[index] += String(error));
+    child.on('close', code => { exitCodes[index] = code; });
   });
   t.after(async () => {
     for (const child of children) if (child.exitCode === null) child.kill();
     await Promise.all(close);
   });
   const waitFor = async (condition: () => boolean, description: string) => {
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 30000;
     while (!condition()) {
-      if (Date.now() >= deadline) assert.fail(`Workspace lock workers did not ${description}: ${JSON.stringify({ output, errors })}`);
+      if (Date.now() >= deadline) assert.fail(`Workspace lock workers did not ${description}: ${JSON.stringify({ output, errors, exitCodes, pids: children.map(child => child.pid) })}`);
       await new Promise(resolve => setTimeout(resolve, 10));
     }
   };

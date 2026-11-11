@@ -214,9 +214,10 @@ test('real p-limit docs case rejects the starter and accepts the recursive-deadl
     await writeFile(readmePath, readme.replace(readmeMarker, `${readmeMarker}\n\n${warning}`));
 
     const declarationPath = path.join(fixed, 'index.d.ts');
-    const declaration = await readFile(declarationPath, 'utf8');
+    const declaration = (await readFile(declarationPath, 'utf8')).replace(/\r\n/g, '\n');
     const declarationMarker = '\t@returns The promise returned by calling `fn(...arguments)`.\n';
     assert.equal(declaration.split(declarationMarker).length, 2, 'expected callable LimitFunction documentation once');
+    assert.equal(declaration.replace(/\n/g, '\r\n').replace(/\r\n/g, '\n').split(declarationMarker).length, 2, 'the marker must remain detectable in a CRLF checkout');
     await writeFile(declarationPath, declaration.replace(declarationMarker, `\t${warning}\n${declarationMarker}`));
 
     const result = await grader.grade(fixed);
