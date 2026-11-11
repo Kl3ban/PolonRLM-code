@@ -40,13 +40,15 @@ Live results are stored in `docs/harness-live-report.json` (ignored by Git becau
 
 Model: `openai/gpt-oss-20b` via Groq, `reasoning_effort=low`. One run per harness/task, same prompt and starter, hidden grader. This is a smoke test, not a ranking. The 120B run earlier hit Groq's 200,000 TPD limit; the 20B model has a separate allowance.
 
-| Task | PolonRLM | OpenCode v2.1.1 |
+| Task | PolonRLM (observed) | OpenCode v2.1.1 |
 | --- | --- | --- |
-| `retry-status` | PASS — 35.3 s | PASS — 163.9 s |
-| `group-by` | FAIL — provider returned empty final responses and retried; no completed edit | PASS — 210.2 s |
-| `merge-intervals` | PASS — 125.8 s | PASS — 281.0 s |
+| `retry-status` | PASS twice — 35.3 s / 42.4 s | PASS — 163.9 s |
+| `group-by` | PASS after the tool-schema fix — 112.1 s; failed before it | PASS — 210.2 s |
+| `merge-intervals` | PASS in the first run — 125.8 s; the latest run hit Groq HTTP 429 | PASS — 281.0 s |
 
-PolonRLM: **2/3**. OpenCode: **3/3**. PolonRLM reported 9,959 input / 267 output tokens for `retry-status` and 14,626 / 628 for `merge-intervals`; `group-by` ended on an empty provider response with zero recorded usage. `costKnown=false` throughout. The result shows that the same model can behave differently in two harnesses, but three tasks and one run are far too little to claim a general advantage.
+PolonRLM: **2/3 in both three-task runs**. OpenCode: **3/3** in its run. The two PolonRLM failures had different causes: the first was a tool-call schema rejection (`read_file` default fields were incorrectly required), fixed; the second was an upstream HTTP 429 after the preceding tasks. No task failed for a logic reason after the schema fix.
+
+PolonRLM reported 7.3–7.7k input tokens for `retry-status`, 7.5k for the passing `group-by`, and 14.6k for `merge-intervals`; `costKnown=false`. The result shows that the same model can behave differently in two harnesses, but three tasks and one run are far too little to claim a general advantage.
 
 Qwen Code 0.27.2 was installed in a temporary prefix. A text-only probe through Groq passed in safe mode (4,586 input / 41 output tokens). The benchmark attempt failed at the provider boundary: Groq returned HTTP 400 because Qwen sent an assistant `reasoning_content` property that the endpoint rejects; earlier attempts also hit the 8,000 TPM limit and a Windows file-watcher crash. Qwen Code is therefore **not run** on the benchmark tasks; the table must not be read as a Qwen result.
 

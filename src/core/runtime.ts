@@ -725,6 +725,7 @@ ${skills.join('\n')}`;
             ? [{ ...system, content: `${system.content}\n\nThis model does not support tool calls. You have no tool schemas or tool access for this turn. Answer the question normally. If the user requests an action involving files, the network, or the system, explain the limitation and do not claim it was done.` }, ...input.slice(1)]
             : input;
           let retryNumber = 0;
+          let forceToolChoice = false;
           while (true) {
             let emittedThisAttempt = false;
             let receivedTextThisAttempt = '';
@@ -739,7 +740,7 @@ ${skills.join('\n')}`;
                 receivedTextThisAttempt += text;
                 const safe = stream.push(text);
                 if (!depth && safe && !holdUnverified) { visiblePartial += safe; emittedThisAttempt = true; this.emit({ type: 'text', text: safe, model: respondingModel }); }
-              }, requestSignal);
+              }, requestSignal, forceToolChoice && specs.length ? { toolChoice: 'required' } : undefined);
               if (candidate.toolCalling === false && reply.toolCalls.length) throw new Error(`Model ${candidate.model} is marked as not supporting tools, but returned a tool call. No tool was executed.`);
               const tail = stream.flush();
               if (!depth && tail && !holdUnverified) { visiblePartial += tail; emittedThisAttempt = true; this.emit({ type: 'text', text: tail, model: respondingModel }); }
@@ -754,6 +755,7 @@ ${skills.join('\n')}`;
                 this.emit({ type: 'usage', usage: { ...budget.usage } });
                 budget.reserved -= reserve; budget.reservedCost -= reserveCost; roleUsage.reservedTokens -= reserve; roleUsage.reservedCost -= reserveCost; reservationCount--;
                 const error = new Error('The provider returned an empty response.'); error.name = 'EmptyProviderResponseError';
+                forceToolChoice = true;
                 if (!messages.some(message => message.content === EMPTY_RESPONSE_RECOVERY)) {
                   messages.push({ role: 'user', content: EMPTY_RESPONSE_RECOVERY });
                   input.splice(0, input.length, system, ...messages);

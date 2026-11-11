@@ -31,8 +31,9 @@ export interface ImageAttachment { data: string; mediaType: 'image/png' | 'image
 export interface ToolSpec { name: string; description: string; parameters: Record<string, unknown> }
 export interface Usage { input: number; output: number; cached: number; cost: number; costKnown: boolean }
 export interface ModelReply { text: string; toolCalls: ToolCall[]; usage: Usage; finishReason?: string }
+export interface ProviderCompleteOptions { toolChoice?: 'auto' | 'required' }
 export interface LLMProvider {
-  complete(messages: Message[], tools: ToolSpec[], onDelta: (text: string) => void, signal: AbortSignal): Promise<ModelReply>;
+  complete(messages: Message[], tools: ToolSpec[], onDelta: (text: string) => void, signal: AbortSignal, options?: ProviderCompleteOptions): Promise<ModelReply>;
   listModels(signal?: AbortSignal): Promise<ModelInfo[]>;
 }
 export interface Settings {
@@ -47,7 +48,7 @@ export interface Settings {
   modelRoutes: Partial<Record<AgentModelRole, ModelRoute>>;
   modelRoleBudgets: Partial<Record<AgentModelRole, ModelRoleBudget>>;
   plugins: Record<string, TrustedPluginConfig>;
-  sandboxMode: 'off' | 'auto' | 'required'; sandboxNetworkDomains: string[];
+  sandboxMode: 'off' | 'auto' | 'required' | 'docker'; sandboxDockerImage: string; sandboxNetworkDomains: string[];
 }
 export interface MCPConfig {
   type: 'stdio' | 'http'; command?: string; args?: string[]; url?: string;

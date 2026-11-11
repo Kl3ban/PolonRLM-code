@@ -10,6 +10,8 @@ The current integration applies to `execute_command`, `execute_powershell`, `run
 
 `/sandbox on` is the explicit switch for required isolation. It verifies the backend first, refuses with the concrete reason when setup is missing, and otherwise saves `sandboxMode required`. `/sandbox status` shows whether commands will run isolated, fall back to the host, or be blocked. `/sandbox off` saves `off`; `/sandbox auto` saves `auto`. These commands only change the setting and never run the installer.
 
+`/sandbox docker` selects a Linux-container backend. It requires Docker Desktop or a running Docker daemon and the configured `sandboxDockerImage` (default `node:24-bookworm-slim`). `/sandbox setup docker` explicitly pulls that image before enabling Docker mode. The container has no network, a read-only root, a 2 GB memory cap, 256 PIDs, a temporary `/tmp`, and only the current project mounted at `/workspace`. It cannot run PowerShell; use SRT or host mode for PowerShell commands. No image is downloaded at startup.
+
 `/settings sandboxMode required` refuses to start a command unless the OS backend is ready. On Windows it enables the bundled SRT backend. `/sandbox setup` previews the machine changes; `/sandbox setup confirm` explicitly starts the installer and triggers Windows UAC. It creates a dedicated local sandbox account and a machine-wide WFP network filter. The installer skips user-profile read grants. PolonRLM refuses to elevate the bundled installer if it is inside the writable project. After setup succeeds, PolonRLM verifies readiness and enables `required` mode. No setup runs on app startup.
 
 When a sandboxed command first uses a project, Windows ACL grants can persist after the command and app close. Another sandboxed session on the same machine may be able to read a granted project. Remove one with `srt-win acl forget <project-path>` or all grants with `srt-win acl forget --all`. Read `/sandbox status` first. On Windows, isolated subagent copies are outside the main workspace grant, so `auto` asks before host execution and `required` blocks those commands.
@@ -28,6 +30,6 @@ Sandbox network access is deny-by-default. Add only the hosts needed by project 
 
 This rule applies only to sandboxed processes. A host fallback follows the configured permission policy; `/permissions all` intentionally allows it without a prompt. Network domains support an optional port, for example `api.example.com:443`.
 
-Use `/sandbox status` to check the selected mode and local backend readiness. Linux uses Bubblewrap and `socat`; macOS uses its built-in Seatbelt backend. Windows uses SRT and needs its separate Windows setup to be ready. PolonRLM does not install OS dependencies silently.
+Use `/sandbox status` to check the selected mode and local backend readiness. Linux uses Bubblewrap and `socat`; macOS uses its built-in Seatbelt backend. Windows uses SRT and needs its separate Windows setup to be ready. Docker mode uses an explicitly pulled Linux image. PolonRLM does not install OS dependencies silently.
 
 The upstream sandbox backend is a beta research preview. Its platform limitations still apply; this integration does not sandbox every PolonRLM tool or replace process permissions. See the [sandbox-runtime documentation](https://github.com/anthropics/sandbox-runtime/blob/main/README.md) for backend details.

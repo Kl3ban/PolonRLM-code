@@ -367,10 +367,11 @@ test('cancel interrupts the retry wait before another provider request', async t
 
 test('empty model replies retry with a recovery instruction and retain usage', async t => {
   let calls = 0;
-  const h = await harness(t, async messages => {
+  const h = await harness(t, async (messages, _specs, _onDelta, _signal, options) => {
     calls++;
     if (calls === 1) return reply('');
     assert.match(messages.at(-1)?.content ?? '', /previous response was empty/i);
+    assert.equal(options?.toolChoice, 'required');
     return reply('Recovered from empty response.');
   }, {}, 0);
   assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered from empty response.');

@@ -106,6 +106,7 @@ test('every settings-panel field can be changed through its actual keyboard cont
   const textValues: Record<string, string> = {
     verificationCommands: '["npm test"]',
     sandboxNetworkDomains: '["registry.npmjs.org"]',
+    sandboxDockerImage: 'node:24-bookworm-slim',
     fallback: '["google"]',
     agentToolProfiles: '{"reviewer":["read_file"]}',
     modelRoutes: '{"reviewer":{"provider":"google"}}',
@@ -139,7 +140,7 @@ test('every settings-panel field can be changed through its actual keyboard cont
         await press(view.app, '\u0015');
         view.app.stdin.write(textValues[field.key]!);
         await until(() => (view.app.lastFrame() ?? '').includes(textValues[field.key]!), `type setting ${field.key}`);
-        expected = jsonFields.has(field.key) ? textValues[field.key]! : Number(textValues[field.key]);
+        expected = jsonFields.has(field.key) || field.kind === 'text' ? textValues[field.key]! : Number(textValues[field.key]);
         await press(view.app, '\r');
       }
       await until(() => changes.length === changeCount + 1, `save setting ${field.key}`);

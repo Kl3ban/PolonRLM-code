@@ -21,10 +21,36 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
   registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit, options.sandbox, options.store);
   registerBrowserSessionTools(registry, workspace, () => settings.browserEngine);
   const file = z.object({ path: z.string().min(1) });
-  registry.add('read_file', 'Read numbered text lines. Request targeted ranges.', file.extend({ start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(1000).default(200) }), true, async args => workspace.read(args.path, args.start, args.lines));
+  registry.add('read_file', 'Read numbered text lines. Request targeted ranges. Accepts start/lines, line_start/line_end, or offset/limit aliases.', file.extend({
+    start: z.number().int().positive().default(1), lines: z.number().int().min(1).max(1000).default(200),
+    line_start: z.number().int().positive().optional(), line_end: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(1000).optional(),
+  }), true, async args => {
+    let start = args.start;
+    let lines = args.lines;
+    if (args.line_start !== undefined) {
+      start = args.line_start;
+      if (args.line_end !== undefined) {
+        if (args.line_end < start) throw new Error('line_end must be greater than or equal to line_start.');
+        lines = Math.min(1000, args.line_end - start + 1);
+      }
+    } else if (args.offset !== undefined) {
+      start = args.offset + 1;
+      if (args.limit !== undefined) lines = args.limit;
+    } else if (args.line_end !== undefined) {
+      if (args.line_end < start) throw new Error('line_end must be greater than or equal to the start line.');
+      lines = Math.min(1000, args.line_end - start + 1);
+    }
+    return workspace.read(args.path, start, lines);
+  });
   registry.add('list_directory', 'List directory entries; skips dependency and metadata folders.', z.object({ path: z.string().default('.') }), true, async args => workspace.list(args.path));
   registry.add('write_file', 'Create or replace text file. Shows diff and supports /undo.', file.extend({ content: z.string().max(2_000_000) }), false, async (args, context) => workspace.change('write_file', args.path, () => args.content, context.mode, context.signal));
-  registry.add('edit_file', 'Replace exact unique text. Read before editing.', file.extend({ old: z.string().min(1), replacement: z.string() }), false, async (args, context) => workspace.change('edit_file', args.path, before => { if (before === null) throw new Error('File does not exist.'); const first = before.indexOf(args.old); if (first < 0 || before.indexOf(args.old, first + 1) !== -1) throw new Error('Text must occur exactly once.'); return before.replace(args.old, () => args.replacement); }, context.mode, context.signal));
+  registry.add('edit_file', 'Replace exact unique text with replacement (the write_file-style content field is accepted as an alias). Read before editing.', file.extend({ old: z.string().min(1), replacement: z.string().optional(), content: z.string().optional() }), false, async (args, context) => workspace.change('edit_file', args.path, before => {
+    if (before === null) throw new Error('File does not exist.');
+    const replacement = args.replacement ?? args.content;
+    if (replacement === undefined) throw new Error('Provide replacement text (or the content alias).');
+    const first = before.indexOf(args.old); if (first < 0 || before.indexOf(args.old, first + 1) !== -1) throw new Error('Text must occur exactly once.'); return before.replace(args.old, () => replacement);
+  }, context.mode, context.signal));
   registry.add('delete_file', 'Delete one file after explicit approval.', file, false, async (args, context) => workspace.change('delete_file', args.path, before => { if (before === null) throw new Error('File does not exist.'); return null; }, context.mode, context.signal));
   registry.add('apply_patch', 'Apply unified diff to one file. No multi-file patch.', file.extend({ patch: z.string() }), false, async (args, context) => workspace.change('apply_patch', args.path, before => { const result = applyPatch(before ?? '', args.patch); if (result === false) throw new Error('Patch does not match the current file.'); return result; }, context.mode, context.signal));
   const searchSchema = z.object({ pattern: z.string().max(500), path: z.string().default('.'), limit: z.number().int().min(1).max(200).default(60) });

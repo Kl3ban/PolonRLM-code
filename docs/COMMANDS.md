@@ -61,6 +61,8 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/sandbox on` | Enables required isolation after verifying that the backend is ready. Refuses and explains what is missing when it is not. |
 | `/sandbox off` | Disables OS isolation; commands run on the host under the normal permission policy. |
 | `/sandbox auto` | Uses the OS backend when ready and falls back to host execution under the normal permission policy when it is not. |
+| `/sandbox docker` | Uses an explicitly pulled Linux Docker image with no network and only the project mounted. Requires Docker. |
+| `/sandbox setup docker` | Pulls `sandboxDockerImage` and enables Docker mode. Downloads the image only on this explicit command. |
 | `/sandbox setup` | Previews the Windows sandbox system changes. Nothing runs yet. |
 | `/sandbox setup confirm` | Explicitly starts the Windows installer, skips user-profile read access, verifies readiness, and enables required isolation. Windows will ask for administrator approval. |
 | `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token or cost cap. |

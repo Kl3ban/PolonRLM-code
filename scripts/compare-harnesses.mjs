@@ -51,7 +51,7 @@ async function runPolonRLM(task, workspace, home) {
     await controller.submit(taskPrompt(task));
     const snapshot = controller.snapshot();
     const usage = snapshot.taskUsage;
-    return { durationMs: Date.now() - started, usage, output: snapshot.messages.filter(message => message.role === 'assistant').at(-1)?.text ?? '', tools: snapshot.messages.filter(message => message.role === 'tool').map(message => ({ name: message.toolName, state: message.toolState, output: (message.toolOutput ?? '').slice(0, 800) })), events: events.slice(-20) };
+    return { durationMs: Date.now() - started, usage, output: snapshot.messages.filter(message => message.role === 'assistant').at(-1)?.text ?? '', tools: snapshot.messages.filter(message => message.role === 'tool').map(message => ({ name: message.toolName, state: message.toolState, output: (message.toolOutput ?? '').slice(0, 800) })), events: events.slice(-20), messages: snapshot.messages.slice(-20).map(message => ({ role: message.role, toolName: message.toolName, text: (message.text ?? '').slice(0, 500), toolOutput: (message.toolOutput ?? '').slice(0, 500) })) };
   } finally {
     if (controller) await controller.close().catch(() => {});
     if (saved) process.env.GROQ_API_KEY = saved;
@@ -91,7 +91,7 @@ try {
         const started = Date.now();
         if (harness === 'polonrlm') {
           const run = await runPolonRLM(task, workspace, path.join(root, `${task.id}-${harness}-home`));
-          Object.assign(result, { durationMs: run.durationMs, usage: run.usage, tools: run.tools, events: run.events, output: run.output.slice(-2000) });
+          Object.assign(result, { durationMs: run.durationMs, usage: run.usage, tools: run.tools, events: run.events, messages: run.messages, output: run.output.slice(-2000) });
         } else if (harness === 'opencode') {
           const run = await runOpenCode(task, workspace);
           Object.assign(result, run, { output: run.output.slice(-2000) });

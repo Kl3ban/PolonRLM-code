@@ -7,6 +7,18 @@ import { redact } from '../core/secrets.js';
 export interface ToolContext { signal: AbortSignal; mode: Mode; sessionId?: string; vision?: boolean; isolated?: boolean; outputLimit?: number; onImage?: (image: ImageAttachment) => void }
 type Entry = { spec: ToolSpec; schema: z.ZodType; run: (args: any, context: ToolContext) => Promise<unknown>; readOnly: boolean; modeMutates?: (args: any) => boolean };
 export interface ToolAvailability { name: string; description: string; parameters?: Record<string, unknown>; available: boolean; reason?: string }
+function toolParameters(schema: z.ZodType): Record<string, unknown> {
+  const parameters = z.toJSONSchema(schema, { target: 'draft-7' }) as Record<string, unknown>;
+  const properties = parameters.properties && typeof parameters.properties === 'object' ? parameters.properties as Record<string, unknown> : {};
+  const required = parameters.required;
+  if (Array.isArray(required)) {
+    const kept = required.filter(name => typeof name === 'string' && !(typeof properties[name] === 'object' && properties[name] !== null && 'default' in (properties[name] as Record<string, unknown>)));
+    if (kept.length) parameters.required = kept;
+    else delete parameters.required;
+  }
+  return parameters;
+}
+
 export class ToolRegistry {
   private entries = new Map<string, Entry>();
   private disposers: (() => Promise<void>)[] = [];
@@ -28,7 +40,7 @@ export class ToolRegistry {
     return this.permissions.unavailableReason(name, this.mutatesInMode(entry, parsed), mode);
   }
   add(name: string, description: string, schema: z.ZodType, readOnly: boolean, run: Entry['run'], modeMutates?: Entry['modeMutates']): void {
-    this.entries.set(name, { spec: { name, description, parameters: z.toJSONSchema(schema, { target: 'draft-7' }) as Record<string, unknown> }, schema, run, readOnly, modeMutates });
+    this.entries.set(name, { spec: { name, description, parameters: toolParameters(schema) }, schema, run, readOnly, modeMutates });
   }
   private mutatesInMode(entry: Entry, args?: unknown): boolean { return entry.modeMutates ? entry.modeMutates(args ?? {}) : !entry.readOnly; }
   discovery(mode: Mode): ToolAvailability[] {

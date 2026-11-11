@@ -1,15 +1,33 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import os from 'node:os';
+import path from 'node:path';
 import { defaultSettings, settingsSchema } from '../src/core/config.js';
 import { installWindowsSandboxOnDemand, SandboxExecutor, windowsGrantReadDenies } from '../src/tools/sandbox.js';
+import { dockerRunArgs } from '../src/tools/docker-sandbox.js';
 
 test('sandbox settings default to automatic isolation with no network hosts', () => {
   const settings = defaultSettings();
   assert.equal(settings.sandboxMode, 'auto');
+  assert.equal(settings.sandboxDockerImage, 'node:24-bookworm-slim');
   assert.deepEqual(settings.sandboxNetworkDomains, []);
   assert.deepEqual(settingsSchema.parse({ ...settings, sandboxNetworkDomains: ['registry.npmjs.org', '*.githubusercontent.com:443'] }).sandboxNetworkDomains, ['registry.npmjs.org', '*.githubusercontent.com:443']);
+  assert.equal(settingsSchema.parse({ ...settings, sandboxMode: 'docker' }).sandboxMode, 'docker');
   assert.throws(() => settingsSchema.parse({ ...settings, sandboxNetworkDomains: ['example.com:70000'] }));
+});
+
+test('Docker sandbox argv keeps only the project mount and no network', () => {
+  const args = dockerRunArgs({ image: 'node:24-bookworm-slim', workspace: process.cwd(), cwd: path.join(process.cwd(), 'src'), command: '/bin/sh', args: ['-c', 'echo docker-ok'] });
+  assert.ok(args.includes('--network'));
+  assert.equal(args[args.indexOf('--network') + 1], 'none');
+  assert.ok(args.includes(`${path.resolve(process.cwd())}:/workspace`));
+  assert.ok(args.includes('/workspace/src'));
+  assert.equal(args.at(-1), 'echo docker-ok');
+  assert.ok(args.includes('--read-only'));
+  assert.throws(() => dockerRunArgs({ image: 'node:24', workspace: process.cwd(), cwd: path.dirname(process.cwd()), command: '/bin/sh', args: ['-c', 'pwd'] }), /inside the project workspace/);
+  if (process.platform === 'win32') {
+    assert.throws(() => dockerRunArgs({ image: 'node:24', workspace: process.cwd(), cwd: process.cwd(), command: 'powershell.exe', args: ['-Command', 'pwd'] }), /cannot execute PowerShell/);
+  }
 });
 
 test('sandbox off mode never wraps or starts a command', async () => {

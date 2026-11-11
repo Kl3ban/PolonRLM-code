@@ -91,7 +91,8 @@ export const settingsSchema = z.object({
   modelRoutes: z.partialRecord(z.enum(AGENT_MODEL_ROLES), modelRouteSchema).default({}),
   modelRoleBudgets: z.partialRecord(z.enum(AGENT_MODEL_ROLES), modelRoleBudgetSchema).default({}),
   plugins: z.record(z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), trustedPluginSchema).default({}),
-  sandboxMode: z.enum(['off', 'auto', 'required']).default('auto'),
+  sandboxMode: z.enum(['off', 'auto', 'required', 'docker']).default('auto'),
+  sandboxDockerImage: z.string().trim().min(1).max(200).default('node:24-bookworm-slim'),
   sandboxNetworkDomains: z.array(sandboxDomainSchema).max(256).refine(values => new Set(values).size === values.length, 'Sandbox domains must be unique.').default([]),
   mcp: z.record(z.string(), mcpServerSchema)
 }).superRefine((settings, context) => {
@@ -106,7 +107,7 @@ export const settingsSchema = z.object({
 export function defaultSettings(): Settings {
   return { configVersion: CURRENT_CONFIG_VERSION, provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1, cortexStrategy: 'adaptive', repeatFailureThreshold: 3,
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', verificationCommands: [], verificationMode: 'after_changes', verificationRepairAttempts: 1, mcp: {}, agentToolProfiles: {}, modelRoutes: {}, modelRoleBudgets: {}, plugins: {}, sandboxMode: 'auto', sandboxNetworkDomains: [] };
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', verificationCommands: [], verificationMode: 'after_changes', verificationRepairAttempts: 1, mcp: {}, agentToolProfiles: {}, modelRoutes: {}, modelRoleBudgets: {}, plugins: {}, sandboxMode: 'auto', sandboxDockerImage: 'node:24-bookworm-slim', sandboxNetworkDomains: [] };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };

@@ -42,6 +42,14 @@ async function fixture(t: TestContext, changes: Partial<Settings> = {}, sandbox?
   return { folder, root, settings, permissions, approvals, workspace, registry, run, get projectStore() { return projectStore; }, replaceProjectStore };
 }
 
+test('tool schemas do not require parameters that have defaults', async t => {
+  const f = await fixture(t);
+  const readFile = f.registry.getSpec('read_file')!.parameters as { required?: string[] };
+  assert.deepEqual(readFile.required, ['path']);
+  const runTests = f.registry.getSpec('run_tests')!.parameters as { required?: string[] };
+  assert.deepEqual(runTests.required, ['command']);
+});
+
 test('task plan updates survive a store and tool-registry restart without overwriting the goal', async t => {
   const f = await fixture(t, {}, undefined, true);
   const firstStore = f.projectStore!;
@@ -353,8 +361,14 @@ test('file tools perform exact unique edits, literal replacements, patch and del
   const initial = await f.run('write_file', { path: 'dir/żółć.txt', content: 'first\nunique\nlast\n' });
   assert.match(initial, /\+unique/);
   assert.equal(await f.run('read_file', { path: 'dir/żółć.txt', start: 2, lines: 1 }), '2: unique');
+  assert.equal(await f.run('read_file', { path: 'dir/żółć.txt', line_start: 2, line_end: 2 }), '2: unique');
+  assert.equal(await f.run('read_file', { path: 'dir/żółć.txt', offset: 1, limit: 1 }), '2: unique');
+  await assert.rejects(f.run('read_file', { path: 'dir/żółć.txt', line_start: 2, line_end: 1 }), /line_end must be/);
   await f.run('edit_file', { path: 'dir/żółć.txt', old: 'unique', replacement: '$& literal' });
   assert.match(await readFile(path.join(f.root, 'dir/żółć.txt'), 'utf8'), /\$& literal/);
+  await f.run('edit_file', { path: 'dir/żółć.txt', old: '$& literal', content: 'content alias' });
+  assert.match(await readFile(path.join(f.root, 'dir/żółć.txt'), 'utf8'), /content alias/);
+  await assert.rejects(f.run('edit_file', { path: 'dir/żółć.txt', old: 'content alias' }), /Provide replacement/);
   await f.run('write_file', { path: 'overlap.txt', content: 'aaa' });
   await assert.rejects(f.run('edit_file', { path: 'overlap.txt', old: 'aa', replacement: 'b' }), /Text must occur exactly once/);
   await assert.rejects(f.run('edit_file', { path: 'overlap.txt', old: 'absent', replacement: 'b' }), /Text must occur exactly once/);

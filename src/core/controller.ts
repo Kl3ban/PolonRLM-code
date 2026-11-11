@@ -45,7 +45,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /history changes [count]         Browse persistent file change history
 /rollback <change-or-group-id>   Restore saved file changes after hash checks
 /settings [name] [value]          Settings and budgets
-/sandbox [status|on|off|auto|setup [confirm]] Show readiness, switch isolation, or configure Windows isolation
+/sandbox [status|on|off|auto|docker|setup [confirm|docker]] Show readiness, switch isolation, or configure Windows/Docker isolation
 /budget [tokens] [USD]            Set the next task's budget
 /settings provider.<field> <value> Reasoning, request timeout, temperature, pricing, and capabilities
 /agents                           List subagents and limits
@@ -772,14 +772,16 @@ export class Controller implements UIController {
       case '/help': this.note(HELP); break;
       case '/sandbox': {
         const action = args[0];
-        if (action === 'on' || action === 'required' || action === 'auto' || action === 'off') {
-          if (args.length !== 1) throw new Error('Use /sandbox on, /sandbox off, or /sandbox auto.');
+        if (action === 'on' || action === 'required' || action === 'auto' || action === 'off' || action === 'docker') {
+          if (args.length !== 1) throw new Error('Use /sandbox on, /sandbox off, /sandbox auto, or /sandbox docker.');
           const mode = action === 'on' ? 'required' : action;
           let backend = 'host';
           if (mode !== 'off') {
             const status = await this.sandbox.status(this.workspace.root, mode);
-            if (mode === 'required' && !status.available) {
-              throw new Error(`Cannot enable required isolation: ${status.reason ?? status.backend}. Run /sandbox status, then /sandbox setup on Windows.`);
+            if (mode !== 'auto' && !status.available) {
+              throw new Error(mode === 'docker'
+                ? `Cannot enable the Docker sandbox: ${status.reason ?? status.backend}. Install Docker Desktop, then run /sandbox setup docker.`
+                : `Cannot enable required isolation: ${status.reason ?? status.backend}. Run /sandbox status, then /sandbox setup on Windows.`);
             }
             backend = status.backend;
           }
@@ -788,7 +790,17 @@ export class Controller implements UIController {
             ? 'OS sandbox disabled. Shell and code commands run on the host under the normal permission policy.'
             : mode === 'auto'
               ? 'OS sandbox automatic. Commands use the backend when it is ready; otherwise they follow the normal host permission policy.'
-              : `OS sandbox required (${backend}). Commands are blocked when the backend is unavailable.`);
+              : mode === 'docker'
+                ? `Docker sandbox enabled (${this.config.settings.sandboxDockerImage}). Linux-container commands have no network and only the project mount.`
+                : `OS sandbox required (${backend}). Commands are blocked when the backend is unavailable.`);
+          break;
+        }
+        if (action === 'setup' && args[1] === 'docker') {
+          if (args.length !== 2) throw new Error('Use /sandbox setup docker.');
+          this.note(`Pulling Docker image ${this.config.settings.sandboxDockerImage}. This can take a few minutes and only runs on your explicit command.`);
+          await this.sandbox.installDocker();
+          await this.updateSetting('sandboxMode', 'docker');
+          this.note('Docker sandbox image is ready. Docker mode is enabled; commands use a read-only Linux container with no network and only the project mount.');
           break;
         }
         if (args[0] === 'setup') {
@@ -833,7 +845,7 @@ export class Controller implements UIController {
           this.note('Windows sandbox setup completed. Required isolation is enabled. Use /sandbox status to review it.');
           break;
         }
-        if (args.length > 1 || (args[0] && args[0] !== 'status')) throw new Error('Use /sandbox, /sandbox status, /sandbox on, /sandbox off, /sandbox auto, or /sandbox setup.');
+        if (args.length > 1 || (args[0] && !['status', 'on', 'off', 'auto', 'docker'].includes(args[0]))) throw new Error('Use /sandbox, /sandbox status, /sandbox on, /sandbox off, /sandbox auto, /sandbox docker, or /sandbox setup.');
         const status = await this.sandbox.status(this.workspace.root);
         const execution = status.mode === 'off'
           ? 'Execution: host only, under the normal tool permission policy.'

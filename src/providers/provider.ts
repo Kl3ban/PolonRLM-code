@@ -197,7 +197,7 @@ export function createProvider(config: ProviderConfig, apiKey: string | undefine
   }
 
   return {
-    async complete(messages: Message[], tools: ToolSpec[], onDelta: (text: string) => void, signal: AbortSignal): Promise<ModelReply> {
+    async complete(messages: Message[], tools: ToolSpec[], onDelta: (text: string) => void, signal: AbortSignal, options?: { toolChoice?: 'auto' | 'required' }): Promise<ModelReply> {
       signal.throwIfAborted();
       if (config.vision === false && messages.some(message => message.images?.length)) throw new Error(`Model ${config.model} does not support images. Choose a vision model or remove the attachment.`);
       const activeTools = config.toolCalling === false ? [] : tools;
@@ -210,6 +210,7 @@ export function createProvider(config: ProviderConfig, apiKey: string | undefine
         const result = streamText({
           model: model(), instructions: messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n') || undefined,
           messages: sdkMessages(activeMessages.filter(message => message.role !== 'system')), tools: activeTools.length ? toolSet : undefined,
+          ...(activeTools.length && options?.toolChoice ? { toolChoice: options.toolChoice } : {}),
           ...(effectiveMaxOutputTokens ? { maxOutputTokens: effectiveMaxOutputTokens } : {}), temperature: config.temperature, providerOptions: providerOptions(),
           // Runtime retries are visible, cancelable, budgeted, and spaced at a fixed interval.
           maxRetries: 0, streamRetries: 0, abortSignal: signal,

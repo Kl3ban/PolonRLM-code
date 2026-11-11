@@ -103,10 +103,19 @@ test('/sandbox on, off, and auto switch isolation and explain readiness', async 
   await controller.submit('/sandbox auto');
   assert.equal(controller.config.settings.sandboxMode, 'auto');
 
+  await controller.submit('/sandbox docker');
+  assert.equal(controller.config.settings.sandboxMode, 'docker');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Docker sandbox enabled/);
+
+  sandbox.installDocker = async () => {};
+  await controller.submit('/sandbox setup docker');
+  assert.equal(controller.config.settings.sandboxMode, 'docker');
+  assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Docker sandbox image is ready/);
+
   sandbox.status = async (_cwd: string, mode: string) => ({ mode, available: false, backend: 'test-sandbox', reason: 'not provisioned' });
   await controller.submit('/sandbox on');
   assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /Cannot enable required isolation: not provisioned/);
-  assert.equal(controller.config.settings.sandboxMode, 'auto', 'a failed switch must not change the saved mode');
+  assert.equal(controller.config.settings.sandboxMode, 'docker', 'a failed switch must not change the saved mode');
 });
 
 test('/settings persists validated subagent tool profiles', async t => {
@@ -168,7 +177,7 @@ test('every settings-panel field validates, persists, reloads, and reads back it
   t.after(async () => { await controller.close(); await f.dispose(); });
   const values = {
     mode: 'REVIEW', cortex: 5, permissions: 'workspace', theme: 'light', webSearchMode: 'yahoo', browserEngine: 'edge',
-    verificationCommands: '["npm test","npm run check"]', verificationMode: 'after_changes', verificationRepairAttempts: 2, sandboxMode: 'required', sandboxNetworkDomains: '["registry.npmjs.org","github.com"]',
+    verificationCommands: '["npm test","npm run check"]', verificationMode: 'after_changes', verificationRepairAttempts: 2, sandboxMode: 'required', sandboxDockerImage: 'node:24-bookworm-slim', sandboxNetworkDomains: '["registry.npmjs.org","github.com"]',
     fallback: '["google"]', agentToolProfiles: '{"reviewer":["read_file","search_files"]}',
     modelRoutes: '{"coder":{"provider":"google","model":"test-code"},"reviewer":{"provider":"custom"}}',
     modelRoleBudgets: '{"coder":{"maxCalls":12,"maxTokens":32000,"maxCost":0.75}}', cortexStrategy: 'fixed', repeatFailureThreshold: 5,
@@ -540,7 +549,7 @@ test('invalid values for every configurable setting are rejected without mutatin
     controller = await Controller.open(local.root, local.home);
     const invalidValues: Record<string, string | number> = {
       mode: 'INVALID', cortex: 6, permissions: 'invalid', theme: 'blue', webSearchMode: 'google', browserEngine: 'safari',
-      verificationCommands: '[""]', verificationMode: 'always', verificationRepairAttempts: 4, sandboxMode: 'unsafe',
+      verificationCommands: '[""]', verificationMode: 'always', verificationRepairAttempts: 4, sandboxMode: 'unsafe', sandboxDockerImage: '',
       sandboxNetworkDomains: '["bad domain"]', fallback: '["missing-provider"]', agentToolProfiles: '{"root":["read_file"]}',
       modelRoutes: '{"reviewer":{"provider":"missing-provider"}}', modelRoleBudgets: '{"coder":{"maxCalls":-1}}',
       cortexStrategy: 'random', repeatFailureThreshold: -1, tokenBudget: 999, dollarBudget: -1, maxInputTokens: -1,

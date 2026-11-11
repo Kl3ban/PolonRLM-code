@@ -11,6 +11,7 @@ import {
 } from '@anthropic-ai/sandbox-runtime';
 import type { Settings } from '../core/types.js';
 import { isSecretEnvironmentName } from '../core/secrets.js';
+import { dockerRunArgs, dockerStatus, pullDockerImage } from './docker-sandbox.js';
 
 export interface SandboxStatus { mode: Settings['sandboxMode']; available: boolean; backend: string; reason?: string }
 export type WindowsSandboxInstaller = (options?: WindowsInstallOptions) => ReturnType<typeof installWindowsSandboxAsync>;
@@ -88,6 +89,10 @@ export class SandboxExecutor {
 
   async status(cwd: string, mode = this.settings.sandboxMode): Promise<SandboxStatus> {
     if (mode === 'off') return { mode, available: false, backend: 'host', reason: 'OS sandbox is disabled in settings.' };
+    if (mode === 'docker') {
+      const check = await dockerStatus(this.settings.sandboxDockerImage);
+      return { mode, available: check.available, backend: 'docker', ...(check.reason ? { reason: check.reason } : {}) };
+    }
     if (!SandboxManager.isSupportedPlatform()) return { mode, available: false, backend: process.platform, reason: `The OS sandbox does not support ${process.platform}.` };
     if (process.platform === 'win32' && !pathWithin(this.workspaceRoot, cwd)) {
       return { mode, available: false, backend: 'srt-win', reason: 'The Windows sandbox session grants access only to the main project; this temporary subagent workspace is outside it.' };
@@ -124,6 +129,10 @@ export class SandboxExecutor {
     return installWindowsSandboxOnDemand(this.workspaceRoot);
   }
 
+  async installDocker(): Promise<void> {
+    await pullDockerImage(this.settings.sandboxDockerImage);
+  }
+
   async prepare(command: string, args: string[], cwd: string, signal: AbortSignal): Promise<PreparedCommand> {
     if (this.closed) throw new Error('Sandbox session has already closed.');
     this.activePreparations++;
@@ -140,6 +149,22 @@ export class SandboxExecutor {
     if (!status.available) {
       if (this.settings.sandboxMode === 'required') throw new Error(`OS sandbox is required but unavailable: ${status.reason ?? status.backend}. No command was run.`);
       return hostCommand(command, args, status.reason ?? 'OS sandbox is unavailable.');
+    }
+    if (status.backend === 'docker') {
+      const env: NodeJS.ProcessEnv = {
+        PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT,
+        USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        DOCKER_HOST: process.env.DOCKER_HOST, DOCKER_CONTEXT: process.env.DOCKER_CONTEXT, DOCKER_CONFIG: process.env.DOCKER_CONFIG,
+      };
+      const dockerArgs = dockerRunArgs({ image: this.settings.sandboxDockerImage, workspace: this.workspaceRoot, cwd, command, args });
+      this.activeRuns++;
+      let cleaned = false;
+      return {
+        command: 'docker', args: dockerArgs, env,
+        sandboxed: true, ...(status.reason ? { reason: status.reason } : {}),
+        cleanup: async () => { if (cleaned) return; cleaned = true; this.activeRuns--; this.wakeCloseWaiters(); },
+        annotate: (stderr: string) => stderr,
+      };
     }
 
     let tempRoot: string | undefined;
