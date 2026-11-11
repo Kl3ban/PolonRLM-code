@@ -136,22 +136,22 @@ test('/plugins require reviewing the exact source hash before running trusted co
   const controller = await Controller.open(f.root, f.home);
   t.after(async () => { await controller.close(); await f.dispose(); });
   const id = 'review-gate';
-  const marker = `__polonrlm_controller_plugin_${Date.now()}`;
+  const activationFile = path.join(f.home, 'activation.txt');
   const entry = path.join(f.home, 'plugins', id, 'index.mjs');
 
   await controller.submit(`/plugins create ${id}`);
-  await writeFile(entry, `globalThis[${JSON.stringify(marker)}] = 'version one'; export default { id: ${JSON.stringify(id)}, version: '1.0.0', activate() {} };`, 'utf8');
+  await writeFile(entry, `import { writeFileSync } from 'node:fs'; export default { id: ${JSON.stringify(id)}, version: '1.0.0', activate() { writeFileSync(${JSON.stringify(activationFile)}, 'version one'); } };`, 'utf8');
   await controller.submit(`/plugins enable ${id}`);
-  assert.equal((globalThis as Record<string, unknown>)[marker], undefined, 'review must not evaluate the module');
+  await assert.rejects(readFile(activationFile), /ENOENT/, 'review must not execute the module');
 
-  await writeFile(entry, `globalThis[${JSON.stringify(marker)}] = 'changed after review'; export default { id: ${JSON.stringify(id)}, version: '1.0.0', activate() {} };`, 'utf8');
+  await writeFile(entry, `import { writeFileSync } from 'node:fs'; export default { id: ${JSON.stringify(id)}, version: '1.0.0', activate() { writeFileSync(${JSON.stringify(activationFile)}, 'changed after review'); } };`, 'utf8');
   await controller.submit(`/plugins enable ${id} confirm`);
-  assert.equal((globalThis as Record<string, unknown>)[marker], undefined, 'edited code must not run under a previous review');
+  await assert.rejects(readFile(activationFile), /ENOENT/, 'edited code must not run under a previous review');
   assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /NOT started because its files were not the version from the last review/);
 
   await controller.submit(`/plugins enable ${id}`);
   await controller.submit(`/plugins enable ${id} confirm`);
-  assert.equal((globalThis as Record<string, unknown>)[marker], 'changed after review');
+  assert.equal(await readFile(activationFile, 'utf8'), 'changed after review');
   assert.equal(controller.config.settings.plugins[id]?.enabled, true);
   assert.match(controller.config.settings.plugins[id]?.sha256 ?? '', /^[a-f0-9]{64}$/);
 

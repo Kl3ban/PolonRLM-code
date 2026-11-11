@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import type { TrustedPluginConfig } from '../core/types.js';
 import {
   POLONRLM_PLUGIN_API_VERSION,
-  type PluginHandler, type PluginTaskContext, type PluginTaskResult, type PluginToolContext,
-  type PluginToolDefinition, type PluginToolResult, type PolonRLMPlugin, type PolonRLMPluginAPI,
+  type PluginTaskContext, type PluginTaskResult, type PluginToolContext,
+  type PluginToolDefinition, type PluginToolResult, type PolonRLMPluginAPI,
 } from './api.js';
 
 const PLUGIN_ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -18,9 +17,10 @@ const MAX_TASK_CONTEXT_BYTES = 12_000;
 const HOOK_TIMEOUT_MS = 5_000;
 const TOOL_TIMEOUT_MS = 30_000;
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,48}$/;
+const HOOKS = ['beforeTask', 'beforeTool', 'afterTool', 'afterTask'] as const;
+type HookName = typeof HOOKS[number];
 const PLUGIN_BOOTSTRAP = `
 import { pathToFileURL } from 'node:url';
-const noop = () => {};
 const freeze = value => {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freeze(child);
@@ -28,19 +28,50 @@ const freeze = value => {
   }
   return value;
 };
+const send = message => { if (process.send) process.send(message); };
+const hooks = { beforeTask: [], beforeTool: [], afterTool: [], afterTask: [] };
+const tools = new Map();
+const add = (name, handler) => { if (typeof handler === 'function') hooks[name].push(handler); };
+const api = {
+  version: 1,
+  hooks: {
+    beforeTask: handler => add('beforeTask', handler),
+    beforeTool: handler => add('beforeTool', handler),
+    afterTool: handler => add('afterTool', handler),
+    afterTask: handler => add('afterTask', handler),
+  },
+  tools: { register(tool) { tools.set(tool.name, tool); } },
+};
+let plugin;
+process.on('disconnect', () => process.exit(0));
 process.on('message', async message => {
   try {
-    const tools = new Map();
-    const api = { version: 1, hooks: { beforeTask: noop, beforeTool: noop, afterTool: noop, afterTask: noop }, tools: { register(tool) { tools.set(tool.name, tool); } } };
-    const plugin = (await import(pathToFileURL(message.entry).href)).default;
-    if (!plugin || typeof plugin.activate !== 'function') throw new Error('Plugin has no activate function.');
-    await plugin.activate(api);
-    const tool = tools.get(message.name);
-    if (!tool) throw new Error('Plugin tool ' + message.name + ' was not registered during activation.');
-    const value = await tool.run(freeze(message.args), freeze(message.context));
-    process.send({ ok: true, value });
+    if (!plugin) {
+      plugin = (await import(pathToFileURL(message.entry).href)).default;
+      if (!plugin || typeof plugin.activate !== 'function') throw new Error('Plugin has no activate function.');
+      if (plugin.id !== message.id || plugin.version !== message.version) throw new Error('Plugin code id/version must match plugin.json.');
+      await plugin.activate(api);
+      send({ type: 'ready', id: plugin.id, version: plugin.version, hooks: Object.fromEntries(Object.entries(hooks).map(([name, list]) => [name, list.length])), tools: [...tools.values()] });
+      return;
+    }
+    if (message.action === 'deactivate') {
+      await plugin.deactivate?.();
+      send({ type: 'result', id: message.id, ok: true });
+      return;
+    }
+    let value;
+    if (message.kind === 'tool') {
+      const tool = tools.get(message.name);
+      if (!tool) throw new Error('Plugin tool ' + message.name + ' was not registered during activation.');
+      value = await tool.run(freeze(message.args), freeze(message.context));
+    } else {
+      const handler = hooks[message.hook]?.[message.index];
+      if (typeof handler !== 'function') throw new Error('Plugin hook ' + message.hook + '[' + message.index + '] was not registered during activation.');
+      value = await handler(freeze(message.event));
+    }
+    send({ type: 'result', id: message.id, ok: true, value });
   } catch (error) {
-    process.send({ ok: false, error: String(error && error.stack ? error.stack : error) });
+    send({ type: 'result', id: message.id, ok: false, error: String(error && error.stack ? error.stack : error) });
   }
 });
 `;
@@ -52,17 +83,16 @@ const manifestSchema = z.object({
   entry: z.literal('index.mjs'),
 }).strict();
 type PluginManifest = z.infer<typeof manifestSchema>;
-
+type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type ActivePlugin = {
   manifest: PluginManifest;
-  plugin: PolonRLMPlugin;
   hash: string;
-  beforeTask: Array<PluginHandler<PluginTaskContext, string | void>>;
-  beforeTool: Array<PluginHandler<PluginToolContext, string | void>>;
-  afterTool: Array<PluginHandler<PluginToolResult>>;
-  afterTask: Array<PluginHandler<PluginTaskResult>>;
-  tools: Array<{ definition: PluginToolDefinition }>;
   entryPath: string;
+  child: ChildProcess;
+  pending: Map<number, Pending>;
+  nextId: number;
+  hooks: Record<HookName, number>;
+  tools: PluginToolDefinition[];
 };
 
 export interface PluginPreview { manifest: PluginManifest; path: string; sha256: string }
@@ -82,19 +112,17 @@ function clipBytes(value: string, limit: number): string {
   }
   return value.slice(0, end);
 }
-function frozenCopy<T>(value: T): T {
-  if (!value || typeof value !== 'object') return value;
-  const copy = structuredClone(value);
-  const freeze = (item: unknown): void => {
-    if (!item || typeof item !== 'object' || Object.isFrozen(item)) return;
-    for (const child of Object.values(item as Record<string, unknown>)) freeze(child);
-    Object.freeze(item);
-  };
-  freeze(copy);
-  return copy;
+function validateTool(tool: unknown): PluginToolDefinition {
+  if (!tool || typeof tool !== 'object') throw new Error('Plugin tool must be an object.');
+  const value = tool as PluginToolDefinition;
+  if (!TOOL_NAME.test(value.name ?? '')) throw new Error('Plugin tool name must start with a lowercase letter and contain only lowercase letters, digits and underscores.');
+  if (typeof value.description !== 'string' || !value.description.trim() || value.description.length > 1_000) throw new Error('Plugin tool description must be 1-1000 characters.');
+  if (!value.parameters || typeof value.parameters !== 'object' || Array.isArray(value.parameters)) throw new Error('Plugin tool parameters must be a JSON Schema object.');
+  if (value.run !== undefined && typeof value.run !== 'function') throw new Error('Plugin tool run must be a function.');
+  return { name: value.name, description: value.description, parameters: value.parameters, readOnly: value.readOnly === true, run: async () => { throw new Error('Plugin tools execute in the plugin host process.'); } };
 }
 
-/** Loads only explicitly enabled, hash-pinned single-file plugins from the user's PolonRLM home. */
+/** Loads only explicitly enabled, hash-pinned single-file plugins from the user's PolonRLM home. Plugin code runs in a child process. */
 export class PluginManager {
   private readonly root: string;
   private active = new Map<string, ActivePlugin>();
@@ -161,62 +189,47 @@ export class PluginManager {
     if (current) await this.deactivate(id);
     if (this.active.size >= MAX_ACTIVE_PLUGINS) throw new Error(`At most ${MAX_ACTIVE_PLUGINS} plugins can be active at once.`);
 
-    const moduleUrl = pathToFileURL(preview.path);
-    moduleUrl.searchParams.set('sha256', preview.sha256);
-    const loaded = await import(moduleUrl.href) as { default?: unknown };
-    const pluginSchema = z.object({
-      id: z.string().regex(PLUGIN_ID),
-      version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/),
-      activate: z.function(),
-      deactivate: z.function().optional(),
-    }).passthrough();
-    const plugin = pluginSchema.parse(loaded.default) as PolonRLMPlugin;
-    if (plugin.id !== id || plugin.version !== preview.manifest.version) throw new Error('Plugin code id/version must match plugin.json.');
-    const handlers: ActivePlugin = { manifest: preview.manifest, plugin, hash: preview.sha256, beforeTask: [], beforeTool: [], afterTool: [], afterTask: [], tools: [], entryPath: preview.path };
-    let registrations = 0;
-    const add = <T>(collection: Array<PluginHandler<T, any>>, handler: PluginHandler<T, any>): void => {
-      if (typeof handler !== 'function') throw new Error('Plugin hook must be a function.');
-      if (this.registrationCount + registrations >= 64) throw new Error('PolonRLM allows at most 64 hooks and tools across active plugins.');
-      registrations++;
-      collection.push(handler);
+    const child = spawn(process.execPath, ['--input-type=module', '-e', PLUGIN_BOOTSTRAP], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
+    const active: ActivePlugin = {
+      manifest: preview.manifest, hash: preview.sha256, entryPath: preview.path, child, pending: new Map(), nextId: 1,
+      hooks: { beforeTask: 0, beforeTool: 0, afterTool: 0, afterTask: 0 }, tools: [],
     };
-    const registerTool = (tool: PluginToolDefinition): void => {
-      if (!tool || typeof tool !== 'object') throw new Error('Plugin tool must be an object.');
-      if (!TOOL_NAME.test(tool.name ?? '')) throw new Error('Plugin tool name must start with a lowercase letter and contain only lowercase letters, digits and underscores.');
-      if (typeof tool.description !== 'string' || !tool.description.trim() || tool.description.length > 1_000) throw new Error('Plugin tool description must be 1-1000 characters.');
-      if (!tool.parameters || typeof tool.parameters !== 'object' || Array.isArray(tool.parameters)) throw new Error('Plugin tool parameters must be a JSON Schema object.');
-      if (typeof tool.run !== 'function') throw new Error('Plugin tool run must be a function.');
-      for (const active of this.active.values()) if (active.tools.some(entry => entry.definition.name === tool.name)) throw new Error(`Plugin tool ${tool.name} is already registered.`);
-      if (handlers.tools.some(entry => entry.definition.name === tool.name)) throw new Error(`Plugin tool ${tool.name} is already registered.`);
+    this.attachHost(active, id);
+    try {
+      const ready = await this.startHost(active, preview) as { hooks?: Record<string, unknown>; tools?: unknown[]; id?: unknown; version?: unknown };
+      if (ready.id !== id || ready.version !== preview.manifest.version) throw new Error('Plugin host id/version does not match the reviewed plugin.');
+      const hooks = { beforeTask: 0, beforeTool: 0, afterTool: 0, afterTask: 0 };
+      for (const hook of HOOKS) {
+        const count = Number((ready.hooks ?? {})[hook]);
+        if (!Number.isInteger(count) || count < 0 || count > 64) throw new Error(`Plugin host returned an invalid ${hook} hook count.`);
+        hooks[hook] = count;
+      }
+      const tools = (ready.tools ?? []).map(validateTool);
+      const names = new Set<string>();
+      for (const tool of tools) {
+        if (names.has(tool.name)) throw new Error(`Plugin tool ${tool.name} is registered twice.`);
+        names.add(tool.name);
+        for (const other of this.active.values()) if (other.tools.some(entry => entry.name === tool.name)) throw new Error(`Plugin tool ${tool.name} is already registered.`);
+      }
+      const registrations = HOOKS.reduce((sum, hook) => sum + hooks[hook], 0) + tools.length;
       if (this.registrationCount + registrations >= 64) throw new Error('PolonRLM allows at most 64 hooks and tools across active plugins.');
-      registrations++;
-      handlers.tools.push({ definition: Object.freeze({ ...tool, parameters: frozenCopy(tool.parameters), readOnly: tool.readOnly === true }) });
-    };
-    const api: PolonRLMPluginAPI = Object.freeze({
-      version: POLONRLM_PLUGIN_API_VERSION,
-      hooks: Object.freeze({
-        beforeTask: (handler: PluginHandler<PluginTaskContext, string | void>) => add(handlers.beforeTask, handler),
-        beforeTool: (handler: PluginHandler<PluginToolContext, string | void>) => add(handlers.beforeTool, handler),
-        afterTool: (handler: PluginHandler<PluginToolResult>) => add(handlers.afterTool, handler),
-        afterTask: (handler: PluginHandler<PluginTaskResult>) => add(handlers.afterTask, handler),
-      }),
-      tools: Object.freeze({ register: registerTool }),
-    });
-    try { await this.runTimed(id, 'activate', () => plugin.activate(api)); }
-    catch (error) {
-      try { await plugin.deactivate?.(); } catch { /* Preserve the activation error. */ }
+      active.hooks = hooks;
+      active.tools = tools;
+      this.registrationCount += registrations;
+      this.active.set(id, active);
+    } catch (error) {
+      child.kill();
       throw error;
     }
-    this.registrationCount += registrations;
-    this.active.set(id, handlers);
   }
 
   async deactivate(id: string): Promise<void> {
     const active = this.active.get(id);
     if (!active) return;
     this.active.delete(id);
-    this.registrationCount -= active.beforeTask.length + active.beforeTool.length + active.afterTool.length + active.afterTask.length + active.tools.length;
-    if (active.plugin.deactivate) await this.runTimed(id, 'deactivate', () => active.plugin.deactivate!());
+    this.registrationCount -= HOOKS.reduce((sum, hook) => sum + active.hooks[hook], 0) + active.tools.length;
+    try { await this.hostCall(active, { action: 'deactivate' }, HOOK_TIMEOUT_MS, 'deactivate'); }
+    finally { active.child.kill(); }
   }
 
   async close(): Promise<void> {
@@ -228,42 +241,15 @@ export class PluginManager {
   }
 
   toolDefinitions(): Array<{ pluginId: string; definition: PluginToolDefinition }> {
-    return [...this.active].flatMap(([pluginId, active]) => active.tools.map(entry => ({ pluginId, definition: entry.definition })));
+    return [...this.active].flatMap(([pluginId, active]) => active.tools.map(definition => ({ pluginId, definition })));
   }
 
   async callTool(pluginId: string, name: string, args: Readonly<Record<string, unknown>>, context: PluginToolContext): Promise<string> {
     const active = this.active.get(pluginId);
-    const tool = active?.tools.find(entry => entry.definition.name === name);
-    if (!active || !tool) throw new Error(`Plugin tool ${name} is not loaded.`);
-    const result = await this.runToolProcess(active.entryPath, name, frozenCopy(args), frozenCopy({ ...context, tool: name, arguments: args }));
+    if (!active || !active.tools.some(tool => tool.name === name)) throw new Error(`Plugin tool ${name} is not loaded.`);
+    const result = await this.hostCall(active, { action: 'call', kind: 'tool', name, args, context }, TOOL_TIMEOUT_MS, `Plugin tool ${name}`);
     if (typeof result === 'string') return result;
     try { return JSON.stringify(result) ?? String(result); } catch { return String(result); }
-  }
-
-  private runToolProcess(entry: string, name: string, args: Readonly<Record<string, unknown>>, context: PluginToolContext): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['--input-type=module', '-e', PLUGIN_BOOTSTRAP], {
-        stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
-      });
-      let settled = false;
-      const finish = (error?: Error, value?: unknown): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (error) reject(error); else resolve(value);
-      };
-      const timer = setTimeout(() => { child.kill(); finish(new Error(`Plugin tool ${name} exceeded ${TOOL_TIMEOUT_MS}ms.`)); }, TOOL_TIMEOUT_MS);
-      timer.unref();
-      child.once('error', error => finish(error));
-      child.once('exit', code => { if (!settled) finish(new Error(`Plugin tool ${name} exited with code ${code ?? 'unknown'}.`)); });
-      child.on('message', (message: any) => {
-        if (!message || typeof message !== 'object') return;
-        if (message.ok) finish(undefined, message.value);
-        else finish(new Error(String(message.error ?? 'Plugin tool failed.')));
-        child.kill();
-      });
-      child.send({ entry, name, args, context });
-    });
   }
 
   async list(configs: Record<string, TrustedPluginConfig>): Promise<PluginStatus[]> {
@@ -282,16 +268,13 @@ export class PluginManager {
   }
 
   async beforeTask(context: PluginTaskContext): Promise<Array<{ id: string; context: string }>> {
-    const handlers = [...this.active].flatMap(([id, active]) => active.beforeTask.map(handler => ({ id, handler })));
-    const settled = await Promise.allSettled(handlers.map(({ id, handler }) => this.runTimed(id, 'beforeTask', () => handler(frozenCopy(context)))));
+    const registrations = this.hookRegistrations('beforeTask');
+    const settled = await Promise.allSettled(registrations.map(({ active, index }) => this.hostCall(active, { action: 'call', kind: 'hook', hook: 'beforeTask', index, event: context }, HOOK_TIMEOUT_MS, 'beforeTask')));
     const output: Array<{ id: string; context: string }> = [];
     let remaining = MAX_TASK_CONTEXT_BYTES;
     settled.forEach((result, index) => {
-      const { id } = handlers[index]!;
-      if (result.status === 'rejected') {
-        this.addProblems([`${id}: beforeTask hook failed: ${String((result.reason as Error)?.message ?? result.reason)}`]);
-        return;
-      }
+      const { id } = registrations[index]!;
+      if (result.status === 'rejected') { this.addProblems([`${id}: beforeTask hook failed: ${String((result.reason as Error)?.message ?? result.reason)}`]); return; }
       if (typeof result.value !== 'string' || !result.value.trim() || remaining <= 0) return;
       const value = clipBytes(result.value.trim(), Math.min(4_000, remaining));
       remaining -= Buffer.byteLength(value, 'utf8');
@@ -301,42 +284,73 @@ export class PluginManager {
   }
 
   async beforeTool(context: PluginToolContext): Promise<void> {
-    const handlers = [...this.active].flatMap(([id, active]) => active.beforeTool.map(handler => ({ id, handler })));
-    const settled = await Promise.allSettled(handlers.map(({ id, handler }) => this.runTimed(id, 'beforeTool', () => handler(frozenCopy(context)))));
+    const registrations = this.hookRegistrations('beforeTool');
+    const settled = await Promise.allSettled(registrations.map(({ active, index }) => this.hostCall(active, { action: 'call', kind: 'hook', hook: 'beforeTool', index, event: context }, HOOK_TIMEOUT_MS, 'beforeTool')));
     const failures = settled.flatMap((result, index) => result.status === 'rejected'
-      ? [`Plugin ${handlers[index]!.id} beforeTool hook failed; the tool was blocked: ${String((result.reason as Error)?.message ?? result.reason)}`]
+      ? [`Plugin ${registrations[index]!.id} beforeTool hook failed; the tool was blocked: ${String((result.reason as Error)?.message ?? result.reason)}`]
       : typeof result.value === 'string' && result.value.trim()
-        ? [`Plugin ${handlers[index]!.id} blocked ${context.tool}: ${result.value.trim().slice(0, 1_000)}`]
+        ? [`Plugin ${registrations[index]!.id} blocked ${context.tool}: ${result.value.trim().slice(0, 1_000)}`]
         : []);
     if (failures.length) throw new Error(failures.join('\n'));
   }
 
   async afterTool(context: PluginToolResult): Promise<void> {
-    const handlers = [...this.active].flatMap(([id, active]) => active.afterTool.map(handler => ({ id, handler })));
-    const settled = await Promise.allSettled(handlers.map(({ id, handler }) => this.runTimed(id, 'afterTool', () => handler(frozenCopy(context)))));
-    settled.forEach((result, index) => {
-      if (result.status === 'rejected') this.addProblems([`${handlers[index]!.id}: afterTool hook failed: ${String((result.reason as Error)?.message ?? result.reason)}`]);
-    });
+    const registrations = this.hookRegistrations('afterTool');
+    const settled = await Promise.allSettled(registrations.map(({ active, index }) => this.hostCall(active, { action: 'call', kind: 'hook', hook: 'afterTool', index, event: context }, HOOK_TIMEOUT_MS, 'afterTool')));
+    settled.forEach((result, index) => { if (result.status === 'rejected') this.addProblems([`${registrations[index]!.id}: afterTool hook failed: ${String((result.reason as Error)?.message ?? result.reason)}`]); });
   }
 
   async afterTask(context: PluginTaskResult): Promise<void> {
-    const handlers = [...this.active].flatMap(([id, active]) => active.afterTask.map(handler => ({ id, handler })));
-    const settled = await Promise.allSettled(handlers.map(({ id, handler }) => this.runTimed(id, 'afterTask', () => handler(frozenCopy(context)))));
-    settled.forEach((result, index) => {
-      if (result.status === 'rejected') this.addProblems([`${handlers[index]!.id}: afterTask hook failed: ${String((result.reason as Error)?.message ?? result.reason)}`]);
-    });
+    const registrations = this.hookRegistrations('afterTask');
+    const settled = await Promise.allSettled(registrations.map(({ active, index }) => this.hostCall(active, { action: 'call', kind: 'hook', hook: 'afterTask', index, event: context }, HOOK_TIMEOUT_MS, 'afterTask')));
+    settled.forEach((result, index) => { if (result.status === 'rejected') this.addProblems([`${registrations[index]!.id}: afterTask hook failed: ${String((result.reason as Error)?.message ?? result.reason)}`]); });
   }
 
   drainProblems(): string[] { return this.problems.splice(0); }
 
-  private async runTimed<T>(id: string, hook: string, work: () => T | Promise<T>, timeoutMs = HOOK_TIMEOUT_MS): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        Promise.resolve().then(work),
-        new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${hook} hook exceeded ${timeoutMs}ms`)), timeoutMs); timer.unref(); }),
-      ]);
-    } finally { if (timer) clearTimeout(timer); }
+  private hookRegistrations(hook: HookName): Array<{ id: string; active: ActivePlugin; index: number }> {
+    return [...this.active].flatMap(([id, active]) => Array.from({ length: active.hooks[hook] }, (_value, index) => ({ id, active, index })));
+  }
+
+  private attachHost(active: ActivePlugin, id: string): void {
+    active.child.on('message', (message: any) => {
+      if (!message || typeof message !== 'object') return;
+      if (message.type === 'ready') { active.pending.get(0)?.resolve(message); active.pending.delete(0); return; }
+      if (message.type === 'result') {
+        const pending = active.pending.get(Number(message.id));
+        if (!pending) return;
+        active.pending.delete(Number(message.id));
+        clearTimeout(pending.timer);
+        if (message.ok) pending.resolve(message.value);
+        else pending.reject(new Error(String(message.error ?? 'Plugin host call failed.')));
+      }
+    });
+    active.child.once('exit', code => {
+      for (const pending of active.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error(`Plugin host ${id} exited with code ${code ?? 'unknown'}.`)); }
+      active.pending.clear();
+      this.addProblems([`${id}: plugin host exited with code ${code ?? 'unknown'}.`]);
+    });
+  }
+
+  private startHost(active: ActivePlugin, preview: PluginPreview): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { active.child.kill(); reject(new Error('Plugin activation timed out.')); }, TOOL_TIMEOUT_MS);
+      timer.unref();
+      active.pending.set(0, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); }, timer });
+      active.child.once('error', error => { clearTimeout(timer); reject(error); });
+      active.child.send({ action: 'init', entry: preview.path, id: preview.manifest.id, version: preview.manifest.version });
+    });
+  }
+
+  private hostCall(active: ActivePlugin, payload: Record<string, unknown>, timeoutMs: number, label: string): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const id = active.nextId++;
+      const timer = setTimeout(() => { active.pending.delete(id); reject(new Error(`${label} exceeded ${timeoutMs}ms.`)); }, timeoutMs);
+      timer.unref();
+      active.pending.set(id, { resolve, reject, timer });
+      try { active.child.send({ ...payload, id }); }
+      catch (error) { active.pending.delete(id); clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))); }
+    });
   }
 
   private async files(id: string): Promise<{ manifestText: string; source: string; entryPath: string }> {

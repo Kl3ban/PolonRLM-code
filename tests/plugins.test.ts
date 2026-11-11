@@ -14,34 +14,39 @@ async function fixture(t: test.TestContext) {
 }
 
 test('plugin preview never executes code; explicit reviewed hash enables bounded lifecycle hooks', async t => {
-  const { plugins } = await fixture(t);
+  const { plugins, home } = await fixture(t);
   const id = 'review-hooks';
-  const marker = `__polonrlm_plugin_${randomUUID().replaceAll('-', '')}`;
+  const log = path.join(home, 'plugin-events.log');
+  process.env.POLONRLM_PLUGIN_LOG = log;
+  t.after(() => { delete process.env.POLONRLM_PLUGIN_LOG; });
   const directory = await plugins.create(id);
   const source = `
-globalThis[${JSON.stringify(marker)}] = { loaded: true, events: [] };
+import { appendFileSync } from 'node:fs';
+const log = process.env.POLONRLM_PLUGIN_LOG;
 export default {
   id: ${JSON.stringify(id)},
   version: '1.0.0',
   activate(api) {
+    appendFileSync(log, 'activated\\n');
     api.hooks.beforeTask(event => {
       if (!Object.isFrozen(event)) throw new Error('task context must be frozen');
+      appendFileSync(log, 'beforeTask\\n');
       return 'Only for ' + event.role;
     });
     api.hooks.beforeTool(event => {
       if (!Object.isFrozen(event.arguments)) throw new Error('tool arguments must be frozen');
       if (event.tool === 'write_file') return 'manual review required';
     });
-    api.hooks.afterTool(event => globalThis[${JSON.stringify(marker)}].events.push('tool:' + event.tool + ':' + event.isError));
-    api.hooks.afterTask(event => globalThis[${JSON.stringify(marker)}].events.push('task:' + event.status));
+    api.hooks.afterTool(event => appendFileSync(log, 'tool:' + event.tool + ':' + event.isError + '\\n'));
+    api.hooks.afterTask(event => appendFileSync(log, 'task:' + event.status + '\\n'));
   },
-  deactivate() { globalThis[${JSON.stringify(marker)}].events.push('deactivated'); },
+  deactivate() { appendFileSync(log, 'deactivated\\n'); },
 };
 `;
   const entry = path.join(directory, 'index.mjs');
   await writeFile(entry, source, 'utf8');
   const preview = await plugins.preview(id);
-  assert.equal((globalThis as Record<string, unknown>)[marker], undefined, 'preview must not import the module');
+  await assert.rejects(readFile(log), /ENOENT/, 'preview must not execute the module');
 
   const reviewed = await plugins.review(id);
   assert.equal(reviewed.sha256, preview.sha256);
@@ -50,17 +55,19 @@ export default {
   assert.equal(plugins.consumeReview(id, currentReview.sha256), true, 'only the currently reviewed hash can be confirmed');
   await assert.rejects(plugins.activate(id, '0'.repeat(64)), /changed since approval/);
   await plugins.activate(id, preview.sha256);
+  assert.match(await readFile(log, 'utf8'), /activated/);
 
-  const state = (globalThis as Record<string, any>)[marker];
-  assert.equal(state.loaded, true);
   assert.deepEqual(await plugins.beforeTask({ sessionId: 's', workspace: 'w', task: 'Fix a bug', role: 'reviewer', mode: 'REVIEW' }), [{ id, context: 'Only for reviewer' }]);
   await assert.rejects(plugins.beforeTool({ sessionId: 's', workspace: 'w', task: 'Write a file', role: 'orchestrator', mode: 'BUILD', tool: 'write_file', arguments: { path: 'a.txt' } }), /blocked write_file: manual review required/);
   await plugins.afterTool({ sessionId: 's', workspace: 'w', task: 'Write a file', role: 'orchestrator', mode: 'BUILD', tool: 'write_file', arguments: { path: 'a.txt' }, result: 'denied', isError: true, durationMs: 3 });
   await plugins.afterTask({ sessionId: 's', workspace: 'w', task: 'Write a file', role: 'orchestrator', mode: 'BUILD', status: 'complete' });
-  assert.deepEqual(state.events, ['tool:write_file:true', 'task:complete']);
+  const logText = await readFile(log, 'utf8');
+  assert.match(logText, /beforeTask/);
+  assert.match(logText, /tool:write_file:true/);
+  assert.match(logText, /task:complete/);
 
   await plugins.deactivate(id);
-  assert.deepEqual(state.events, ['tool:write_file:true', 'task:complete', 'deactivated']);
+  assert.match(await readFile(log, 'utf8'), /deactivated/);
   assert.equal((await plugins.list({ [id]: { enabled: true, sha256: preview.sha256 } }))[0]?.loaded, false);
 });
 

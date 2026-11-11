@@ -76,16 +76,16 @@ test('trusted plugin hooks add task context, block tools without bypassing permi
   const plugins = new PluginManager(h.home);
   t.after(() => plugins.close());
   const id = 'runtime-policy';
-  const marker = `__polonrlm_runtime_plugin_${Date.now()}`;
+  const statusFile = path.join(h.home, 'plugin-status.txt');
   const directory = await plugins.create(id);
   await writeFile(path.join(directory, 'index.mjs'), `
-globalThis[${JSON.stringify(marker)}] = { status: null };
+import { writeFileSync } from 'node:fs';
 export default {
   id: ${JSON.stringify(id)}, version: '1.0.0',
   activate(api) {
     api.hooks.beforeTask(() => 'review reminder');
     api.hooks.beforeTool(({ tool }) => tool === 'write_file' ? 'manual review required' : undefined);
-    api.hooks.afterTask(({ status }) => { globalThis[${JSON.stringify(marker)}].status = status; });
+    api.hooks.afterTask(({ status }) => { writeFileSync(${JSON.stringify(statusFile)}, String(status)); });
   },
 };
 `, 'utf8');
@@ -98,7 +98,7 @@ export default {
   assert.equal(sawPluginContext, true);
   assert.equal(sawBlockedTool, true);
   await assert.rejects(readFile(path.join(h.workspace.root, 'blocked-by-plugin.txt')), /ENOENT/);
-  assert.equal((globalThis as Record<string, any>)[marker].status, 'complete');
+  assert.equal(await readFile(statusFile, 'utf8'), 'complete');
   assert.ok(h.events.some(event => event.type === 'tool' && event.name === 'write_file' && event.state === 'error'));
 });
 
