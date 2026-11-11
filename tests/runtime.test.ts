@@ -362,7 +362,7 @@ test('compact optional-tool guidance retains discovery cues and loads an exact s
   const requiredGuidance = [
     'browser/browser_sessions', 'read_files/search_batch', 'code_diagnostics', 'symbol_*', 'rename_symbol',
     'ast_search/ast_edit/code_outline', 'lsp_request', 'process_*', 'transaction_*', 'checkpoint_*',
-    'git_log/git_show/git_blame', 'plan_update/plan_status', 'connected MCP via discover_tools', 'Load only needed schemas.',
+    'git_log/git_show/git_blame', 'plan_update/plan_status', 'connected MCP by task match or discover_tools', 'Load only needed schemas.',
     'After code changes, check diagnostics.', 'Restore checkpoints only with current hashes;',
     'plan status is not proof of completion.',
   ];
@@ -411,10 +411,31 @@ test('connected MCP schemas load only after discovery and remain callable for th
   h.mcp.tools = () => [tool];
   h.mcp.call = async (name, args) => { executions++; assert.equal(name, tool.name); return JSON.stringify({ isError: false, content: [{ type: 'text', text: `Created: ${args.title}` }] }); };
   h.workspace.permissions.approve = async request => { approvals++; assert.equal(request.tool, tool.name); return true; };
-  assert.equal(await h.runtime.run(h.session, 'Create a Linear issue titled Fix login.', new AbortController().signal), 'Created the Linear issue.');
+  assert.equal(await h.runtime.run(h.session, 'Create an issue titled Fix login using the connected project tracker.', new AbortController().signal), 'Created the Linear issue.');
   assert.equal(executions, 1);
   assert.equal(approvals, 1, 'MCP remains an external action even after its schema is discovered');
   assert.equal(calls, 3);
+});
+
+test('task-matched MCP schemas preload only the relevant connected tools', async t => {
+  let calls = 0, executions = 0;
+  const linear = { name: 'mcp_linear_create_issue', description: '[MCP linear] Create an issue in Linear.', parameters: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] } };
+  const slack = { name: 'mcp_slack_send_message', description: '[MCP slack] Send a channel message.', parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } };
+  const h = await harness(t, async (messages, specs) => {
+    calls++;
+    if (calls === 1) {
+      assert.ok(specs.some(spec => spec.name === linear.name), 'a named provider and matching action should load directly');
+      assert.ok(!specs.some(spec => spec.name === slack.name), 'unrelated MCP schemas stay out of the request');
+      return reply('', [{ id: 'create-linear', name: linear.name, arguments: { title: 'Fix login' } }]);
+    }
+    assert.match(messages.at(-1)?.content ?? '', /Fix login/);
+    return reply('Created the Linear issue.');
+  }, { permissions: 'all' });
+  h.mcp.tools = () => [linear, slack];
+  h.mcp.call = async name => { executions++; assert.equal(name, linear.name); return JSON.stringify({ isError: false, content: [{ type: 'text', text: 'Created Fix login' }] }); };
+  assert.equal(await h.runtime.run(h.session, 'Create a Linear issue titled Fix login.', new AbortController().signal), 'Created the Linear issue.');
+  assert.equal(executions, 1);
+  assert.equal(calls, 2, 'task matching avoids a separate schema-discovery model call');
 });
 
 test('a disabled MCP tool is reported without offering unsupported one-time approval', async t => {

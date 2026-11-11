@@ -39,6 +39,23 @@ function repeatedObservation(name: string, args: Record<string, unknown>): boole
 }
 
 function foldPolish(value: string): string { return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().replaceAll('ł', 'l'); }
+function mcpTaskScore(task: string, spec: ToolSpec): number {
+  const server = spec.description.match(/^\[MCP ([^\]]+)\]/i)?.[1];
+  if (!server) return 0;
+  const terms = (value: string) => foldPolish(value).match(/[\p{L}\p{N}]+/gu) ?? [];
+  const taskTerms = new Set(terms(task));
+  const serverTerms = new Set(terms(server));
+  if (![...serverTerms].some(term => taskTerms.has(term))) return 0;
+  const normalizedServer = server.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const prefix = `mcp_${normalizedServer}_`;
+  const toolName = spec.name.toLowerCase().startsWith(prefix) ? spec.name.slice(prefix.length) : spec.name.replace(/^mcp_/i, '');
+  const description = spec.description.replace(/^\[MCP [^\]]+\]\s*/i, '');
+  const generic = new Set(['mcp', 'tool', 'server', 'create', 'get', 'list', 'search', 'read', 'write', 'update', 'delete', 'add', 'remove', 'run', 'execute', 'fetch']);
+  const nameMatches = [...new Set(terms(toolName).filter(term => !serverTerms.has(term) && !generic.has(term)))].filter(term => taskTerms.has(term));
+  const descriptionMatches = [...new Set(terms(description).filter(term => !serverTerms.has(term) && !generic.has(term)))].filter(term => taskTerms.has(term));
+  const genericNameMatches = [...new Set(terms(toolName).filter(term => generic.has(term)))].filter(term => taskTerms.has(term));
+  return nameMatches.length * 4 + descriptionMatches.length + genericNameMatches.length;
+}
 const PARALLEL_READ_TOOLS = new Set([
   'read_file', 'list_directory', 'search_files', 'search_content', 'read_files', 'search_batch',
   'inspect_project', 'detect_project_type', 'analyze_dependencies',
@@ -294,8 +311,15 @@ ${skills.join('\n')}`;
         if (incoming.length) appendTeamMessages(messages, incoming);
       }
       const available = tools.specs(mode);
-      const specs = available.filter(spec => enabled.has(spec.name));
       const connectedMcpTools = mode === 'BUILD' && !isolated ? this.mcp.tools() : [];
+      if (connectedMcpTools.length) {
+        const relevantMcpTools = connectedMcpTools.map(spec => ({ spec, score: mcpTaskScore(task, spec) }))
+          .filter(item => item.score > 0 && workspace.permissions.available(item.spec.name, true, mode))
+          .sort((left, right) => right.score - left.score)
+          .slice(0, 5);
+        relevantMcpTools.forEach(({ spec }) => enabled.add(spec.name));
+      }
+      const specs = available.filter(spec => enabled.has(spec.name));
       const wantsComputer = !depth && (!research || /kursor|mysz|cursor|mouse|pulpit|desktop|klik/i.test(task)) && (desktopIntent.test(task) || enabled.has('computer_use'));
       const computerAvailable = wantsComputer && available.some(spec => spec.name === 'computer_use');
       if (wantsComputer) {
