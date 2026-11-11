@@ -212,4 +212,5 @@ export class Workspace {
     });
   }
   fingerprints(): string[] { return this.changes.slice(-20).map(change => `${change.path}: ${createHash('sha256').update(change.after ?? '').digest('hex').slice(0, 12)}`); }
+  changedPaths(): string[] { return [...new Set(this.changes.map(change => change.path))]; }
 }

@@ -9,6 +9,7 @@ The terminal app is built with TypeScript, Node.js 24, and Ink. It does not need
 - `src/core/agent-team.ts`: bounded in-memory messages between active subagents and user steering.
 - `src/core/cortex.ts`: task complexity and subagent policy without extra mandatory model calls.
 - `src/core/context.ts`: conservative token estimate and local extractive compaction with fact scoring, source labels, and intact tool-call boundaries.
+- `src/core/verification.ts`: project check discovery, file hashes, persisted evidence formatting, and verification history.
 - `src/core/controller.ts`: app session and renderer-independent commands.
 - `src/core/config.ts`: validated configuration saved atomically.
 - `src/core/store.ts`: SQLite history, working context, notes, usage, and event log.

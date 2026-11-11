@@ -58,6 +58,7 @@ export const settingsSchema = z.object({
   theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().nonnegative().safe(), timeoutMs: z.number().int().nonnegative().max(MAX_TIMER_DELAY_MS),
   webSearchMode: z.preprocess(value => value === 'duckduckgo' ? 'auto' : value, z.enum(['auto', 'bing', 'brave', 'yahoo']).default('auto')),
   browserEngine: z.enum(['auto', 'chromium', 'chrome', 'edge', 'brave', 'firefox']).default('auto'),
+  verificationCommands: z.array(z.string().trim().min(1)).default([]),
   mcp: z.record(z.string(), mcpServerSchema)
 }).superRefine((settings, context) => {
   if (!Object.hasOwn(settings.providers, settings.provider)) context.addIssue({ code: 'custom', path: ['provider'], message: 'Selected provider is not configured.' });
@@ -68,7 +69,7 @@ export const settingsSchema = z.object({
 export function defaultSettings(): Settings {
   return { provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1,
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', mcp: {} };
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', verificationCommands: [], mcp: {} };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };

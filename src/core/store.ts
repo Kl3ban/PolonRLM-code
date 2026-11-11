@@ -6,6 +6,7 @@ import type { Message, Usage } from './types.js';
 import { redact, safeText } from './secrets.js';
 import { clip } from './context.js';
 import type { WorkflowState } from './workflows.js';
+import type { VerificationReport } from './verification.js';
 
 function execWithBusyRetry(db: DatabaseSync, sql: string): void {
   const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
@@ -145,7 +146,9 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS workflows(session TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY, session TEXT, data TEXT);
       CREATE TABLE IF NOT EXISTS context(session TEXT PRIMARY KEY, data TEXT, watermark INTEGER);
-      CREATE TABLE IF NOT EXISTS memory(workspace TEXT, name TEXT, body TEXT, PRIMARY KEY(workspace,name));`);
+      CREATE TABLE IF NOT EXISTS memory(workspace TEXT, name TEXT, body TEXT, PRIMARY KEY(workspace,name));
+      CREATE TABLE IF NOT EXISTS verification_reports(id TEXT PRIMARY KEY, session TEXT NOT NULL, created INTEGER NOT NULL, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS verification_session_created ON verification_reports(session,created DESC);`);
   }
   create(workspace: string, title = 'New session'): string {
     const id = randomUUID(); this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(id, workspace, safeText(title).replace(/\s+/g, ' ').trim().slice(0, 100) || 'New session', Date.now()); return id;
@@ -205,6 +208,21 @@ export class SessionStore {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   audit(session: string, tool: string, data: unknown): void { this.db.prepare('INSERT INTO audit(session,time,tool,data) VALUES(?,?,?,?)').run(session, Date.now(), tool, redact(JSON.stringify(data))); }
+  saveVerification(report: VerificationReport): void {
+    if (!this.db.prepare('SELECT id FROM sessions WHERE id=?').get(report.session)) throw new Error('Cannot save verification for an unknown session.');
+    this.db.prepare('INSERT OR REPLACE INTO verification_reports(id,session,created,data) VALUES(?,?,?,?)').run(report.id, report.session, report.createdAt, redact(JSON.stringify(report)));
+  }
+  verificationReports(session: string, limit = 10): VerificationReport[] {
+    if (!Number.isFinite(limit) || limit < 1) throw new Error('Verification history limit must be positive.');
+    return this.db.prepare('SELECT data FROM verification_reports WHERE session=? ORDER BY created DESC LIMIT ?').all(session, Math.floor(limit)).map(row => JSON.parse((row as { data: string }).data) as VerificationReport);
+  }
+  verificationReport(session: string, prefix: string): VerificationReport | undefined {
+    if (prefix.length < 4) throw new Error('Use at least four characters from the report ID.');
+    const matches = (this.db.prepare('SELECT data FROM verification_reports WHERE session=? ORDER BY created DESC').all(session) as { data: string }[])
+      .map(row => JSON.parse(row.data) as VerificationReport).filter(report => report.id.startsWith(prefix));
+    if (matches.length > 1) throw new Error('That report prefix is ambiguous. Use a longer ID.');
+    return matches[0];
+  }
   recordUsage(session: string, usage: Usage): void { this.db.prepare('INSERT INTO usage(session,data) VALUES(?,?)').run(session, JSON.stringify(usage)); }
   usage(session: string): Usage {
     const total: Usage = { input: 0, output: 0, cached: 0, cost: 0, costKnown: true };
@@ -223,7 +241,7 @@ export class SessionStore {
   forget(id: string, workspace: string): void {
     if (!this.exists(id, workspace)) throw new Error('Session does not belong to this project.');
     this.db.exec('BEGIN IMMEDIATE');
-    try { for (const table of ['messages', 'audit', 'usage', 'context', 'workflows']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(id); this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); this.db.exec('COMMIT'); }
+    try { for (const table of ['messages', 'audit', 'usage', 'context', 'workflows', 'verification_reports']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(id); this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); this.db.exec('COMMIT'); }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   memories(workspace: string): { name: string; body: string }[] { return this.db.prepare('SELECT name,body FROM memory WHERE workspace=?').all(workspace) as any; }

@@ -218,6 +218,9 @@ test('controller commands persist config and transient model overrides clear sta
     assert.equal(controller.snapshot().contextLimitSource, 'app');
     await controller.submit('/settings maxInputTokens infinity');
     assert.equal(controller.snapshot().contextLimitSource, 'model');
+    await controller.submit('/settings verificationCommands ["npm test", "npm run check"]');
+    assert.deepEqual(controller.config.settings.verificationCommands, ['npm test', 'npm run check']);
+    assert.equal(controller.readSettings().values.verificationCommands, '["npm test","npm run check"]');
     assert.equal(controller.config.settings.providers.custom!.inputPrice, 1);
     await controller.setModel('cli-override');
     assert.equal(controller.snapshot().model, 'cli-override');
@@ -254,6 +257,60 @@ test('controller commands persist config and transient model overrides clear sta
     assert.ok(controller.config.settings.mcp.example);
     await controller.submit('/mcp remove example'); assert.equal(controller.config.settings.mcp.example, undefined);
     await saved.load(); assert.equal(saved.settings.mode, 'REVIEW'); assert.equal(saved.settings.permissions, 'readonly'); assert.equal(saved.settings.theme, 'light'); assert.equal(saved.settings.browserEngine, 'edge'); assert.equal(saved.settings.providers.custom?.reasoning, 'low'); assert.equal(saved.settings.providers.custom?.temperature, 0.2);
+    assert.deepEqual(saved.settings.verificationCommands, ['npm test', 'npm run check']);
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
+test('/verify runs configured checks, records diagnostics and file hashes, and keeps history after restart', { timeout: 20_000 }, async () => {
+  const local = await fixture();
+  let controller: Controller | undefined;
+  try {
+    local.config.settings.permissions = 'all';
+    local.config.settings.verificationCommands = ['node verify.mjs'];
+    await local.config.save();
+    await mkdir(path.join(local.root, 'src'));
+    await writeFile(path.join(local.root, 'src', 'app.ts'), 'export const answer: number = 1;');
+    await writeFile(path.join(local.root, 'verify.mjs'), "process.stdout.write('checks passed');\n");
+    controller = await Controller.open(local.root, local.home);
+    const session = controller.snapshot().sessionId;
+    await (controller as any).workspace.change('write_file', 'src/app.ts', () => 'export const answer: number = 42;', 'BUILD');
+
+    await controller.submit('/verify');
+    const store = (controller as any).store as SessionStore;
+    const report = store.verificationReports(session, 1)[0]!;
+    assert.equal(report.status, 'passed');
+    assert.deepEqual(report.commands.map(check => [check.command, check.exitCode, check.status]), [['node verify.mjs', 0, 'passed']]);
+    assert.ok(report.diagnostics.some(item => item.path === 'src/app.ts'));
+    assert.equal(report.files.length, 1);
+    assert.equal(report.files[0]!.path, 'src/app.ts');
+    assert.ok(report.files[0]!.beforeHash);
+    assert.equal(report.files[0]!.beforeHash, report.files[0]!.afterHash);
+    assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /VERIFICATION PASSED/);
+
+    await controller.submit('/verify history 1');
+    assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /VERIFICATION HISTORY[\s\S]*PASSED/);
+    await controller.submit(`/verify report ${report.id.slice(0, 8)}`);
+    assert.match(controller.snapshot().messages.at(-1)?.text ?? '', /VERIFICATION PASSED[\s\S]*node verify\.mjs/);
+    await controller.close(); controller = undefined;
+    const reopened = new SessionStore(local.home);
+    try { assert.equal(reopened.verificationReports(session, 1)[0]?.id, report.id); }
+    finally { reopened.close(); }
+  } finally { await controller?.close(); await local.dispose(); }
+});
+
+test('/verify reports an approval block without starting the configured command', { timeout: 10_000 }, async () => {
+  const local = await fixture();
+  let controller: Controller | undefined;
+  const marker = path.join(local.root, 'command-ran.txt');
+  try {
+    local.config.settings.verificationCommands = [`node -e \"require('fs').writeFileSync('${marker.replaceAll('\\', '/')}', 'ran')\"`];
+    await local.config.save();
+    controller = await Controller.open(local.root, local.home);
+    await controller.submit('/verify');
+    const report = ((controller as any).store as SessionStore).verificationReports(controller.snapshot().sessionId, 1)[0]!;
+    assert.equal(report.status, 'blocked');
+    assert.equal(report.commands[0]?.status, 'blocked');
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
   } finally { await controller?.close(); await local.dispose(); }
 });
 

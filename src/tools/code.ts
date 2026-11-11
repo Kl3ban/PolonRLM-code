@@ -39,6 +39,20 @@ export function registerCodeTools(registry: ToolRegistry, workspace: Workspace):
   registry.add('code_diagnostics', 'Real TypeScript/JavaScript syntactic and semantic diagnostics from the TypeScript language service. Disk files only; no arbitrary compiler plugins.', z.object({ path: z.string() }), true, async args => {
     const p = await project(args.path); try { return [...p.service.getSyntacticDiagnostics(p.target), ...p.service.getSemanticDiagnostics(p.target)].slice(0, 100).map(d => ({ ...location(p.target, { start: d.start ?? 0, length: d.length ?? 0 }, p.service), code: d.code, message: ts.flattenDiagnosticMessageText(d.messageText, '\n') })); } finally { p.service.dispose(); }
   });
+  registry.add('code_diagnostics_batch', 'Run TypeScript/JavaScript syntactic and semantic diagnostics for several changed files while indexing the project only once.', z.object({ paths: z.array(z.string().min(1)).min(1) }), true, async args => {
+    const p = await project(args.paths[0]!);
+    try {
+      const program = p.service.getProgram();
+      return await Promise.all([...new Set<string>(args.paths)].map(async filename => {
+        const target = await workspace.resolve(filename);
+        const source = program?.getSourceFile(target);
+        if (!source) return { path: filename, diagnostics: [], error: 'File is not present in the TypeScript/JavaScript project index.' };
+        const diagnostics = [...p.service.getSyntacticDiagnostics(target), ...p.service.getSemanticDiagnostics(target)].slice(0, 100)
+          .map(diagnostic => ({ ...location(target, { start: diagnostic.start ?? 0, length: diagnostic.length ?? 0 }, p.service), code: diagnostic.code, message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n') }));
+        return { path: filename, diagnostics };
+      }));
+    } finally { p.service.dispose(); }
+  });
   for (const name of ['symbol_definition', 'symbol_references', 'symbol_hover'] as const) registry.add(name, 'TypeScript/JavaScript semantic symbol navigation. Positions are 1-based UTF-16.', position, true, async args => {
     const p = await project(args.path); try { const at = offset(p.source, args.line, args.column); if (name === 'symbol_hover') { const info = p.service.getQuickInfoAtPosition(p.target, at); return info ? { text: ts.displayPartsToString(info.displayParts), documentation: ts.displayPartsToString(info.documentation) } : { found: false }; } const found = name === 'symbol_definition' ? p.service.getDefinitionAtPosition(p.target, at) : p.service.getReferencesAtPosition(p.target, at); return (found ?? []).slice(0, 100).map(item => location(item.fileName, item.textSpan, p.service)); } finally { p.service.dispose(); }
   });

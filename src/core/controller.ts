@@ -20,6 +20,7 @@ import { CORTEX } from './cortex.js';
 import { formatLimit, formatTokenBudget, parseTokenBudget, parseUnlimitedLimit, tokenBudgetMaximum } from './budget.js';
 import { SETTINGS_FIELDS } from './settings-fields.js';
 import { describeToolCall } from './tool-display.js';
+import { discoverVerificationPlan, formatVerificationHistory, formatVerificationReport, hashWorkspaceFiles, makeVerificationReport, parseGitStatusPaths, type VerificationCheck, type VerificationDiagnostic, type VerificationStatus } from './verification.js';
 
 export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /grill-me <task> | off            Ask one question at a time
@@ -32,6 +33,7 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /effort [value]                   Choose an effort supported by the current model
 /image <path>|clear               Attach an image to the next message or clear attachments
 /tools [filter]                   Show available AI tools
+/verify [command|history [count]|report <id>] Verify project checks and inspect saved evidence
 /settings [name] [value]          Settings and budgets
 /budget [tokens] [USD]            Set the next task's budget
 /settings provider.<field> <value> Reasoning, request timeout, temperature, pricing, and capabilities
@@ -273,7 +275,7 @@ export class Controller implements UIController {
   }
   readSettings(): ReturnType<NonNullable<UIController['readSettings']>> {
     const settings = this.config.settings;
-    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, settings[field.key as keyof Settings] as string | number])),
+    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, field.key === 'verificationCommands' ? JSON.stringify(settings.verificationCommands) : settings[field.key as keyof Settings] as string | number])),
       tools: this.registry.discovery(settings.mode).map(tool => ({ name: tool.name, description: tool.description, available: tool.available, policy: settings.toolPermissions[tool.name] ?? 'default' })) };
   }
   async updateSetting(name: string, value: string | number): Promise<void> {
@@ -289,7 +291,12 @@ export class Controller implements UIController {
     } else {
       if (!SETTINGS_FIELDS.some(field => field.key === name)) throw new Error('Unknown setting.');
       const key = name as keyof Settings;
-      const parsedValue = name === 'tokenBudget' ? parseTokenBudget(value)
+      let verificationCommands: unknown = value;
+      if (name === 'verificationCommands' && typeof value === 'string') {
+        try { verificationCommands = JSON.parse(value); }
+        catch { throw new Error('Verification commands must be a JSON array, for example ["npm test", "npm run check"].'); }
+      }
+      const parsedValue = name === 'verificationCommands' ? verificationCommands : name === 'tokenBudget' ? parseTokenBudget(value)
         : SETTINGS_FIELDS.some(field => field.key === name && field.section === 'limits') ? parseUnlimitedLimit(value, name === 'maxDepth' ? -1 : 0) : value;
       const parsed = settingsSchema.safeParse({ ...settings, [name]: parsedValue });
       if (!parsed.success) {
@@ -422,6 +429,96 @@ export class Controller implements UIController {
   }
   private sync(): void {
     const settings = this.config.settings; const provider = settings.providers[settings.provider]; this.state.provider = settings.provider; this.state.model = provider?.model ?? ''; this.state.mode = settings.mode; this.state.cortex = settings.cortex; this.state.theme = settings.theme; this.state.vision = provider?.vision; this.state.contextLimit = contextLimit(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.contextLimitSource = contextLimitSource(settings.maxInputTokens, settings.maxOutputTokens, provider); this.state.tokenLimit = settings.tokenBudget; this.state.dollarLimit = settings.dollarBudget; this.notify();
+  }
+  private async verify(explicitCommand?: string): Promise<void> {
+    if (this.state.busy || this.closing) throw new Error('Wait for the current task before starting verification.');
+    if (this.config.settings.mode !== 'BUILD') throw new Error('Verification commands run project code. Switch to BUILD mode first.');
+    const abort = new AbortController();
+    this.abort = abort; this.state.busy = true; this.state.status = 'Preparing verification'; this.notify();
+    const operation = this.performVerification(explicitCommand, abort.signal);
+    this.active = operation;
+    try { await operation; }
+    catch (error: any) { this.note(redact(abort.signal.aborted ? 'Verification cancelled before the report was complete.' : error.message ?? String(error)), 'error'); }
+    finally {
+      if (this.active === operation) this.active = undefined;
+      if (this.abort === abort) this.abort = undefined;
+      this.state.busy = false; this.state.status = 'Ready'; this.notify();
+    }
+  }
+  private async performVerification(explicitCommand: string | undefined, signal: AbortSignal): Promise<void> {
+    const settings = this.config.settings;
+    const plan = await discoverVerificationPlan(this.workspace, settings.verificationCommands, explicitCommand);
+    const paths = new Set(this.workspace.changedPaths());
+    const notes = [...plan.notes];
+    try {
+      const raw = await this.registry.execute('git_status', { untrackedFiles: true }, { signal, mode: settings.mode, outputLimit: 0 });
+      const status = JSON.parse(raw) as { exitCode?: unknown; stdout?: unknown; stderr?: unknown };
+      if (status.exitCode === 0 && typeof status.stdout === 'string') parseGitStatusPaths(status.stdout).forEach(filename => paths.add(filename));
+      else notes.push(`Git status did not return a clean result: ${String(status.stderr ?? status.exitCode ?? 'unknown error')}`);
+    } catch (error: any) {
+      if (signal.aborted) throw error;
+      notes.push(`Could not collect Git changed paths: ${redact(error.message ?? String(error))}`);
+    }
+    const before = await hashWorkspaceFiles(this.workspace, [...paths]);
+    const checks: VerificationCheck[] = [];
+    const diagnostics: VerificationDiagnostic[] = [];
+    for (const item of plan.commands) {
+      if (signal.aborted) break;
+      this.state.status = `Verifying ${item.label}`; this.notify();
+      const started = Date.now();
+      try {
+        const raw = await this.registry.execute('run_tests', { command: item.command }, { signal, mode: settings.mode, outputLimit: 0 });
+        const result = JSON.parse(raw) as { exitCode?: unknown; stdout?: unknown; stderr?: unknown };
+        if (typeof result.exitCode !== 'number' || !Number.isInteger(result.exitCode)) throw new Error('The command did not return an integer exit code.');
+        const output = [result.stdout, result.stderr].filter(value => typeof value === 'string' && value.length).join('\n');
+        checks.push({ label: item.label, command: item.command, status: result.exitCode === 0 ? 'passed' : 'failed', exitCode: result.exitCode, durationMs: Date.now() - started, output: output.slice(-8000) });
+      } catch (error: any) {
+        const message = redact(error.message ?? String(error));
+        const cancelled = signal.aborted;
+        const blocked = !cancelled && /approval denied|unavailable|disabled|not allowed/i.test(message);
+        checks.push({ label: item.label, command: item.command, status: cancelled ? 'cancelled' : blocked ? 'blocked' : 'failed', exitCode: null, durationMs: Date.now() - started, output: message });
+        if (cancelled || blocked) break;
+      }
+    }
+    const codePaths = [...paths].filter(filename => /\.[cm]?[jt]sx?$/i.test(filename));
+    if (codePaths.length && !signal.aborted && this.registry.getSpec('code_diagnostics_batch')) {
+      this.state.status = 'Checking code diagnostics'; this.notify();
+      try {
+        const raw = await this.registry.execute('code_diagnostics_batch', { paths: codePaths }, { signal, mode: settings.mode, outputLimit: 0 });
+        const result = JSON.parse(raw) as unknown;
+        if (!Array.isArray(result)) throw new Error('Diagnostics returned an invalid result.');
+        for (const item of result) {
+          if (!item || typeof item !== 'object') continue;
+          const row = item as Record<string, unknown>;
+          const found = Array.isArray(row.diagnostics) ? row.diagnostics.flatMap(entry => {
+            if (!entry || typeof entry !== 'object') return [];
+            const diagnostic = entry as Record<string, unknown>;
+            if (typeof diagnostic.code !== 'number' || typeof diagnostic.message !== 'string') return [];
+            return [{ code: diagnostic.code, message: redact(diagnostic.message), ...(typeof diagnostic.line === 'number' ? { line: diagnostic.line } : {}), ...(typeof diagnostic.column === 'number' ? { column: diagnostic.column } : {}) }];
+          }) : [];
+          diagnostics.push({ path: typeof row.path === 'string' ? row.path : codePaths[0]!, diagnostics: found, ...(typeof row.error === 'string' ? { error: redact(row.error) } : {}) });
+        }
+      } catch (error: any) {
+        if (signal.aborted) notes.push('Code diagnostics were cancelled.');
+        else diagnostics.push({ path: codePaths.join(', '), diagnostics: [], error: redact(error.message ?? String(error)) });
+      }
+    } else if (codePaths.length) notes.push('TypeScript/JavaScript diagnostics are disabled or unavailable.');
+    const after = await hashWorkspaceFiles(this.workspace, [...paths]);
+    const files = [...new Set([...before.keys(), ...after.keys()])].map(filename => {
+      const beforeHash = before.get(filename) ?? null, afterHash = after.get(filename) ?? null;
+      return { path: filename, beforeHash, afterHash, changedDuringCheck: beforeHash !== afterHash };
+    });
+    if (!files.length) notes.push('No changed project files were detected; the checks ran on the current workspace.');
+    let status: VerificationStatus;
+    if (signal.aborted || checks.some(check => check.status === 'cancelled')) status = 'cancelled';
+    else if (checks.some(check => check.status === 'blocked')) status = 'blocked';
+    else if (checks.some(check => check.status === 'failed') || diagnostics.some(item => item.diagnostics.length)) status = 'failed';
+    else if (diagnostics.some(item => item.error) || files.some(file => file.changedDuringCheck)) status = 'incomplete';
+    else if (!checks.length) status = 'no-checks';
+    else status = 'passed';
+    const report = makeVerificationReport({ session: this.session, workspace: this.workspace.root, status, commands: checks, diagnostics, files, notes });
+    this.store.saveVerification(report);
+    this.note(formatVerificationReport(report), status === 'failed' || status === 'blocked' || status === 'incomplete' ? 'error' : 'system');
   }
   private async command(line: string): Promise<void> {
     const [command = '', ...args] = line.split(/\s+/); const tail = line.slice(command.length).trim();
@@ -563,6 +660,22 @@ export class Controller implements UIController {
         (settings as any)[name] = candidate[name];
         await this.persistSettings(() => { (settings as any)[name] = previous; });
         this.providers.clear(); this.sync(); this.note(`Saved ${name}.`); break;
+      }
+      case '/verify': {
+        if (args[0] === 'report') {
+          if (!args[1] || args.length !== 2) throw new Error('Use /verify report <report ID>.');
+          const report = this.store.verificationReport(this.session, args[1]);
+          if (!report) throw new Error('Verification report was not found in this chat.');
+          this.note(formatVerificationReport(report)); break;
+        }
+        if (args[0] === 'history') {
+          if (args.length > 2) throw new Error('Use /verify history [count].');
+          const count = args[1] === undefined ? 10 : Number(args[1]);
+          if (!Number.isInteger(count) || count < 1) throw new Error('History count must be a positive whole number.');
+          this.note(formatVerificationHistory(this.store.verificationReports(this.session, count))); break;
+        }
+        const explicit = tail ? tail.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1') : undefined;
+        await this.verify(explicit); break;
       }
       case '/steer': {
         const match = /^([a-f0-9]{8})\s+([\s\S]+)$/i.exec(tail);

@@ -44,10 +44,17 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/permissions workspace` | Allows normal project file changes, with the configured workspace boundary. |
 | `/permissions readonly` | Blocks writes and shell actions. |
 | `/settings` | Opens settings for browser choice, budgets, model options, search and other preferences. |
+| `/settings verificationCommands ["npm test", "npm run check"]` | Sets project verification commands. Use `[]` to detect checks from the project manifest. |
 | `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token or cost cap. |
 | `/cortex 0..5` | Changes how much planning and subagent work is allowed. |
+| `/verify` | Runs configured or detected checks, gathers diagnostics for changed TypeScript/JavaScript files, and records file hashes and exit codes. |
+| `/verify <command>` | Runs one explicit project command through the normal shell approval rules. |
+| `/verify history [count]` | Shows saved verification reports for this chat. |
+| `/verify report <id>` | Opens the full evidence report using its ID from `/verify history`. |
 
 Shell commands run with the current user's operating system permissions. They are not sandboxed. Review command approval prompts before accepting them.
+
+With no configured verification commands, `/verify` detects standard scripts in `package.json`, Cargo, Go, Python, .NET, Gradle, or Maven manifests. Detection does not install dependencies. A passing command is evidence for that command only; it does not prove correctness against hidden tests or guarantee that every project change is covered.
 
 ## Files, images and research
 

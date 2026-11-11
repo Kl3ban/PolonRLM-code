@@ -4,7 +4,7 @@ import type { Permissions } from '../core/permissions.js';
 import { clip } from '../core/context.js';
 import { redact } from '../core/secrets.js';
 
-export interface ToolContext { signal: AbortSignal; mode: Mode; vision?: boolean; isolated?: boolean; onImage?: (image: ImageAttachment) => void }
+export interface ToolContext { signal: AbortSignal; mode: Mode; vision?: boolean; isolated?: boolean; outputLimit?: number; onImage?: (image: ImageAttachment) => void }
 type Entry = { spec: ToolSpec; schema: z.ZodType; run: (args: any, context: ToolContext) => Promise<unknown>; readOnly: boolean; modeMutates?: (args: any) => boolean };
 export interface ToolAvailability { name: string; description: string; parameters?: Record<string, unknown>; available: boolean; reason?: string }
 export class ToolRegistry {
@@ -49,7 +49,7 @@ export class ToolRegistry {
     if (reason) throw new Error(`Tool ${name} is unavailable: ${reason} Do not retry without approval. If the user explicitly requests this action, use request_tool to ask approval for this exact call. Do not retry after a rejection.`);
     await this.permissions.check(name, 'read', name, undefined, context.mode);
     const result = await entry.run(parsed, context);
-    return clip(redact(typeof result === 'string' ? result : JSON.stringify(result)), typeof this.limit === 'number' ? this.limit : this.limit());
+    return clip(redact(typeof result === 'string' ? result : JSON.stringify(result)), context.outputLimit ?? (typeof this.limit === 'number' ? this.limit : this.limit()));
   }
   executeWithOneTimeApproval(name: string, args: Record<string, unknown>, context: ToolContext): Promise<string> {
     return this.permissions.withOneTimeToolApproval(() => this.execute(name, args, context));

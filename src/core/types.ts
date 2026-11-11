@@ -36,7 +36,7 @@ export interface Settings {
   tokenBudget: number; dollarBudget: number; maxAgents: number; maxProcesses: number; maxDepth: number;
   permissions: 'ask' | 'workspace' | 'readonly' | 'all'; toolPermissions: Record<string, 'ask' | 'auto' | 'off'>; allowTools: string[]; denyTools: string[];
   theme: 'dark' | 'light'; toolOutputLimit: number; timeoutMs: number; webSearchMode: 'auto' | 'bing' | 'brave' | 'yahoo'; browserEngine: 'auto' | 'chromium' | 'chrome' | 'edge' | 'brave' | 'firefox';
-  mcp: Record<string, MCPConfig>;
+  verificationCommands: string[]; mcp: Record<string, MCPConfig>;
 }
 export interface MCPConfig {
   type: 'stdio' | 'http'; command?: string; args?: string[]; url?: string;
