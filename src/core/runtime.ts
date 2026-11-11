@@ -11,7 +11,7 @@ import { ToolRegistry } from '../tools/registry.js';
 import { Workspace } from '../tools/workspace.js';
 import { compactMessages, estimateTokens, clip } from './context.js';
 import { redact, StreamRedactor } from './secrets.js';
-import { CORTEX, chooseCortex, cortexTaskText, escalateCortex, type CortexDecision } from './cortex.js';
+import { CORTEX, assessCortexProject, chooseCortex, cortexTaskText, escalateCortex, type CortexDecision } from './cortex.js';
 import { FailureLoopGuard } from './failure-loop.js';
 import { ToolCycleGuard } from './tool-cycle.js';
 import { AgentWorktree, type OverlayChange } from './agent-worktree.js';
@@ -529,6 +529,22 @@ ${skills.join('\n')}`;
     const userTasks = messages.filter(message => message.role === 'user' && !message.name?.startsWith('agent_team')).map(message => message.content);
     const strategyTask = cortexTaskText(task, userTasks.slice(0, -1));
     let cortex = chooseCortex(this.settings.cortex, strategyTask, this.settings.cortexStrategy);
+    if (!depth && this.settings.cortexStrategy === 'adaptive' && cortex.level > 0 && cortex.level < cortex.requested && this.tools.getSpec('project_map')) {
+      try {
+        const projectSignal = AbortSignal.any([signal, AbortSignal.timeout(3_000)]);
+        const rawProject = await this.tools.execute('project_map', { maxFiles: 120 }, { signal: projectSignal, mode, outputLimit: 0 });
+        const project = JSON.parse(rawProject) as { sourceFilesFound?: unknown; importEdges?: unknown; truncated?: unknown };
+        const assessed = assessCortexProject(cortex, {
+          sourceFiles: typeof project.sourceFilesFound === 'number' ? project.sourceFilesFound : 0,
+          importEdges: Array.isArray(project.importEdges) ? project.importEdges.length : 0,
+          truncated: project.truncated === true,
+        });
+        if (assessed.level !== cortex.level) {
+          cortex = assessed;
+          this.emit({ type: 'status', text: `Adaptive Cortex: project analysis raised effort to ${CORTEX[assessed.level]!.name} (${assessed.reason}).` });
+        }
+      } catch { /* Project analysis is optional; the text heuristic remains the fallback. */ }
+    }
     const roleToolProfile = isolated ? this.settings.agentToolProfiles[role] : undefined;
     const roleAllowsTool = (name: string): boolean => roleToolProfile === undefined || roleToolProfile.includes(name);
     let instructions = await this.instructions(task, role, mode, workspace, tools, isolated, cortex);

@@ -26,6 +26,14 @@ export interface PluginTaskResult extends PluginTaskContext {
 
 export type PluginHandler<T, R = void> = (event: Readonly<T>) => R | Promise<R>;
 
+export interface PluginToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  readOnly?: boolean;
+  run(args: Readonly<Record<string, unknown>>, context: PluginToolContext): unknown | Promise<unknown>;
+}
+
 export interface PolonRLMPluginAPI {
   readonly version: typeof POLONRLM_PLUGIN_API_VERSION;
   readonly hooks: {
@@ -33,6 +41,10 @@ export interface PolonRLMPluginAPI {
     beforeTool(handler: PluginHandler<PluginToolContext, string | void>): void;
     afterTool(handler: PluginHandler<PluginToolResult>): void;
     afterTask(handler: PluginHandler<PluginTaskResult>): void;
+  };
+  readonly tools: {
+    /** Register a model-callable tool. It runs in the main process with the user's permissions. */
+    register(tool: PluginToolDefinition): void;
   };
 }
 

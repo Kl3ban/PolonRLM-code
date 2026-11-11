@@ -1,6 +1,7 @@
 import type { AgentQuestion } from './workflows.js';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
+import { z } from 'zod';
 import type { Approve, LLMProvider, ModelInfo, RuntimeEvent, UIController, UIState, ViewMessage, Settings, ProviderConfig, ImageAttachment, ToolSpec } from './types.js';
 import { imageFromBuffer, loadUserImage } from './images.js';
 import { ConfigManager, secureMcpServerSchema, settingsSchema } from './config.js';
@@ -175,6 +176,17 @@ export class Controller implements UIController {
       vision: settings.providers[settings.provider]?.vision, theme: settings.theme };
     this.plugins = new PluginManager(this.config.home);
     const pluginWarnings = await this.plugins.loadEnabled(settings.plugins);
+    for (const { pluginId, definition } of this.plugins.toolDefinitions()) {
+      if (this.registry.getSpec(definition.name)) { pluginWarnings.push(`Plugin ${pluginId} tool ${definition.name} was skipped because a tool with that name already exists.`); continue; }
+      try {
+        const pluginSchema = z.fromJSONSchema(definition.parameters as never);
+        this.registry.add(definition.name, `[plugin ${pluginId}] ${definition.description}`, pluginSchema, definition.readOnly === true, async (args, context) => this.plugins!.callTool(pluginId, definition.name, args, {
+          sessionId: context.sessionId ?? this.session, workspace: this.workspace.root, task: '', role: 'main', mode: context.mode, tool: definition.name, arguments: args,
+        }));
+      } catch (error) {
+        pluginWarnings.push(`Plugin ${pluginId} tool ${definition.name} could not be registered: ${String((error as Error)?.message ?? error)}`);
+      }
+    }
     this.runtime = new AgentRuntime(settings, this.store, this.registry, this.workspace, this.skills, this.mcp, (id, model) => this.provider(id, true, model), event => this.event(event), undefined, this.sandbox, this.plugins);
     const cliQuestion = this.runtime.askQuestion;
     this.runtime.askQuestion = (question, signal) => this.events.listenerCount('change') ? this.askQuestion(question, signal) : cliQuestion(question, signal);
@@ -864,7 +876,8 @@ export class Controller implements UIController {
           execution,
           network,
           status.reason ? `Details: ${status.reason}` : '',
-          'Switch with /sandbox on, /sandbox off, or /sandbox auto. On Windows, /sandbox setup provisions the one-time backend.',
+          'Coverage: shell, Python, background processes and LSP only. Browser, desktop, MCP and ordinary file-tool I/O are not isolated by this OS sandbox; their normal permission and network checks still apply.',
+          'Switch with /sandbox on, /sandbox off, /sandbox auto, or /sandbox docker. On Windows, /sandbox setup provisions the one-time backend.',
         ].filter(Boolean).join('\n'));
         break;
       }

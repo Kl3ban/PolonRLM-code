@@ -25,7 +25,8 @@ const resultFact = /\b(?:pass|fail|created|updated|deleted|modified|wrote|saved|
 const technicalFact = /(?:[A-Za-z]:\\|\b(?:src|tests|docs|scripts|bin)[/\\][\w./\\-]+|`[^`]{2,}`|\b[\w.-]+\.(?:ts|tsx|js|jsx|py|rs|cpp|h|json|yaml|yml|md|toml|sql)\b|\b(?:HTTP|SQLite|SIGTERM|API|MCP|LSP)\b)/i;
 const stopWords = new Set('about after again also any are because before between can could did does doing each from have here how into its just more most not our out over same should some such than that the their them then there these they this through under very was were what when where which while will with would your about from that this user agent task tool file code project request please make implement build test run the and for with from into there have has had was were do did but you your they we our can could must should will not no yes are all one'.split(' '));
 
-const durableRequirement = /\b(?:must|never|always|only|required?|avoid|preserve|keep|do not|don.t|should)\b|zawsze|nigdy|wymag|musz|unik|zachow|nie wolno|nie zmien|zostaw/i;
+const durableRequirement = /\b(?:must|never|always|only|required?|avoid|preserve|keep|do not|don.t|should|decision|decided|chosen|approved|rejected)\b|zawsze|nigdy|wymag|musz|unik|zachow|nie wolno|nie zmien|zostaw|decyzj|zdecydowan|wybrano/i;
+const decisionFact = /\b(?:decision|decided|chosen|chose|approved|rejected|instead|we will|wybrano|zdecydowano|decyzja|zamiast)\b/i;
 
 function safeFact(value: string): string {
   return value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -98,6 +99,7 @@ function factScore(text: string, source: string, section: FactSection, index: nu
   if (source.startsWith('[T!')) score += 15;
   if (importantFact.test(text)) score += 20;
   if (durableRequirement.test(text)) score += 25;
+  if (decisionFact.test(text)) score += 18;
   if (errorFact.test(text)) score += 25;
   if (resultFact.test(text)) score += 15;
   if (technicalFact.test(text)) score += 12;

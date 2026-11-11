@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { chooseCortex, cortexTaskText, escalateCortex } from '../src/core/cortex.js';
+import { assessCortexProject, chooseCortex, cortexTaskText, escalateCortex } from '../src/core/cortex.js';
 
 test('adaptive Cortex lowers needless delegation and never raises the configured ceiling', () => {
   const simple = chooseCortex(5, 'What is 2 + 2?');
@@ -12,6 +12,17 @@ test('adaptive Cortex lowers needless delegation and never raises the configured
 
   const smallerCeiling = chooseCortex(2, 'Refactor auth across auth.ts, sessions.ts, and api.ts; add regression tests and verify the integration.');
   assert.ok(smallerCeiling.level <= 2);
+});
+
+test('Cortex project analysis raises effort from repository size and never exceeds the ceiling', () => {
+  const decision = { requested: 4, level: 1, score: 2, reason: 'focused task' };
+  assert.equal(assessCortexProject(decision, { sourceFiles: 20, importEdges: 10, truncated: false }).level, 1);
+  assert.equal(assessCortexProject(decision, { sourceFiles: 120, importEdges: 20, truncated: false }).level, 1);
+  assert.equal(assessCortexProject({ ...decision, level: 0 }, { sourceFiles: 120, importEdges: 20, truncated: false }).level, 1);
+  assert.equal(assessCortexProject(decision, { sourceFiles: 300, importEdges: 20, truncated: false }).level, 2);
+  assert.equal(assessCortexProject(decision, { sourceFiles: 20, importEdges: 20, truncated: true }).level, 2);
+  assert.equal(assessCortexProject({ ...decision, requested: 2 }, { sourceFiles: 300, importEdges: 20, truncated: true }).level, 2);
+  assert.equal(assessCortexProject({ ...decision, level: 3 }, { sourceFiles: 300, importEdges: 200, truncated: false }).level, 3);
 });
 
 test('Cortex escalation raises effort by one level and respects the requested ceiling', () => {

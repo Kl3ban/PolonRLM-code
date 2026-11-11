@@ -7,7 +7,7 @@ import type { TrustedPluginConfig } from '../core/types.js';
 import {
   POLONRLM_PLUGIN_API_VERSION,
   type PluginHandler, type PluginTaskContext, type PluginTaskResult, type PluginToolContext,
-  type PluginToolResult, type PolonRLMPlugin, type PolonRLMPluginAPI,
+  type PluginToolDefinition, type PluginToolResult, type PolonRLMPlugin, type PolonRLMPluginAPI,
 } from './api.js';
 
 const PLUGIN_ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -15,6 +15,8 @@ const MAX_SOURCE_BYTES = 256_000;
 const MAX_ACTIVE_PLUGINS = 16;
 const MAX_TASK_CONTEXT_BYTES = 12_000;
 const HOOK_TIMEOUT_MS = 5_000;
+const TOOL_TIMEOUT_MS = 30_000;
+const TOOL_NAME = /^[a-z][a-z0-9_]{1,48}$/;
 const manifestSchema = z.object({
   id: z.string().regex(PLUGIN_ID),
   name: z.string().min(1).max(80),
@@ -32,6 +34,7 @@ type ActivePlugin = {
   beforeTool: Array<PluginHandler<PluginToolContext, string | void>>;
   afterTool: Array<PluginHandler<PluginToolResult>>;
   afterTask: Array<PluginHandler<PluginTaskResult>>;
+  tools: Array<{ definition: PluginToolDefinition }>;
 };
 
 export interface PluginPreview { manifest: PluginManifest; path: string; sha256: string }
@@ -141,13 +144,25 @@ export class PluginManager {
     }).passthrough();
     const plugin = pluginSchema.parse(loaded.default) as PolonRLMPlugin;
     if (plugin.id !== id || plugin.version !== preview.manifest.version) throw new Error('Plugin code id/version must match plugin.json.');
-    const handlers: ActivePlugin = { manifest: preview.manifest, plugin, hash: preview.sha256, beforeTask: [], beforeTool: [], afterTool: [], afterTask: [] };
+    const handlers: ActivePlugin = { manifest: preview.manifest, plugin, hash: preview.sha256, beforeTask: [], beforeTool: [], afterTool: [], afterTask: [], tools: [] };
     let registrations = 0;
     const add = <T>(collection: Array<PluginHandler<T, any>>, handler: PluginHandler<T, any>): void => {
       if (typeof handler !== 'function') throw new Error('Plugin hook must be a function.');
-      if (this.registrationCount + registrations >= 64) throw new Error('PolonRLM allows at most 64 hooks across active plugins.');
+      if (this.registrationCount + registrations >= 64) throw new Error('PolonRLM allows at most 64 hooks and tools across active plugins.');
       registrations++;
       collection.push(handler);
+    };
+    const registerTool = (tool: PluginToolDefinition): void => {
+      if (!tool || typeof tool !== 'object') throw new Error('Plugin tool must be an object.');
+      if (!TOOL_NAME.test(tool.name ?? '')) throw new Error('Plugin tool name must start with a lowercase letter and contain only lowercase letters, digits and underscores.');
+      if (typeof tool.description !== 'string' || !tool.description.trim() || tool.description.length > 1_000) throw new Error('Plugin tool description must be 1-1000 characters.');
+      if (!tool.parameters || typeof tool.parameters !== 'object' || Array.isArray(tool.parameters)) throw new Error('Plugin tool parameters must be a JSON Schema object.');
+      if (typeof tool.run !== 'function') throw new Error('Plugin tool run must be a function.');
+      for (const active of this.active.values()) if (active.tools.some(entry => entry.definition.name === tool.name)) throw new Error(`Plugin tool ${tool.name} is already registered.`);
+      if (handlers.tools.some(entry => entry.definition.name === tool.name)) throw new Error(`Plugin tool ${tool.name} is already registered.`);
+      if (this.registrationCount + registrations >= 64) throw new Error('PolonRLM allows at most 64 hooks and tools across active plugins.');
+      registrations++;
+      handlers.tools.push({ definition: Object.freeze({ ...tool, parameters: frozenCopy(tool.parameters), readOnly: tool.readOnly === true }) });
     };
     const api: PolonRLMPluginAPI = Object.freeze({
       version: POLONRLM_PLUGIN_API_VERSION,
@@ -157,6 +172,7 @@ export class PluginManager {
         afterTool: (handler: PluginHandler<PluginToolResult>) => add(handlers.afterTool, handler),
         afterTask: (handler: PluginHandler<PluginTaskResult>) => add(handlers.afterTask, handler),
       }),
+      tools: Object.freeze({ register: registerTool }),
     });
     try { await this.runTimed(id, 'activate', () => plugin.activate(api)); }
     catch (error) {
@@ -171,7 +187,7 @@ export class PluginManager {
     const active = this.active.get(id);
     if (!active) return;
     this.active.delete(id);
-    this.registrationCount -= active.beforeTask.length + active.beforeTool.length + active.afterTool.length + active.afterTask.length;
+    this.registrationCount -= active.beforeTask.length + active.beforeTool.length + active.afterTool.length + active.afterTask.length + active.tools.length;
     if (active.plugin.deactivate) await this.runTimed(id, 'deactivate', () => active.plugin.deactivate!());
   }
 
@@ -181,6 +197,19 @@ export class PluginManager {
       try { await this.deactivate(id); }
       catch (error) { this.addProblems([`${id}: deactivate hook failed: ${String((error as Error)?.message ?? error)}`]); }
     }
+  }
+
+  toolDefinitions(): Array<{ pluginId: string; definition: PluginToolDefinition }> {
+    return [...this.active].flatMap(([pluginId, active]) => active.tools.map(entry => ({ pluginId, definition: entry.definition })));
+  }
+
+  async callTool(pluginId: string, name: string, args: Readonly<Record<string, unknown>>, context: PluginToolContext): Promise<string> {
+    const active = this.active.get(pluginId);
+    const tool = active?.tools.find(entry => entry.definition.name === name);
+    if (!active || !tool) throw new Error(`Plugin tool ${name} is not loaded.`);
+    const result = await this.runTimed(pluginId, `tool:${name}`, () => tool.definition.run(frozenCopy(args), frozenCopy({ ...context, tool: name, arguments: args })), TOOL_TIMEOUT_MS);
+    if (typeof result === 'string') return result;
+    try { return JSON.stringify(result); } catch { return String(result); }
   }
 
   async list(configs: Record<string, TrustedPluginConfig>): Promise<PluginStatus[]> {
@@ -246,12 +275,12 @@ export class PluginManager {
 
   drainProblems(): string[] { return this.problems.splice(0); }
 
-  private async runTimed<T>(id: string, hook: string, work: () => T | Promise<T>): Promise<T> {
+  private async runTimed<T>(id: string, hook: string, work: () => T | Promise<T>, timeoutMs = HOOK_TIMEOUT_MS): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
         Promise.resolve().then(work),
-        new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${hook} hook exceeded ${HOOK_TIMEOUT_MS}ms`)), HOOK_TIMEOUT_MS); timer.unref(); }),
+        new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${hook} hook exceeded ${timeoutMs}ms`)), timeoutMs); timer.unref(); }),
       ]);
     } finally { if (timer) clearTimeout(timer); }
   }

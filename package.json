@@ -12,6 +12,14 @@
     "./plugin": {
       "types": "./dist/plugins/api.d.ts",
       "import": "./dist/plugins/api.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/agent-server.d.ts",
+      "import": "./dist/server/agent-server.js"
     }
   },
   "license": "MIT",
@@ -35,6 +43,8 @@
     "docs/TOOLS.md",
     "docs/PLUGIN-SDK.md",
     "docs/SANDBOX.md",
+    "docs/SDK.md",
+    "docs/AGENT-SERVER.md",
     "tsconfig.json",
     "README.md",
     "LICENSE"
@@ -57,7 +67,8 @@
     "test:groq": "npm run build && node scripts/live-groq-smoke.mjs",
     "test:web:local": "tsx scripts/check-local-web.ts",
     "test:web:browser": "tsx scripts/check-browser-tools.ts",
-    "test:web:live": "tsx scripts/live-web-smoke.ts"
+    "test:web:live": "tsx scripts/live-web-smoke.ts",
+    "serve": "node scripts/agent-server.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.98",

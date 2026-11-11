@@ -47,3 +47,18 @@ export function escalateCortex(decision: CortexDecision, reason: string): Cortex
   if (decision.level >= decision.requested) return decision;
   return { ...decision, level: Math.min(decision.requested, decision.level + 1), reason: `stagnation: ${reason}` };
 }
+
+export interface CortexProjectSignals {
+  sourceFiles: number;
+  importEdges: number;
+  truncated: boolean;
+}
+
+/** Raise the initial text heuristic when the actual project is large or partial. */
+export function assessCortexProject(decision: CortexDecision, signals: CortexProjectSignals): CortexDecision {
+  let level = decision.level;
+  if (signals.truncated || signals.sourceFiles >= 250 || signals.importEdges >= 150) level = Math.max(level, 2);
+  else if (signals.sourceFiles >= 80 || signals.importEdges >= 60) level = Math.max(level, 1);
+  level = Math.min(decision.requested, level);
+  return level === decision.level ? decision : { ...decision, level, reason: `project analysis: ${signals.sourceFiles} source files, ${signals.importEdges} import edges${signals.truncated ? ', index truncated' : ''}` };
+}

@@ -81,6 +81,41 @@ test('editing a plugin invalidates its pinned hash and pending review', async t 
   assert.equal((await plugins.list({ [id]: { enabled: true, sha256: original.sha256 } }))[0]?.problem, 'Files changed; confirm again to load.');
 });
 
+test('plugins can register a bounded model-callable tool with a JSON Schema', async t => {
+  const { plugins } = await fixture(t);
+  const id = 'tool-plugin';
+  const directory = await plugins.create(id);
+  await writeFile(path.join(directory, 'index.mjs'), `
+export default {
+  id: ${JSON.stringify(id)},
+  version: '1.0.0',
+  activate(api) {
+    api.tools.register({
+      name: 'plugin_echo',
+      description: 'Echo a value through a trusted plugin.',
+      parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
+      readOnly: true,
+      run(args, context) {
+        if (!Object.isFrozen(args) || !Object.isFrozen(context)) throw new Error('plugin tool context must be frozen');
+        return 'echo:' + args.text + ':' + context.tool;
+      },
+    });
+  },
+};
+`, 'utf8');
+  const preview = await plugins.preview(id);
+  await plugins.review(id);
+  assert.equal(plugins.consumeReview(id, preview.sha256), true);
+  await plugins.activate(id, preview.sha256);
+  const definitions = plugins.toolDefinitions();
+  assert.equal(definitions[0]?.definition.name, 'plugin_echo');
+  assert.equal(definitions[0]?.definition.readOnly, true);
+  assert.equal(await plugins.callTool(id, 'plugin_echo', { text: 'hello' }, { sessionId: 's', workspace: 'w', task: 't', role: 'main', mode: 'BUILD', tool: 'plugin_echo', arguments: { text: 'hello' } }), 'echo:hello:plugin_echo');
+  await plugins.deactivate(id);
+  assert.deepEqual(plugins.toolDefinitions(), []);
+  await assert.rejects(plugins.callTool(id, 'plugin_echo', { text: 'hello' }, { sessionId: 's', workspace: 'w', task: 't', role: 'main', mode: 'BUILD', tool: 'plugin_echo', arguments: { text: 'hello' } }), /not loaded/);
+});
+
 test('plugins reject undeclared files and invalid configuration identifiers', async t => {
   const { plugins } = await fixture(t);
   const directory = await plugins.create('one-file');

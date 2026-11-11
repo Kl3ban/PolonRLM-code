@@ -18,12 +18,13 @@ PolonRLM is written in TypeScript and runs on Node.js 24 or newer. It takes insp
 - Runs background commands in a pipe or a real PTY (when the optional `node-pty` dependency is installed).
 - Hands separate tasks to subagents that share the task budget and keeps their run history.
 - Searches the web, controls a headless browser, connects to MCP servers, and can use the Windows desktop.
-- Saves chat history locally and can compact old context without another model call.
+- Saves chat history locally and can compact old context without another model call, while keeping explicit requirements and decisions.
 - Connects to hosted APIs, local model servers, or a custom OpenAI-compatible endpoint.
-- Adds opt-in local lifecycle hooks through a small plugin SDK.
+- Adds opt-in local lifecycle hooks and model-callable tools through a small plugin SDK.
+- Exposes a typed SDK and a local HTTP/SSE agent server for embedding in an IDE or desktop client.
 - Ships a local 50-task coding benchmark with hidden graders and reference solutions.
 
-The model chooses when to use tools. Writes, shell commands, and other actions follow the permission settings. By default, PolonRLM asks before sensitive actions. Selected shell, Python, background-process, and language-server tools use OS isolation when available; `/sandbox status` shows the current state. Windows setup is opt-in with `/sandbox setup` followed by `/sandbox setup confirm`.
+The model chooses when to use tools. Writes, shell commands, and other actions follow the permission settings. By default, PolonRLM asks before sensitive actions. Selected shell, Python, background-process, and language-server tools use OS isolation when available; `/sandbox status` shows the current state. Windows setup is opt-in with `/sandbox setup` followed by `/sandbox setup confirm`; an explicit Docker mode is available with `/sandbox docker`.
 
 ## Install
 
@@ -80,6 +81,17 @@ Built-in providers include Google, OpenAI, Anthropic, OpenRouter, NVIDIA, Mistra
 
 More commands are in [docs/COMMANDS.md](docs/COMMANDS.md).
 
+## SDK and agent server
+
+The package exposes `polonrlm-agent/sdk` for embedding a controller with typed settings, events and results, and `polonrlm-agent/server` for a local HTTP/SSE session server.
+
+```sh
+npm run build
+npm run serve -- --workspace . --port 4317 --token change-me
+```
+
+The server binds to `127.0.0.1` by default and has `/health`, `/v1/session`, `/v1/tools`, `/v1/messages` (JSON or SSE) and `/v1/cancel`. It is not an ACP implementation; ACP clients need an adapter. See [SDK](docs/SDK.md) and [agent server](docs/AGENT-SERVER.md).
+
 ## Web and browser tools
 
 Web search uses public search pages and does not need a search API key. Its local helper needs Python 3.11 or newer; setup installs its dependencies when they are needed. Run `PolonRLM setup web` to prepare it in advance.
@@ -111,6 +123,8 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [Providers](docs/PROVIDERS.md)
 - [Tools](docs/TOOLS.md)
 - [Plugin SDK](docs/PLUGIN-SDK.md)
+- [SDK](docs/SDK.md)
+- [Agent server](docs/AGENT-SERVER.md)
 - [OS command sandbox](docs/SANDBOX.md)
 - [Local web search](docs/LOCAL-WEB.md)
 - [Browser and desktop control](docs/COMPUTER-USE.md)

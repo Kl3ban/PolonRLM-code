@@ -1853,6 +1853,17 @@ test('local compaction keeps a Polish historical requirement and the latest requ
   assert.ok(estimateTokens(compacted.messages) <= 1_800);
 });
 
+test('local compaction retains an explicit decision marker', () => {
+  const marker = 'DECISION_KEEP_PUBLIC_API_7712';
+  const messages: Message[] = [{ role: 'user', content: `Decision: keep the public API stable and preserve ${marker}. ${'Historical context. '.repeat(300)}` }];
+  for (let index = 0; index < 40; index++) messages.push({ role: 'assistant', content: `Routine inspection ${index}: ${'ordinary detail. '.repeat(60)}` });
+  messages.push({ role: 'user', content: 'Continue and verify.' });
+  const compacted = compactMessages(messages, 1_800);
+  const summary = compacted.messages.find(message => message.name === 'polonrlm_context')?.content ?? '';
+  assert.ok(compacted.removed > 0);
+  assert.ok(summary.includes(marker), 'the explicit decision should survive compaction');
+});
+
 test('automatic compaction persists structured context and can retrieve exact older details on demand', async t => {
   const needle = 'immutable-ancient-constraint-token';
   let calls = 0;
