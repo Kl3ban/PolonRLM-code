@@ -16,6 +16,15 @@ import { resolvePythonCommand } from './python-runtime.js';
 import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
 import type { SessionStore } from '../core/store.js';
 
+let shellChain: Promise<unknown> = Promise.resolve();
+
+/** Serialize mutating shell/code commands across the main agent and all subagents in this process. */
+export function withShellLock<T>(work: () => Promise<T>): Promise<T> {
+  const next = shellChain.then(() => work(), () => work());
+  shellChain = next.then(() => undefined, () => undefined);
+  return next;
+}
+
 export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean; sandbox?: SandboxExecutor; store?: SessionStore } = {}): void {
   if (options.computer !== false) registerComputerTool(registry, workspace);
   registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit, options.sandbox, options.store);
@@ -108,11 +117,11 @@ export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, s
     } finally { await launch.cleanup(); }
   }
   const shellSchema = z.object({ command: z.string().min(1).max(10000) });
-  const shell = (tool: string, command: string, context: ToolContext) => processRun(tool, process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' + command] : ['-c', command], context);
+  const shell = (tool: string, command: string, context: ToolContext) => withShellLock(() => processRun(tool, process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' + command] : ['-c', command], context));
   for (const name of ['execute_command', 'execute_powershell', 'run_tests', 'install_dependencies', 'inspect_errors']) registry.add(name, 'Run a shell command under the configured permission policy. Uses OS isolation when available; host fallback follows the permission policy and is reported.', shellSchema, false, async (args, context) => { if (name === 'execute_powershell' && process.platform !== 'win32') throw new Error('PowerShell tool requires Windows.'); return shell(name, args.command, context); });
-  registry.add('execute_python', 'Execute Python code after explicit approval. Uses an installed interpreter, skipping Windows Store aliases.', z.object({ code: z.string().min(1) }), false, async (args, context) => {
+  registry.add('execute_python', 'Execute Python code after explicit approval. Uses an installed interpreter, skipping Windows Store aliases. Python commands are serialized with shell commands across agents.', z.object({ code: z.string().min(1) }), false, async (args, context) => {
     const python = await resolvePythonCommand();
-    return processRun('execute_python', python.command, [...python.prefixArgs, '-c', args.code], context);
+    return withShellLock(() => processRun('execute_python', python.command, [...python.prefixArgs, '-c', args.code], context));
   });
   registry.add('inspect_process', 'Inspect running processes; no process termination.', z.object({}), true, async (_args, context) => processRun('inspect_process', process.platform === 'win32' ? 'tasklist.exe' : 'ps', process.platform === 'win32' ? ['/FO', 'CSV'] : ['-eo', 'pid,comm'], context, true));
   registry.add('git_status', 'Read git working tree status without running repository-configured fsmonitor hooks.', z.object({ untrackedFiles: z.boolean().default(false) }), true, (args, context) => processRun('git_status', 'git', ['-c', 'core.fsmonitor=false', '--no-optional-locks', 'status', '--short', ...(args.untrackedFiles ? ['--untracked-files=all'] : [])], context, true));

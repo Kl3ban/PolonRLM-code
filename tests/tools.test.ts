@@ -8,7 +8,7 @@ import { defaultSettings } from '../src/core/config.js';
 import { Permissions } from '../src/core/permissions.js';
 import { Workspace } from '../src/tools/workspace.js';
 import { ToolRegistry } from '../src/tools/registry.js';
-import { registerBuiltins } from '../src/tools/builtin.js';
+import { registerBuiltins, withShellLock } from '../src/tools/builtin.js';
 import { registerProjectMap } from '../src/tools/project-map.js';
 import { SessionStore } from '../src/core/store.js';
 import { RecoveryCipher } from '../src/core/recovery.js';
@@ -48,6 +48,19 @@ test('tool schemas do not require parameters that have defaults', async t => {
   assert.deepEqual(readFile.required, ['path']);
   const runTests = f.registry.getSpec('run_tests')!.parameters as { required?: string[] };
   assert.deepEqual(runTests.required, ['command']);
+});
+
+test('shell lock serializes concurrent mutating commands', async () => {
+  let active = 0;
+  let peak = 0;
+  const task = () => withShellLock(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    active--;
+  });
+  await Promise.all([task(), task(), task()]);
+  assert.equal(peak, 1);
 });
 
 test('task plan updates survive a store and tool-registry restart without overwriting the goal', async t => {

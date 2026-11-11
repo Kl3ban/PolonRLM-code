@@ -30,6 +30,6 @@ Sandbox network access is deny-by-default. Add only the hosts needed by project 
 
 This rule applies only to sandboxed processes. A host fallback follows the configured permission policy; `/permissions all` intentionally allows it without a prompt. Network domains support an optional port, for example `api.example.com:443`.
 
-Use `/sandbox status` to check the selected mode and local backend readiness. Linux uses Bubblewrap and `socat`; macOS uses its built-in Seatbelt backend. Windows uses SRT and needs its separate Windows setup to be ready. Docker mode uses an explicitly pulled Linux image. PolonRLM does not install OS dependencies silently.
+Shell, `run_tests`, dependency installation and Python execution are serialized across the main agent and all subagents in one PolonRLM process. That prevents overlapping commands and reduces write races, but it is not a filesystem or process isolation boundary: a command can still modify absolute paths or shared resources outside the selected project. The OS sandbox, when available, remains the stronger boundary.
 
 The upstream sandbox backend is a beta research preview. Its platform limitations still apply; this integration does not sandbox every PolonRLM tool or replace process permissions. See the [sandbox-runtime documentation](https://github.com/anthropics/sandbox-runtime/blob/main/README.md) for backend details.
