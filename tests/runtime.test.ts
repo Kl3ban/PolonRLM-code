@@ -233,6 +233,50 @@ test('repeated identical read-only calls are short-circuited before they waste m
   assert.equal(toolMessages.filter(message => message.isError).length, 1);
 });
 
+test('independent file reads in one model response run concurrently and keep result order', async t => {
+  let calls = 0, active = 0, peak = 0;
+  const h = await harness(t, async () => ++calls === 1
+    ? reply('', [
+      { id: 'read-a', name: 'read_file', arguments: { path: 'a.txt' } },
+      { id: 'read-b', name: 'read_file', arguments: { path: 'b.txt' } },
+    ])
+    : reply('Both files were read.'));
+  const { z } = await import('zod');
+  h.tools.add('read_file', 'Parallel fixture read.', z.object({ path: z.string() }), true, async args => {
+    active++; peak = Math.max(peak, active);
+    try { await setTimeout(30); return `content:${args.path}`; }
+    finally { active--; }
+  });
+  assert.equal(await h.runtime.run(h.session, 'Read a.txt and b.txt.', new AbortController().signal), 'Both files were read.');
+  assert.equal(peak, 2, 'safe independent reads should overlap');
+  assert.deepEqual(h.store.messages(h.session).filter(message => message.role === 'tool').map(message => message.content), ['content:a.txt', 'content:b.txt']);
+});
+
+test('parallel file reads stay sequential when a tool has an explicit approval rule', async t => {
+  let calls = 0, active = 0, peak = 0, approvals = 0, activeApprovals = 0, approvalPeak = 0;
+  const h = await harness(t, async () => ++calls === 1
+    ? reply('', [
+      { id: 'read-a', name: 'read_file', arguments: { path: 'a.txt' } },
+      { id: 'read-b', name: 'read_file', arguments: { path: 'b.txt' } },
+    ])
+    : reply('Both files were read.'), { permissions: 'workspace', toolPermissions: { read_file: 'ask' } });
+  const { z } = await import('zod');
+  h.workspace.permissions.approve = async () => {
+    activeApprovals++; approvalPeak = Math.max(approvalPeak, activeApprovals);
+    try { await setTimeout(10); approvals++; return true; }
+    finally { activeApprovals--; }
+  };
+  h.tools.add('read_file', 'Approval fixture read.', z.object({ path: z.string() }), true, async args => {
+    active++; peak = Math.max(peak, active);
+    try { await setTimeout(20); return `content:${args.path}`; }
+    finally { active--; }
+  });
+  assert.equal(await h.runtime.run(h.session, 'Read a.txt and b.txt.', new AbortController().signal), 'Both files were read.');
+  assert.equal(peak, 1, 'approval-gated reads must not race or open overlapping prompts');
+  assert.equal(approvals, 2);
+  assert.equal(approvalPeak, 1, 'approval prompts should remain sequential');
+});
+
 test('repeated browser screenshots stop even when timeout parameters change', async t => {
   let calls = 0, screenshots = 0;
   const h = await harness(t, async () => {

@@ -24,6 +24,8 @@ Use `/permissions` to manage tool access. With no argument, it shows effective r
 | Documents and OCR | `read_document`, `ocr_image` |
 | Grouped file changes | `transaction_begin`, `transaction_status`, `transaction_commit`, `transaction_rollback` |
 
+When a provider returns two to four independent file, search, project, or Git reads in one response, PolonRLM runs them concurrently and keeps their results in call order. Explicit approval rules, repeated or previously failed calls, writes, browser actions, and stateful tools stay sequential. This reduces waiting time; it does not reduce provider token billing by itself.
+
 Example requests:
 
 ~~~text
