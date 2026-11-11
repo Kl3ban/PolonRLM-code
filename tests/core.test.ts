@@ -244,24 +244,23 @@ test('concurrent PolonRLM processes serialize writes after the stale-hash check'
     await rm(home, { recursive: true, force: true });
   });
   const initialStore = new SessionStore(home); initialStore.close();
-  const initialCipher = await RecoveryCipher.open(home); initialCipher.close();
 
-  const urls = Object.fromEntries(['store', 'recovery', 'permissions', 'config', 'workspace'].map(name => [name, pathToFileURL(path.resolve(`src/${name === 'workspace' ? 'tools/workspace' : `core/${name}`}.ts`)).href]));
+  const urls = Object.fromEntries(['store', 'permissions', 'config', 'workspace'].map(name => [name, pathToFileURL(path.resolve(`src/${name === 'workspace' ? 'tools/workspace' : `core/${name}`}.ts`)).href]));
   const workerSource = [
     `const { SessionStore } = await import(${JSON.stringify(urls.store)});`,
-    `const { RecoveryCipher } = await import(${JSON.stringify(urls.recovery)});`,
     `const { Permissions } = await import(${JSON.stringify(urls.permissions)});`,
     `const { defaultSettings } = await import(${JSON.stringify(urls.config)});`,
     `const { Workspace } = await import(${JSON.stringify(urls.workspace)});`,
     'const home = process.env.POLON_LOCK_HOME, root = process.env.POLON_LOCK_ROOT, id = process.env.POLON_LOCK_ID;',
-    'const store = new SessionStore(home), cipher = await RecoveryCipher.open(home);',
+    // This test covers SQLite locking; real DPAPI encryption is exercised by its dedicated Windows test.
+    'const store = new SessionStore(home), cipher = { seal: value => JSON.stringify(value) };',
     "const permissions = new Permissions({ ...defaultSettings(), permissions: 'workspace' });",
     'const workspace = await Workspace.open(root, permissions); workspace.attachRecovery(store, cipher);',
     'const resolveWorkspace = workspace.resolve.bind(workspace); let resolveCalls = 0;',
     "workspace.resolve = async input => { const resolved = await resolveWorkspace(input); if (++resolveCalls === 2) { process.stdout.write('READY:' + id + '\\n'); await new Promise(resolve => process.stdin.once('data', resolve)); } return resolved; };",
     "process.stdout.write('START:' + id + '\\n');",
     "let result; try { await workspace.change('write_file', 'shared.txt', before => { if (before !== 'original') throw new Error('STALE'); return id; }, 'BUILD'); result = 'SUCCESS'; } catch (error) { result = error.message === 'STALE' ? 'STALE' : 'ERROR:' + error.message; }",
-    "process.stdout.write('RESULT:' + id + ':' + result + '\\n'); store.close(); cipher.close();",
+    "process.stdout.write('RESULT:' + id + ':' + result + '\\n'); store.close();",
   ].join('\n');
   const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
   const ids = ['first', 'second'];
