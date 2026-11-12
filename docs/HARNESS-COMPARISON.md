@@ -38,17 +38,17 @@ Live results are stored in `docs/harness-live-report.json` (ignored by Git becau
 
 ### Same-model result — 2026-11-12
 
-Model: `teamorouter/gpt-6.1-sol` for both harnesses. Same prompt, starter workspace and hidden grader. One run per task. Details: [TOOL-BENCHMARK.md](TOOL-BENCHMARK.md).
+Model: `nvidia/nemotron-3.5-lightning:free` via OpenRouter for both harnesses. Same prompt, starter workspace and hidden grader. One run per task. Details: [TOOL-BENCHMARK.md](TOOL-BENCHMARK.md).
 
 | Task | PolonRLM | OpenCode |
 | --- | --- | --- |
-| `retry-status` | PASS — 22.5 s | PASS — 20.7 s |
-| `group-by` | PASS — 26.0 s | PASS — 21.8 s |
-| `merge-intervals` | PASS — 29.6 s | PASS — 32.2 s |
-| Score | **3/3** | **3/3** |
-| Total wall time | 78.0 s | 74.8 s |
+| `retry-status` | PASS — 21.3 s | FAIL — 77.4 s; grader 1/2 |
+| `group-by` | PASS — 39.4 s | PASS — 21.6 s |
+| `merge-intervals` | PASS — 51.0 s | PASS — 66.2 s |
+| Score | **3/3** | **2/3** |
+| Total wall time | 111.7 s | 165.2 s |
 
-This is a small, single-run smoke test, not evidence of parity or superiority. Raw results: [`harness-shared-report.json`](harness-shared-report.json).
+This is a small, single-run smoke test with a free model, not evidence of parity or superiority. Raw results: [`harness-shared-report.json`](harness-shared-report.json).
 
 ### Historical live result — 2026-11-11
 

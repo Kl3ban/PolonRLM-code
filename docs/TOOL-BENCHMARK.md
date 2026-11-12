@@ -27,33 +27,33 @@ The deterministic audit is not a model benchmark. It proves the local tool contr
 
 ## 2. Same-model comparison with OpenCode
 
-Run the same tasks, prompt, starter workspace and hidden grader against both harnesses with the same provider and model:
+Run the same tasks, prompt, starter workspace and hidden grader against both harnesses with the same **free** provider and model:
 
 ```sh
-node scripts/compare-shared-model.mjs \
-  --provider teamorouter \
-  --model gpt-6.1-sol \
+OPENROUTER_API_KEY=... node scripts/compare-shared-model.mjs \
+  --provider openrouter \
+  --model nvidia/nemotron-3.5-lightning:free \
   --tasks retry-status,group-by,merge-intervals \
   --report docs/harness-shared-report.json
 ```
 
-The script reads the provider key from the PolonRLM DPAPI vault; OpenCode uses its own configured TeamRouter provider. It never prints the key.
+The script reads the key from `OPENROUTER_API_KEY` or the PolonRLM vault. It never prints the key. The default is OpenRouter's free `nvidia/nemotron-3.5-lightning:free`; no paid model is used.
 
 ### Result — 2026-11-12
 
-Model: `teamorouter/gpt-6.1-sol` for both harnesses. One run per task. Sandbox disabled for this comparison because both harnesses used host execution; this measures coding/tool use, not sandboxing.
+Model: `nvidia/nemotron-3.5-lightning:free` via OpenRouter for both harnesses. One run per task. Sandbox disabled for this comparison because both harnesses used host execution; this measures coding/tool use, not sandboxing.
 
 | Task | PolonRLM | OpenCode |
 | --- | --- | --- |
-| `retry-status` | **PASS** — 22.5 s | **PASS** — 20.7 s |
-| `group-by` | **PASS** — 26.0 s | **PASS** — 21.8 s |
-| `merge-intervals` | **PASS** — 29.6 s | **PASS** — 32.2 s |
-| Score | **3/3** | **3/3** |
-| Total wall time | 78.0 s | 74.8 s |
+| `retry-status` | **PASS** — 21.3 s | **FAIL** — 77.4 s; grader 1/2 |
+| `group-by` | **PASS** — 39.4 s | **PASS** — 21.6 s |
+| `merge-intervals` | **PASS** — 51.0 s | **PASS** — 66.2 s |
+| Score | **3/3** | **2/3** |
+| Total wall time | 111.7 s | 165.2 s |
 
 Raw results: [`harness-shared-report.json`](harness-shared-report.json).
 
-This is a small, single-run smoke comparison. It shows that PolonRLM can complete the same three tasks with the same model and does not establish a statistically meaningful speed or quality difference. A 50-task pack and hidden graders are available for a larger run.
+The free model is small and intermittently tool-weak. The `retry-status` failure is an OpenCode run that produced a partially correct edit but failed one hidden group; it is not a general statement about OpenCode. This is a single-run smoke comparison, not a statistically meaningful ranking.
 
 ## 3. OpenCode tool-surface differences
 

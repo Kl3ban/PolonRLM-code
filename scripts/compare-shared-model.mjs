@@ -12,19 +12,20 @@ const option = (name, fallback) => {
   const index = args.indexOf(name);
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
-const provider = option('--provider', 'teamorouter');
-const model = option('--model', provider === 'teamorouter' ? 'gpt-6.1-sol' : '');
+const provider = option('--provider', 'openrouter');
+const model = option('--model', provider === 'openrouter' ? 'nvidia/nemotron-3.5-lightning:free' : '');
 if (!model) throw new Error('Use --model <id>.');
-const baseURL = option('--base-url', provider === 'teamorouter' ? 'https://api.teamorouter.com/v1' : '');
+const baseURL = option('--base-url', provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : '');
 if (!baseURL) throw new Error('Use --base-url <url> for this provider.');
+const keyEnv = option('--key-env', provider === 'openrouter' ? 'OPENROUTER_API_KEY' : '');
 const tasks = option('--tasks', 'retry-status,group-by,merge-intervals').split(',').map(value => value.trim()).filter(Boolean);
 const timeoutMs = Math.max(60_000, Math.min(900_000, Number(option('--timeout-ms', '300000'))));
 const reportPath = path.resolve(option('--report', 'docs/harness-shared-report.json'));
 const opencodeBin = option('--opencode-bin', process.env.OPENCODE_BIN ?? (process.platform === 'win32' ? 'opencode.cmd' : 'opencode'));
-const opencodeModel = option('--opencode-model', `${provider}/${model}`);
+const opencodeModel = option('--opencode-model', provider === 'openrouter' ? `openrouter/${model}` : `${provider}/${model}`);
 const defaultHome = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '.', '.local', 'share'), 'PolonRLM');
-const key = await new SecretVault(defaultHome).get(provider);
-if (!key) throw new Error(`No ${provider} key in the PolonRLM vault; cannot run the shared-model comparison.`);
+const key = keyEnv ? process.env[keyEnv] : await new SecretVault(defaultHome).get(provider);
+if (!key) throw new Error(`No key available for ${provider}; set ${keyEnv || 'the provider key in the PolonRLM vault'}.`);
 
 const promptFor = task => `${task.prompt}\n\nWork directly in this workspace now. Use the file tools to inspect and edit the project. Do not print the full solution instead of editing. Run a relevant local command if useful.`;
 const grade = async (task, workspace) => (await import(`${pathToFileURL(task.grader).href}?compare=${Date.now()}-${Math.random()}`)).grade(workspace);
@@ -55,7 +56,7 @@ try {
           try { await controller.submit(promptFor(task)); }
           finally { await controller.close(); }
         } else {
-          const run = await execa(opencodeBin, ['run', '--standalone', '--model', opencodeModel], { cwd: workspace, input: promptFor(task), timeout: timeoutMs, reject: false, windowsHide: true });
+          const run = await execa(opencodeBin, ['run', '--standalone', '--model', opencodeModel], { cwd: workspace, env: { ...process.env, ...(keyEnv ? { [keyEnv]: key } : {}) }, input: promptFor(task), timeout: timeoutMs, reject: false, windowsHide: true });
           result.exitCode = run.exitCode; result.timedOut = run.timedOut; result.output = redact(`${run.stdout}\n${run.stderr}`).slice(-1_000);
         }
         const graded = await grade(task, workspace);
