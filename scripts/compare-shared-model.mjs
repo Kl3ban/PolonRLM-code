@@ -20,6 +20,7 @@ const baseURL = option('--base-url', provider === 'openrouter' ? 'https://openro
 if (!baseURL) throw new Error('Use --base-url <url> for this provider.');
 const keyEnv = option('--key-env', provider === 'openrouter' ? 'OPENROUTER_API_KEY' : provider === 'nvidia' ? 'NVIDIA_API_KEY' : '');
 const tasks = option('--tasks', 'retry-status,group-by,merge-intervals').split(',').map(value => value.trim()).filter(Boolean);
+const harnesses = option('--harnesses', 'polonrlm,opencode').split(',').map(value => value.trim()).filter(Boolean);
 const timeoutMs = Math.max(60_000, Math.min(900_000, Number(option('--timeout-ms', '300000'))));
 const reportPath = path.resolve(option('--report', path.join(tmpdir(), 'polonrlm-private-harness-report.json')));
 const opencodeBin = option('--opencode-bin', process.env.OPENCODE_BIN ?? (process.platform === 'win32' ? 'opencode.cmd' : 'opencode'));
@@ -55,7 +56,7 @@ try {
     const [task] = await loadBenchmarkTasks(pack, taskId);
     if (!task) throw new Error(`Unknown benchmark task: ${taskId}`);
     report.tasks.push({ id: task.id, title: task.title });
-    for (const harness of ['polonrlm', 'opencode']) {
+    for (const harness of harnesses) {
       const workspace = path.join(root, `${task.id}-${harness}`);
       const result = { task: task.id, harness, status: 'FAIL' };
       const started = Date.now();
@@ -70,8 +71,13 @@ try {
             toolPermissions: { read_file: 'auto', write_file: 'auto', edit_file: 'auto', list_directory: 'auto', search_files: 'auto', search_content: 'auto', execute_command: 'auto', run_tests: 'auto' },
           });
           controller.setApprover(async () => true);
-          try { await controller.submit(promptFor(task)); }
-          finally { await controller.close(); }
+          let watchdog;
+          const taskAbort = new Promise((_resolve, reject) => {
+            watchdog = setTimeout(() => { controller.cancel(); reject(new Error(`Benchmark task exceeded ${timeoutMs}ms.`)); }, timeoutMs);
+            watchdog.unref();
+          });
+          try { await Promise.race([controller.submit(promptFor(task)), taskAbort]); }
+          finally { clearTimeout(watchdog); await controller.close(); }
         } else {
           const run = await execa(opencodeBin, ['run', '--standalone', '--model', opencodeModel], { cwd: workspace, env: { ...process.env, ...(keyEnv ? { [keyEnv]: key } : {}) }, input: promptFor(task), timeout: timeoutMs, reject: false, windowsHide: true });
           result.exitCode = run.exitCode; result.timedOut = run.timedOut; result.output = redact(`${run.stdout}\n${run.stderr}`).slice(-1_000);
