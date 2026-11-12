@@ -1961,6 +1961,40 @@ test('archived context resumes while complete SQLite conversation remains availa
   assert.equal(h.store.messages(h.session).length, originalCount + 2);
 });
 
+test('automatic recall supplies an omitted source fact without another model request or persistent prompt copy', async t => {
+  let calls = 0;
+  const h = await harness(t, async messages => {
+    calls++;
+    const recalled = messages.find(message => message.name === 'polonrlm_recall');
+    assert.match(recalled?.content ?? '', /48173/);
+    assert.match(recalled?.content ?? '', /msg:\d+ user lines:/);
+    assert.equal(messages.at(-1)?.content, 'What port did reconnect-port-819 require?');
+    return reply('The archived requirement says port 48173.');
+  });
+  h.store.append(h.session, { role: 'user', content: 'The reconnect-port-819 requirement uses port 48173.' });
+  h.store.archiveContext(h.session, [{ role: 'user', name: 'polonrlm_context', content: 'Earlier work is summarized; the port was omitted.' }]);
+  await h.runtime.run(h.session, 'What port did reconnect-port-819 require?', new AbortController().signal);
+  assert.equal(calls, 1);
+  assert.ok(!h.store.messages(h.session).some(message => message.name === 'polonrlm_recall'));
+  const evidence = h.store.cortexRuns(h.workspace.root)[0]!;
+  assert.equal(evidence.calls, 1); assert.equal(evidence.recallHits, 1);
+  assert.equal(evidence.outcome, 'unverified', 'a returned answer alone is not measured task success');
+});
+
+test('Cortex records command evidence and invalidates it after a later file change', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'evidence-check', name: 'run_tests', arguments: { command: 'node -e "process.exit(0)"' } }]);
+    if (calls === 2) return reply('', [{ id: 'after-check-change', name: 'write_file', arguments: { path: 'after.txt', content: 'unchecked change' } }]);
+    return reply('Changed the file after the check.');
+  }, { permissions: 'all' });
+  await h.runtime.run(h.session, 'Run a check and then write a file.', new AbortController().signal);
+  const run = h.store.cortexRuns(h.workspace.root)[0]!;
+  assert.equal(run.calls, 3); assert.equal(run.tools, 2); assert.equal(run.model, 'fake/fake');
+  assert.equal(run.outcome, 'unverified'); assert.equal(run.inputTokens, 30);
+});
+
 test('oversized current user requirements fail explicitly without API call or silent truncation', async t => {
   let calls = 0;
   const h = await harness(t, async () => { calls++; return reply(); });

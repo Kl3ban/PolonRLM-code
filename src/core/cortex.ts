@@ -9,6 +9,11 @@ export const CORTEX = [
 
 export interface CortexDecision { requested: number; level: number; score: number; reason: string }
 
+export function cortexGuidance(decision: CortexDecision): string {
+  const profile = CORTEX[decision.level]!;
+  return `Cortex ${decision.level} ${profile.name}: ${profile.guidance} Suggested independent subagents: ${profile.agents}; use only when useful. Take the fewest calls that establish the result; never fill an effort target. Stop when the task is complete. ${decision.level !== decision.requested ? `Adapted from ${decision.requested}: ${decision.reason}.` : ''}`;
+}
+
 const complexSignals = /\b(?:architect(?:ure|ural)|migrat(?:e|ion)|refactor|rewrite|benchmark|security|concurren(?:cy|t)|race condition|deadlock|transaction|integration|end[- ]to[- ]end|whole project|across (?:the )?(?:project|files|modules)|multi[- ]file|wieloplikow|wielomoduł|architektur\w*|migracj\w*|refaktor\w*|przepisz|benchmark\w*|bezpiecze\w*|równoleg\w*|wyścig\w*|integracj\w*|cały projekt|wielu plik\w*)\b/i;
 const mediumSignals = /\b(?:implement|feature|fix|bug|test|verify|regression|provider|database|api|tool|implementuj|dodaj|napraw|błąd|test\w*|sprawdź|dostawc\w*|baza danych|narzędzi\w*|api)\b/i;
 const simpleSignals = /\b(?:typo|spelling|punctuation|one[- ]line|simple rename|format whitespace|literówk\w*|ortograf\w*|interpunkcj\w*|jedna linia|prosta nazw\w*)\b/i;
@@ -19,7 +24,7 @@ export function chooseCortex(requested: number, task: string, strategy: 'adaptiv
   const level = Math.max(0, Math.min(5, Math.floor(requested)));
   if (strategy === 'fixed' || level === 0) return { requested: level, level, score: 0, reason: strategy === 'fixed' ? 'fixed setting' : 'Cortex disabled by user' };
   const value = task.trim();
-  if (simpleSignals.test(value)) return { requested: level, level: 0, score: 0, reason: 'small text-only change' };
+  if (simpleSignals.test(value) && !complexSignals.test(value) && value.length < 500) return { requested: level, level: 0, score: 0, reason: 'small text-only change' };
   let score = 0;
   if (complexSignals.test(value)) score += 4;
   if (mediumSignals.test(value)) score += 1;

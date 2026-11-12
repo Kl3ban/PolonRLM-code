@@ -6,6 +6,7 @@ import type { Approve, LLMProvider, ModelInfo, RuntimeEvent, UIController, UISta
 import { imageFromBuffer, loadUserImage } from './images.js';
 import { ConfigManager, secureMcpServerSchema, settingsSchema } from './config.js';
 import { SessionStore } from './store.js';
+import { formatCortexStats } from './cortex-evidence.js';
 import { RecoveryCipher } from './recovery.js';
 import { SecretVault, isSecretEnvironmentName, redact, registerSecret, safeText } from './secrets.js';
 import { Permissions } from './permissions.js';
@@ -473,7 +474,7 @@ export class Controller implements UIController {
                 const changed = await this.changedSince(verificationBaseline, signal);
                 if (changed.length) {
                   this.note(`Build changed ${changed.length} file${changed.length === 1 ? '' : 's'}. Running automatic verification.`, 'system');
-                  try { await this.verifyWithRepairs(undefined, this.config.settings.verificationRepairAttempts, signal, budget); }
+                  try { await this.verifyWithRepairs(undefined, this.config.settings.verificationRepairAttempts, signal, budget, true); }
                   catch (error: any) {
                     if (signal.aborted) throw error;
                     this.note(`Automatic verification stopped: ${redact(error?.message ?? String(error))}`, 'error');
@@ -528,8 +529,9 @@ export class Controller implements UIController {
       this.state.busy = false; this.state.status = 'Ready'; this.notify();
     }
   }
-  private async verifyWithRepairs(explicitCommand: string | undefined, repairAttempts: number, signal: AbortSignal, budget: ReturnType<typeof createRunBudget>): Promise<import('./verification.js').VerificationReport> {
+  private async verifyWithRepairs(explicitCommand: string | undefined, repairAttempts: number, signal: AbortSignal, budget: ReturnType<typeof createRunBudget>, attributeToCortex = false): Promise<import('./verification.js').VerificationReport> {
     let report = await this.performVerification(explicitCommand, signal);
+    if (attributeToCortex) this.store.linkCortexVerification(report);
     for (let attempt = 1; attempt <= repairAttempts && report.status === 'failed'; attempt++) {
       signal.throwIfAborted();
       this.state.status = `Repairing verification failure ${attempt}/${repairAttempts}`; this.notify();
@@ -537,6 +539,7 @@ export class Controller implements UIController {
       await this.runtime.run(this.session, this.verificationRepairTask(report), signal, undefined, budget);
       signal.throwIfAborted();
       report = await this.performVerification(explicitCommand, signal);
+      this.store.linkCortexVerification(report);
     }
     return report;
   }
@@ -988,7 +991,7 @@ export class Controller implements UIController {
         const previous = settings.mode; settings.mode = tail.toUpperCase() as any;
         await this.persistSettings(() => { settings.mode = previous; }); this.sync();
       } break;
-      case '/cortex': if (!tail) this.note(CORTEX.map((level, index) => `${index}: ${level.name} · suggested effort ${level.steps} steps · ${level.agents} subagents`).join('\n') + '\nThese are effort suggestions, not hard limits.'); else {
+      case '/cortex': if (tail === 'stats') this.note(formatCortexStats(this.store.cortexRuns(this.workspace.root))); else if (!tail) this.note(CORTEX.map((level, index) => `${index}: ${level.name} · suggested effort ${level.steps} steps · ${level.agents} subagents`).join('\n') + '\nThese are effort suggestions, not hard limits. Use /cortex stats for measured local outcomes.'); else {
         const level = Number(tail); if (!Number.isInteger(level) || level < 0 || level > 5) throw new Error('Cortex: 0–5.');
         const previous = settings.cortex; settings.cortex = level;
         await this.persistSettings(() => { settings.cortex = previous; }); this.sync();

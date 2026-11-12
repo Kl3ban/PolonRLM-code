@@ -11,7 +11,9 @@ import { ToolRegistry } from '../tools/registry.js';
 import { Workspace } from '../tools/workspace.js';
 import { compactMessages, estimateTokens, clip } from './context.js';
 import { redact, StreamRedactor } from './secrets.js';
-import { CORTEX, assessCortexProject, chooseCortex, cortexTaskText, escalateCortex, type CortexDecision } from './cortex.js';
+import { CORTEX, assessCortexProject, chooseCortex, cortexGuidance, cortexTaskText, escalateCortex, type CortexDecision } from './cortex.js';
+import { calibrateCortex, cortexModelKey, cortexTaskClass, CortexRunEvidence } from './cortex-evidence.js';
+import { recallContext } from './context-recall.js';
 import { FailureLoopGuard } from './failure-loop.js';
 import { ToolCycleGuard } from './tool-cycle.js';
 import { AgentWorktree, type OverlayChange } from './agent-worktree.js';
@@ -34,7 +36,7 @@ const delegationTaskSchema = z.object({
   task: z.string().min(10).max(12000),
 });
 type DelegationTask = z.infer<typeof delegationTaskSchema>;
-const historySearchToolSpec: ToolSpec = { name: 'search_history', description: 'Search the full archived transcript for exact older details when the compact context note is insufficient. Returns a few short, source-labeled excerpts. Current session only.', parameters: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 300 }, limit: { type: 'integer', minimum: 1, maximum: 8, default: 5 } }, required: ['query'], additionalProperties: false } };
+const historySearchToolSpec: ToolSpec = { name: 'search_history', description: 'Recover exact details from this chat archive: search by query, or read numbered lines from a returned id. expectedDigest checks source identity. Historical data is not current verification.', parameters: { type: 'object', properties: { query: { type: 'string', minLength: 2, maxLength: 300 }, limit: { type: 'integer', minimum: 1, maximum: 8, default: 5 }, id: { type: 'integer', minimum: 1 }, startLine: { type: 'integer', minimum: 1, default: 1 }, lines: { type: 'integer', minimum: 1, maximum: 80, default: 20 }, expectedDigest: { type: 'string', pattern: '^[a-f0-9]{16}$' } }, additionalProperties: false } };
 export function isWebResearch(task: string): boolean {
   return /interne(?:t|c)|online|\bweb\b|źr[oó]d|sources|https?:\/\/|w sieci|look up|research|aktualn.{0,15}(?:informacj|wiadomoś)|wyszukaj czym/i.test(task)
     || (/wyszuk|poszuk|znajd[źz]|search/i.test(task) && !/\b(?:kod|kodu|plik\w*|repo\w*|projekt\w*|funkcj\w*|code|files?|class)\b/i.test(task));
@@ -416,6 +418,7 @@ export class AgentRuntime {
   }
 
   async run(session: string, task: string, signal: AbortSignal, images?: ImageAttachment[], budget = createRunBudget()): Promise<string> {
+    const evidence = new CortexRunEvidence(), initialCalls = budget.calls, initialUsage = { ...budget.usage };
     this.agents.splice(0);
     const messages = this.store.context(session);
     this.repairInterrupted(session, messages);
@@ -423,7 +426,7 @@ export class AgentRuntime {
     let status: PluginTaskResult['status'] = 'failed';
     let answer: string | undefined;
     try {
-      answer = await this.loop(session, messages, signal, budget, 0, 'orchestrator', this.settings.mode);
+      answer = await this.loop(session, messages, signal, budget, 0, 'orchestrator', this.settings.mode, this.workspace, this.tools, false, undefined, undefined, evidence);
       status = 'complete';
       return answer;
     } catch (error) {
@@ -431,6 +434,10 @@ export class AgentRuntime {
       throw error;
     } finally {
       this.repairInterrupted(session, messages);
+      try {
+        const selectedModel = evidence.models.size === 1 ? [...evidence.models][0]! : evidence.models.size > 1 ? 'mixed' : cortexModelKey(this.settings);
+        this.store.saveCortexRun(evidence.finish(session, this.workspace.root, selectedModel, this.settings.mode, task, status, budget.calls - initialCalls, { input: budget.usage.input - initialUsage.input, output: budget.usage.output - initialUsage.output }));
+      } catch { /* Optional local telemetry must not prevent task completion or cancellation. */ }
       try {
         await this.plugins?.afterTask({ sessionId: session, workspace: this.workspace.root, task: clip(redact(task), 12_000), role: 'orchestrator', mode: this.settings.mode, status, ...(answer ? { answer: clip(redact(answer), 8_000) } : {}) });
       } catch (error) {
@@ -473,8 +480,7 @@ export class AgentRuntime {
     const roleBudgetGuidance = Object.keys(this.settings.modelRoleBudgets).length
       ? `\nConfigured role model budgets (shared across agents with the same role): ${JSON.stringify(this.settings.modelRoleBudgets)}. Omitted values and 0 are unlimited; stay within configured limits.`
       : '';
-    const cortexProfile = CORTEX[cortex.level]!;
-    const cortexGuidance = `Cortex ${cortex.level} ${cortexProfile.name}${this.settings.cortexStrategy === 'adaptive' && cortex.level !== cortex.requested ? ` (adapted from ${cortex.requested}: ${cortex.reason})` : ''}: ${cortexProfile.guidance} Aim for about ${cortexProfile.steps} model calls and up to ${cortexProfile.agents} subagents only when useful. This is a soft effort target, not a hard limit. Stop early when the task is complete; continue if it is not.`;
+    const cortexGuidance = '{{POLONRLM_CORTEX}}';
     return `You are PolonRLM, a coding agent. Workspace: ${workspace.root}. Role: ${role}. Mode: ${mode}.
 Work on the user's goal until it is complete or you hit a specific blocker. Use tools. Never claim actions or tests that did not happen.
 Reply in the user's language. Keep replies concise. Do not reveal hidden reasoning. Share a plan only when it helps.
@@ -535,10 +541,10 @@ ${skills.join('\n')}`;
     return sections.join('\n\n');
   }
 
-  private async loop(session: string, messages: Message[], signal: AbortSignal, budget: RunBudget, depth: number, role: string, mode: Mode, workspace: Workspace = this.workspace, tools: ToolRegistry = this.tools, isolated = false, agentId?: string, team?: AgentTeam): Promise<string> {
+  private async loop(session: string, messages: Message[], signal: AbortSignal, budget: RunBudget, depth: number, role: string, mode: Mode, workspace: Workspace = this.workspace, tools: ToolRegistry = this.tools, isolated = false, agentId?: string, team?: AgentTeam, evidence?: CortexRunEvidence): Promise<string> {
     const task = messages.filter(message => message.role === 'user').at(-1)?.content ?? '';
-    const userTasks = messages.filter(message => message.role === 'user' && !message.name?.startsWith('agent_team')).map(message => message.content);
-    const strategyTask = cortexTaskText(task, userTasks.slice(0, -1));
+    const userTasks = messages.filter(message => message.role === 'user' && !message.name?.startsWith('agent_team') && !['polonrlm_context', 'polonrlm_recall'].includes(message.name ?? '')).map(message => message.content);
+    const strategyTask = cortexTaskText(task, userTasks.length > 1 ? userTasks.slice(0, -1) : [this.store.previousUserTask(session) ?? '']);
     let cortex = chooseCortex(this.settings.cortex, strategyTask, this.settings.cortexStrategy);
     if (!depth && this.settings.cortexStrategy === 'adaptive' && cortex.level > 0 && cortex.level < cortex.requested && this.tools.getSpec('project_map')) {
       try {
@@ -556,6 +562,8 @@ ${skills.join('\n')}`;
         }
       } catch { /* Project analysis is optional; the text heuristic remains the fallback. */ }
     }
+    if (!depth && this.settings.cortexStrategy === 'adaptive') cortex = calibrateCortex(cortex, cortexTaskClass(strategyTask), cortexModelKey(this.settings), mode, this.store.cortexRuns(workspace.root));
+    evidence?.choose(cortex, cortexTaskClass(strategyTask));
     const roleToolProfile = isolated ? this.settings.agentToolProfiles[role] : undefined;
     const roleAllowsTool = (name: string): boolean => roleToolProfile === undefined || roleToolProfile.includes(name);
     let instructions = await this.instructions(task, role, mode, workspace, tools, isolated, cortex);
@@ -634,7 +642,7 @@ ${skills.join('\n')}`;
       }
       if (!(wantsComputer && emptyDesktopDiscovery)) specs.push({ name: 'discover_tools', description: 'Find additional built-in or connected MCP tools by keyword. For screen, mouse, window, taskbar or app tasks, computer_use is directly available; call it instead of searching.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
       if (unavailableTools.size) specs.push({ name: 'request_tool', description: 'Ask the user to approve exactly one invocation of a discovered disabled registered tool. Approval pauses the run, does not change settings, and authorizes only these arguments once.', parameters: { type: 'object', properties: { tool: { type: 'string', minLength: 1, maxLength: 100 }, arguments: { type: 'object', additionalProperties: true }, reason: { type: 'string', minLength: 4, maxLength: 1000 } }, required: ['tool', 'arguments', 'reason'], additionalProperties: false } });
-      if (!depth && messages.some(message => message.name === 'polonrlm_context')) specs.push(historySearchToolSpec);
+      if (!depth && (messages.some(message => message.name === 'polonrlm_context') || this.store.hasArchivedContext(session))) specs.push(historySearchToolSpec);
       const canDelegate = !isolated && (this.settings.maxDepth < 0 || depth < this.settings.maxDepth) && cortex.level > 0 && (this.settings.maxAgents === 0 || budget.active < this.settings.maxAgents);
       if (canDelegate) specs.push({ name: 'delegate', description: 'Delegate focused subagent work. Independent tasks run together; add id and dependsOn to form a dependency graph. Later tasks inherit successful staged file changes and short results. Review the returned graphId with agent_changes before applying. Each subagent has isolated tools, shared task budgets, and optional per-role model budgets.', parameters: { type: 'object', properties: { tasks: { type: 'array', minItems: 1, items: { type: 'object', properties: { id: { type: 'string', pattern: '^[A-Za-z0-9_.-]{1,80}$' }, dependsOn: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z0-9_.-]{1,80}$' } }, role: { type: 'string', enum: ['planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] }, task: { type: 'string', minLength: 10, maxLength: 12000 } }, required: ['role', 'task'], additionalProperties: false } } }, required: ['tasks'], additionalProperties: false } });
       if (canDelegate) specs.push({ name: 'agent_resume', description: 'Resume a completed or failed subagent from its persisted result. This starts a new isolated run with the same role, original task, and previous result as context; it is not an exact restored conversation.', parameters: { type: 'object', properties: { id: { type: 'string', minLength: 1, maxLength: 100 }, instruction: { type: 'string', maxLength: 4000 } }, required: ['id'], additionalProperties: false } });
@@ -656,7 +664,7 @@ ${skills.join('\n')}`;
       if (roleToolProfile !== undefined) {
         for (let index = specs.length - 1; index >= 0; index--) if (!roleAllowsTool(specs[index]!.name)) specs.splice(index, 1);
       }
-      const system: Message = { role: 'system', content: instructions + '\n' + workflowInstructions(this.store.workflow(session)) };
+      const system: Message = { role: 'system', content: instructions.replace('{{POLONRLM_CORTEX}}', cortexGuidance(cortex)) + '\n' + workflowInstructions(this.store.workflow(session)) };
       const route = this.settings.modelRoutes[role as AgentModelRole];
       const primaryProviderId = route?.provider ?? this.settings.provider;
       const attemptIds = [...new Set([primaryProviderId, ...this.settings.fallback])];
@@ -685,11 +693,13 @@ ${skills.join('\n')}`;
       const appInputLimit = this.settings.maxInputTokens > 0 ? this.settings.maxInputTokens : Infinity;
       const maximum = Math.min(appInputLimit, ...candidates.map((candidate, index) => (candidate.contextWindow ?? Infinity) - outputLimits[index]!));
       const overhead = estimateTokens([system, estimateSpecs]);
-      const mayAddHistorySearch = !depth && estimateSpecs.length > 0 && !messages.some(message => message.name === 'polonrlm_context');
+      const mayAddHistorySearch = !depth && estimateSpecs.length > 0 && !estimateSpecs.some(spec => spec.name === 'search_history');
       const historySearchReserve = mayAddHistorySearch
         ? Math.max(0, estimateTokens([system, [...estimateSpecs, historySearchToolSpec]]) - overhead) + 2
         : 0;
-      let compactionBudget = Math.max(500, maximum - overhead - historySearchReserve);
+      const recallReserve = !depth && (this.store.hasArchivedContext(session) || estimateTokens(messages) > maximum - overhead - historySearchReserve)
+        ? Math.min(600, Math.floor(Math.max(0, maximum - overhead - historySearchReserve) * .08)) : 0;
+      let compactionBudget = Math.max(500, maximum - overhead - historySearchReserve - recallReserve);
       let compacted = compactMessages(messages, compactionBudget);
       let estimated = estimateTokens([[system, ...compacted.messages], estimateSpecs]);
       // The complete request has a different JSON envelope than the separately estimated prompt and history.
@@ -705,10 +715,14 @@ ${skills.join('\n')}`;
         estimated = tighterEstimate;
       }
       if (compacted.removed || compacted.shortened) {
+        if (evidence) { evidence.compactions++; evidence.compactedTokenEstimate += Math.max(0, compacted.beforeTokens - compacted.afterTokens); }
         messages.splice(0, messages.length, ...compacted.messages);
         if (!depth) this.store.archiveContext(session, compacted.messages);
       }
-      const input = [system, ...messages];
+      const lastError = messages.findLast(message => message.role === 'tool' && message.isError);
+      const recalled = recallContext(this.store, session, task + (lastError ? '\n' + lastError.content.slice(0, 500) : ''), messages, recallReserve);
+      if (evidence) evidence.recallHits += recalled.hits;
+      const input = [system, ...(recalled.message ? [recalled.message] : []), ...messages];
       estimated = estimateTokens([input, estimateSpecs]);
       if (estimated > maximum) throw new Error('Context exceeds the limit. Use /compact, a smaller task, or increase maxInputTokens.');
       const reserve = Math.ceil(estimated * 1.25) + Math.max(...outputLimits);
@@ -757,6 +771,7 @@ ${skills.join('\n')}`;
             let emittedThisAttempt = false;
             let receivedTextThisAttempt = '';
             const requestStartedAt = Date.now();
+            evidence?.models.add(`${attempt.id}/${candidate.model}`);
             const timeoutMs = candidate.requestTimeoutMs && candidate.requestTimeoutMs > 0 ? candidate.requestTimeoutMs : this.settings.timeoutMs;
             const requestTimeout = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
             const requestSignal = requestTimeout ? AbortSignal.any([signal, requestTimeout]) : signal;
@@ -785,7 +800,7 @@ ${skills.join('\n')}`;
                 forceToolChoice = true;
                 if (!messages.some(message => message.content === EMPTY_RESPONSE_RECOVERY)) {
                   messages.push({ role: 'user', content: EMPTY_RESPONSE_RECOVERY });
-                  input.splice(0, input.length, system, ...messages);
+                  input.splice(0, input.length, system, ...(recalled.message ? [recalled.message] : []), ...messages);
                 }
                 throw error;
               }
@@ -909,6 +924,7 @@ ${skills.join('\n')}`;
             await this.plugins?.afterTool({ ...this.pluginToolContext(session, task, role, mode, workspace, call.name, call.arguments), result: clip(redact(result), 8_000), isError, durationMs });
           } catch (error) { this.emit({ type: 'status', text: `Plugin afterTool hook failed: ${String((error as Error)?.message ?? error)}` }); }
           this.reportPluginProblems();
+          evidence?.observe(isError, false); evidence?.escalate(cortex);
           this.store.audit(session, call.name, { arguments: auditArguments(call.name, call.arguments), result, isError, agent: role, durationMs });
           append({ role: 'tool', name: call.name, toolCallId: call.id, content: result, isError, toolDurationMs: durationMs });
           this.emit({ type: 'tool', id: call.id, name: call.name, toolDetail: describeToolCall(call.name, call.arguments), state: isError ? 'error' : 'done', agentRole: depth ? role : undefined, text: clip(result, 8000), truncated: result.length > 8000, durationMs });
@@ -1025,9 +1041,9 @@ ${skills.join('\n')}`;
             await workspace.permissions.requestOneTimeToolApproval(request.tool, description, preview, signal);
             const output = await tools.executeWithOneTimeApproval(request.tool, normalized, { signal, mode, sessionId: depth === 0 ? session : undefined, vision: providerConfig.vision, isolated, onImage: image => images.push(image) });
             result = `One-time approval granted; ran ${request.tool}.\n${output}`;
-          } else if (call.name === 'search_history' && !depth && messages.some(message => message.name === 'polonrlm_context')) {
-            const request = z.object({ query: z.string().min(2).max(300), limit: z.number().int().min(1).max(8).default(5) }).parse(call.arguments);
-            const found = this.store.searchHistory(session, request.query, request.limit);
+          } else if (call.name === 'search_history' && !depth && (messages.some(message => message.name === 'polonrlm_context') || this.store.hasArchivedContext(session))) {
+            const request = z.object({ query: z.string().min(2).max(300).optional(), limit: z.number().int().min(1).max(8).default(5), id: z.number().int().positive().optional(), startLine: z.number().int().positive().default(1), lines: z.number().int().min(1).max(80).default(20), expectedDigest: z.string().regex(/^[a-f0-9]{16}$/).optional() }).refine(value => !!value.query || value.id !== undefined, 'Provide query or a source id.').parse(call.arguments);
+            const found = request.id !== undefined ? [this.store.readHistory(session, request.id, request.startLine, request.lines, request.expectedDigest)] : this.store.searchHistory(session, request.query!, request.limit);
             result = found.length ? JSON.stringify(found) : 'No matches in this session archive. Do not guess missing details.';
           } else if (call.name === 'agent_message' && isolated && team && agentId) {
             const request = z.object({ to: z.string().min(1).max(100), message: z.string().min(1).max(700) }).parse(call.arguments);
@@ -1132,18 +1148,21 @@ ${skills.join('\n')}`;
           await this.plugins?.afterTool({ ...this.pluginToolContext(session, task, role, mode, workspace, call.name, call.arguments), result: clip(redact(result), 8_000), isError, durationMs: Date.now() - toolStartedAt });
         } catch (error) { this.emit({ type: 'status', text: `Plugin afterTool hook failed: ${String((error as Error)?.message ?? error)}` }); }
         this.reportPluginProblems();
+        evidence?.observe(isError, workspace.progressRevision > workspaceRevisionBeforeTool, testExitCode); evidence?.escalate(cortex);
         this.store.audit(session, call.name, { arguments: auditArguments(call.name, call.arguments), result, isError, agent: role, durationMs: Date.now() - toolStartedAt });
         if (images.length) for (const message of messages) delete message.images;
         const toolDurationMs = Date.now() - toolStartedAt;
         append({ role: 'tool', name: call.name, toolCallId: call.id, content: result, isError, toolDurationMs, ...(!isError && images.length ? { images } : {}) });
         this.emit({ type: 'tool', id: call.id, name: call.name, toolDetail: describeToolCall(call.name, call.arguments), state: isError ? 'error' : 'done', agentRole: depth ? role : undefined, text: clip(result, 8000), truncated: result.length > 8000, durationMs: toolDurationMs });
         if (stopForRepeatedRead) {
+          if (evidence) evidence.stalled = true;
           finalText = 'Stopped the task because the model repeated the same read without changing state. The previous result is in the conversation; try a different step.';
           append({ role: 'assistant', content: finalText, model: respondingModel });
           if (!depth) this.emit({ type: 'text', text: finalText, model: respondingModel });
           return finalText;
         }
         if (stopForToolCycle) {
+          if (evidence) evidence.stalled = true;
           finalText = 'Stopped because the same tool sequence repeated again after a warning, without verified workspace progress. Use the results already collected and choose a different approach.';
           append({ role: 'assistant', content: finalText, model: respondingModel });
           if (!depth) this.emit({ type: 'text', text: finalText, model: respondingModel });

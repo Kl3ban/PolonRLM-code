@@ -9,6 +9,8 @@ import type { WorkflowState } from './workflows.js';
 import type { VerificationReport } from './verification.js';
 import type { EvidenceTimelineEntry } from './evidence.js';
 import { describeToolCall } from './tool-display.js';
+import { HistoryIndex, historyFingerprint, type HistoryHit } from './history-retrieval.js';
+import type { CortexRunRecord } from './cortex-evidence.js';
 import type { RecoveryChange, RecoveryChangeState, RecoveryCheckpoint, RecoveryGroup, RecoveryGroupState } from './recovery.js';
 
 export interface AgentRunRecord {
@@ -143,6 +145,7 @@ function quarantineCorruptDatabase(filename: string): string | undefined {
 
 export class SessionStore {
   private db: DatabaseSync;
+  private historyIndexes = new Map<string, { version: number; index: HistoryIndex }>();
   recoveryBackupPath?: string;
   constructor(home: string) {
     const filename = path.join(home, 'sessions.sqlite');
@@ -192,6 +195,8 @@ export class SessionStore {
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, session TEXT, time INTEGER, tool TEXT, data TEXT);
       CREATE INDEX IF NOT EXISTS audit_session_time ON audit(session,time DESC,id DESC);
+      CREATE TABLE IF NOT EXISTS cortex_runs(id TEXT PRIMARY KEY, session TEXT NOT NULL, workspace TEXT NOT NULL, created INTEGER NOT NULL, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS cortex_workspace_created ON cortex_runs(workspace,created DESC);
       CREATE TABLE IF NOT EXISTS workflows(session TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY, session TEXT, data TEXT);
       CREATE TABLE IF NOT EXISTS context(session TEXT PRIMARY KEY, data TEXT, watermark INTEGER);
@@ -239,35 +244,63 @@ export class SessionStore {
     if (!saved) return this.messages(session);
     return [...JSON.parse(saved.data as string), ...this.db.prepare('SELECT data FROM messages WHERE session=? AND id>? ORDER BY id').all(session, saved.watermark as number).map(row => JSON.parse(row.data as string))];
   }
-  searchHistory(session: string, query: string, limit = 5): { id: number; role: Message['role']; source?: string; excerpt: string }[] {
-    const terms = [...new Set(query.toLocaleLowerCase('pl').match(/[\p{L}\p{N}_-]{2,}/gu) ?? [])].filter(term => !['and', 'for', 'the', 'with', 'from', 'oraz', 'dla', 'tego', 'też', 'czy', 'jak', 'jest', 'było', 'był'].includes(term)).slice(0, 10);
-    if (!terms.length) return [];
-    const hits: { id: number; role: Message['role']; source?: string; excerpt: string; score: number }[] = [];
-    const rows = this.db.prepare('SELECT id,data FROM messages WHERE session=? ORDER BY id DESC').iterate(session) as Iterable<{ id: number; data: string }>;
-    for (const row of rows) {
-      const message = JSON.parse(row.data) as Message;
-      const searchable = safeText(`${message.content}\n${(message.toolCalls ?? []).map(call => `${call.name} ${JSON.stringify(call.arguments)}`).join('\n')}`);
-      const folded = searchable.toLocaleLowerCase('pl');
-      const matched = terms.filter(term => folded.includes(term));
-      if (!matched.length) continue;
-      const first = Math.min(...matched.map(term => folded.indexOf(term)).filter(position => position >= 0));
-      const start = Math.max(0, first - 250), end = Math.min(searchable.length, first + 1100);
-      const excerpt = clip(searchable.slice(start, end), 1400);
-      const score = matched.length * 12 + (message.isError ? 18 : 0) + (message.role === 'user' ? 4 : 0) + Math.min(10, Math.floor(row.id / 100000));
-      hits.push({ id: row.id, role: message.role, ...(message.name ? { source: message.name } : {}), excerpt, score });
-    }
-    return hits.sort((a, b) => b.score - a.score || b.id - a.id).slice(0, Math.max(1, Math.min(8, limit))).map(({ score: _score, ...hit }) => hit);
+  hasArchivedContext(session: string): boolean { return !!this.db.prepare('SELECT 1 FROM context WHERE session=?').get(session); }
+  previousUserTask(session: string): string | undefined {
+    const row = this.db.prepare("SELECT json_extract(data,'$.content') AS content FROM messages WHERE session=? AND json_extract(data,'$.role')='user' AND COALESCE(json_extract(data,'$.name'),'') NOT IN ('polonrlm_context','polonrlm_recall','agent_team_user') ORDER BY id DESC LIMIT 1 OFFSET 1").get(session) as { content: string } | undefined;
+    return row?.content;
+  }
+  private indexedHistory(session: string): HistoryIndex {
+    const version = Number(Object.values(this.db.prepare('PRAGMA data_version').get()!)[0]);
+    let cached = this.historyIndexes.get(session);
+    if (!cached || cached.version !== version) cached = { version, index: new HistoryIndex() };
+    this.historyIndexes.delete(session); this.historyIndexes.set(session, cached);
+    if (this.historyIndexes.size > 4) this.historyIndexes.delete(this.historyIndexes.keys().next().value!);
+    for (const row of this.db.prepare('SELECT id,data FROM messages WHERE session=? AND id>? ORDER BY id').iterate(session, cached.index.watermark) as Iterable<{ id: number; data: string }>) cached.index.add(row.id, JSON.parse(row.data));
+    return cached.index;
+  }
+  searchHistory(session: string, query: string, limit = 5): Omit<HistoryHit, 'score'>[] {
+    return this.indexedHistory(session).search(query, limit).map(({ score: _score, ...hit }) => hit);
+  }
+  readHistory(session: string, id: number, startLine = 1, lines = 20, expectedDigest?: string): Omit<HistoryHit, 'score'> & { totalLines: number; truncated: boolean } {
+    if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(startLine) || startLine < 1 || !Number.isSafeInteger(lines) || lines < 1 || lines > 80) throw new Error('Use a positive message id/startLine and 1 to 80 lines.');
+    const row = this.db.prepare('SELECT data FROM messages WHERE session=? AND id=?').get(session, id);
+    if (!row) throw new Error('No archived message with this id in the current chat.');
+    const message = JSON.parse(row.data as string) as Message, digest = historyFingerprint(message);
+    if (expectedDigest && digest !== expectedDigest) throw new Error('History source changed. Search again and use its current digest.');
+    const content = safeText(message.content + (message.toolCalls?.length ? '\n' + JSON.stringify(message.toolCalls.map(call => ({ name: call.name, arguments: call.arguments }))) : ''));
+    const parts = content.split('\n'), selected = parts.slice(startLine - 1, startLine - 1 + lines).join('\n');
+    if (startLine > parts.length) throw new Error(`Source contains ${parts.length} lines; startLine is out of range.`);
+    return { id, role: message.role, ...(message.name ? { source: message.name } : {}), excerpt: clip(selected, 6000), lines: [startLine, Math.min(parts.length, startLine + lines - 1)], totalLines: parts.length, truncated: selected.length > 6000 || startLine + lines - 1 < parts.length, digest, ...(message.isError ? { isError: true } : {}) };
+  }
+  archivedHistory(session: string, query: string, exclude: Set<string>, limit = 3): HistoryHit[] {
+    const context = this.db.prepare('SELECT watermark FROM context WHERE session=?').get(session) as { watermark: number } | undefined;
+    return context ? this.indexedHistory(session).search(query, limit, { beforeId: context.watermark, exclude, excerptChars: 500 }) : [];
   }
   archiveContext(session: string, messages: Message[]): void {
     const last = this.db.prepare('SELECT MAX(id) AS watermark FROM messages WHERE session=?').get(session);
     this.db.prepare('INSERT OR REPLACE INTO context VALUES(?,?,?)').run(session, redact(JSON.stringify(messages.map(({ images: _transient, ...stored }) => stored))), (last?.watermark as number | null) ?? 0);
   }
   replace(session: string, messages: Message[]): void {
+    this.historyIndexes.delete(session);
     this.db.exec('BEGIN IMMEDIATE');
     try { this.db.prepare('DELETE FROM context WHERE session=?').run(session); this.db.prepare('DELETE FROM messages WHERE session=?').run(session); for (const message of messages) this.append(session, message); this.db.exec('COMMIT'); }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   audit(session: string, tool: string, data: unknown): void { this.db.prepare('INSERT INTO audit(session,time,tool,data) VALUES(?,?,?,?)').run(session, Date.now(), tool, redact(JSON.stringify(data))); }
+  saveCortexRun(run: CortexRunRecord): void { this.db.prepare('INSERT INTO cortex_runs VALUES(?,?,?,?,?)').run(run.id, run.session, run.workspace, run.created, redact(JSON.stringify(run))); }
+  cortexRuns(workspace: string, limit = 100): CortexRunRecord[] {
+    return this.db.prepare('SELECT data FROM cortex_runs WHERE workspace=? ORDER BY created DESC,id DESC LIMIT ?').all(workspace, Math.max(1, Math.min(200, Math.floor(limit)))).map(row => JSON.parse(row.data as string));
+  }
+  linkCortexVerification(report: VerificationReport): void {
+    const row = this.db.prepare('SELECT data FROM cortex_runs WHERE session=? AND workspace=? ORDER BY created DESC,id DESC LIMIT 1').get(report.session, report.workspace);
+    if (!row) return;
+    const run = JSON.parse(row.data as string) as CortexRunRecord;
+    if (run.status !== 'complete' || run.outcome === 'stalled' || report.createdAt < run.created || run.verificationId === report.id) return;
+    run.verificationId = report.id;
+    run.outcome = report.status === 'passed' && report.commands.length > 0 && report.commands.every(command => command.status === 'passed' && command.exitCode === 0) && !report.diagnostics.some(item => item.error || item.diagnostics.length) && !report.files.some(file => file.changedDuringCheck) ? 'checks_passed'
+      : report.status === 'failed' ? 'checks_failed' : 'unverified';
+    this.db.prepare('UPDATE cortex_runs SET data=? WHERE id=?').run(redact(JSON.stringify(run)), run.id);
+  }
   evidenceTimeline(session: string, limit = 30): EvidenceTimelineEntry[] {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('Timeline count must be between 1 and 200.');
     const toolRows = this.db.prepare('SELECT id,time,tool,data FROM audit WHERE session=? ORDER BY time DESC,id DESC LIMIT ?').all(session, limit) as { id: number; time: number; tool: string; data: string }[];
@@ -411,8 +444,9 @@ export class SessionStore {
   }
   forget(id: string, workspace: string): void {
     if (!this.exists(id, workspace)) throw new Error('Session does not belong to this project.');
+    this.historyIndexes.delete(id);
     this.db.exec('BEGIN IMMEDIATE');
-    try { for (const table of ['messages', 'audit', 'usage', 'context', 'workflows', 'verification_reports', 'agent_runs']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(id); this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); this.db.exec('COMMIT'); }
+    try { for (const table of ['messages', 'audit', 'usage', 'context', 'workflows', 'verification_reports', 'agent_runs', 'cortex_runs']) this.db.prepare(`DELETE FROM ${table} WHERE session=?`).run(id); this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); this.db.exec('COMMIT'); }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   memories(workspace: string): { name: string; body: string }[] { return this.db.prepare('SELECT name,body FROM memory WHERE workspace=?').all(workspace) as any; }
@@ -460,5 +494,5 @@ export class SessionStore {
     try { return await work(); }
     finally { this.db.prepare('DELETE FROM workspace_mutation_locks WHERE workspace=? AND owner=?').run(workspace, owner); }
   }
-  close(): void { this.db.close(); }
+  close(): void { this.historyIndexes.clear(); this.db.close(); }
 }

@@ -67,6 +67,7 @@ Reasoning options are model-aware. OpenAI, Gemini and compatible providers use d
 | `/sandbox setup confirm` | Explicitly starts the Windows installer, skips user-profile read access, verifies readiness, and enables required isolation. Windows will ask for administrator approval. |
 | `/budget <tokens> <USD>` | Sets limits for the next task. Use `infinity` for no token or cost cap. |
 | `/cortex 0..5` | Sets the maximum work level. Adaptive mode may choose a lower strategy for simple tasks. |
+| `/cortex stats` | Shows measured local Cortex outcomes, model calls, reported tokens and context recovery. See [CORTEX.md](CORTEX.md). |
 | `/settings cortexStrategy adaptive\|fixed` | Adaptive lowers delegation for simple tasks without adding a hard call limit. Fixed always uses the selected `/cortex` level. |
 | `/settings repeatFailureThreshold 3` | Warns the agent after the same tool or test failure repeats three times. A successful project change or passing test resets the counter. Set `0` to disable. |
 | `/settings agentToolProfiles {"reviewer":["read_file","search_files"]}` | Restricts that subagent role to the listed tools. Omitted roles keep the normal tool set; an empty list disables tools for that role. |

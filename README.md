@@ -131,6 +131,7 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [OS command sandbox](docs/SANDBOX.md)
 - [Local web search](docs/LOCAL-WEB.md)
 - [Browser workbench](docs/BROWSER.md)
+- [Cortex and context recovery](docs/CORTEX.md)
 - [Browser and desktop control](docs/COMPUTER-USE.md)
 - [License](LICENSE)
 
