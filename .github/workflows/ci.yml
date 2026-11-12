@@ -40,5 +40,7 @@ jobs:
           POLONRLM_BROWSER_TEST_REQUIRED: '1'
       - name: Build
         run: npm run build
+      - name: Audit tool schemas and local probes
+        run: npm run audit:tools
       - name: Check package contents
         run: npm run check:package
