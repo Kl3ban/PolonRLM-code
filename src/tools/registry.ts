@@ -7,15 +7,22 @@ import { redact } from '../core/secrets.js';
 export interface ToolContext { signal: AbortSignal; mode: Mode; sessionId?: string; vision?: boolean; isolated?: boolean; outputLimit?: number; onImage?: (image: ImageAttachment) => void }
 type Entry = { spec: ToolSpec; schema: z.ZodType; run: (args: any, context: ToolContext) => Promise<unknown>; readOnly: boolean; modeMutates?: (args: any) => boolean };
 export interface ToolAvailability { name: string; description: string; parameters?: Record<string, unknown>; available: boolean; reason?: string }
+function stripDefaultRequired(schema: Record<string, unknown>): void {
+  const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties as Record<string, Record<string, unknown>> : {};
+  const required = schema.required;
+  if (Array.isArray(required)) {
+    const kept = required.filter(name => typeof name === 'string' && !(properties[name] && typeof properties[name] === 'object' && 'default' in properties[name]));
+    if (kept.length) schema.required = kept;
+    else delete schema.required;
+  }
+  for (const value of Object.values(properties)) if (value && typeof value === 'object') stripDefaultRequired(value);
+  if (schema.items && typeof schema.items === 'object') stripDefaultRequired(schema.items as Record<string, unknown>);
+  for (const key of ['oneOf', 'anyOf', 'allOf']) if (Array.isArray(schema[key])) for (const item of schema[key] as unknown[]) if (item && typeof item === 'object') stripDefaultRequired(item as Record<string, unknown>);
+}
+
 function toolParameters(schema: z.ZodType): Record<string, unknown> {
   const parameters = z.toJSONSchema(schema, { target: 'draft-7' }) as Record<string, unknown>;
-  const properties = parameters.properties && typeof parameters.properties === 'object' ? parameters.properties as Record<string, unknown> : {};
-  const required = parameters.required;
-  if (Array.isArray(required)) {
-    const kept = required.filter(name => typeof name === 'string' && !(typeof properties[name] === 'object' && properties[name] !== null && 'default' in (properties[name] as Record<string, unknown>)));
-    if (kept.length) parameters.required = kept;
-    else delete parameters.required;
-  }
+  stripDefaultRequired(parameters);
   return parameters;
 }
 

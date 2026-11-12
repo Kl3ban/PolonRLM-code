@@ -1,6 +1,6 @@
 # Tools
 
-Local web tools run on demand: `web_search`, `read_webpage`, `download_to_disk`, and `github_repo_inspector`. They do not use a search API or search key. Setup, schemas, limits, and examples are in [LOCAL-WEB.md](LOCAL-WEB.md).
+Local web tools run on demand: `web_search`, `read_webpage`, `download_to_disk`, and `github_repo_inspector`. They do not use a search API or search key. Setup, schemas, limits, and examples are in [LOCAL-WEB.md](LOCAL-WEB.md). A deterministic schema and probe audit is in [TOOL-AUDIT.md](TOOL-AUDIT.md); run it with `npm run audit:tools`.
 
 Run `/tools` or `/tools <filter>` in the terminal to see the current catalog for the selected mode and permissions. The agent uses `discover_tools` to load additional schemas when needed. If a tool is blocked and the user explicitly wants that action, the model can ask for one-time approval with `request_tool`. The approval prompt shows the exact arguments. Approval runs that call only; a rejected request is not retried.
 

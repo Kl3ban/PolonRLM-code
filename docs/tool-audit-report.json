@@ -1,0 +1,484 @@
+{
+  "date": "2026-11-12T10:43:05.695Z",
+  "summary": {
+    "tools": 68,
+    "schemaPassed": true,
+    "probes": 60,
+    "passed": 60,
+    "failed": 0,
+    "skipped": 27
+  },
+  "schemaProblems": [],
+  "probes": [
+    {
+      "tool": "read_file",
+      "status": "PASS",
+      "durationMs": 3,
+      "bytes": 101
+    },
+    {
+      "tool": "read_files",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 235
+    },
+    {
+      "tool": "list_directory",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 35
+    },
+    {
+      "tool": "search_files",
+      "status": "PASS",
+      "durationMs": 57,
+      "bytes": 82
+    },
+    {
+      "tool": "search_content",
+      "status": "PASS",
+      "durationMs": 84,
+      "bytes": 261
+    },
+    {
+      "tool": "search_batch",
+      "status": "PASS",
+      "durationMs": 59,
+      "bytes": 467
+    },
+    {
+      "tool": "inspect_project",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 70
+    },
+    {
+      "tool": "detect_project_type",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 70
+    },
+    {
+      "tool": "analyze_dependencies",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 70
+    },
+    {
+      "tool": "project_map",
+      "status": "PASS",
+      "durationMs": 73,
+      "bytes": 1049
+    },
+    {
+      "tool": "code_outline",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 132
+    },
+    {
+      "tool": "code_diagnostics",
+      "status": "PASS",
+      "durationMs": 120,
+      "bytes": 2
+    },
+    {
+      "tool": "code_diagnostics_batch",
+      "status": "PASS",
+      "durationMs": 64,
+      "bytes": 43
+    },
+    {
+      "tool": "symbol_definition",
+      "status": "PASS",
+      "durationMs": 72,
+      "bytes": 70
+    },
+    {
+      "tool": "symbol_hover",
+      "status": "PASS",
+      "durationMs": 76,
+      "bytes": 72
+    },
+    {
+      "tool": "symbol_references",
+      "status": "PASS",
+      "durationMs": 82,
+      "bytes": 139
+    },
+    {
+      "tool": "rename_symbol",
+      "status": "PASS",
+      "durationMs": 64,
+      "bytes": 570
+    },
+    {
+      "tool": "ast_search",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 177
+    },
+    {
+      "tool": "ast_edit",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 11
+    },
+    {
+      "tool": "write_file",
+      "status": "PASS",
+      "durationMs": 3,
+      "bytes": 179
+    },
+    {
+      "tool": "edit_file",
+      "status": "PASS",
+      "durationMs": 3,
+      "bytes": 208
+    },
+    {
+      "tool": "apply_patch",
+      "status": "PASS",
+      "durationMs": 3,
+      "bytes": 208
+    },
+    {
+      "tool": "delete_file",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 179
+    },
+    {
+      "tool": "git_status",
+      "status": "PASS",
+      "durationMs": 98,
+      "bytes": 71
+    },
+    {
+      "tool": "git_diff",
+      "status": "PASS",
+      "durationMs": 88,
+      "bytes": 71
+    },
+    {
+      "tool": "git_log",
+      "status": "PASS",
+      "durationMs": 81,
+      "bytes": 112
+    },
+    {
+      "tool": "git_show",
+      "status": "PASS",
+      "durationMs": 118,
+      "bytes": 959
+    },
+    {
+      "tool": "git_blame",
+      "status": "PASS",
+      "durationMs": 119,
+      "bytes": 253
+    },
+    {
+      "tool": "execute_command",
+      "status": "PASS",
+      "durationMs": 1105,
+      "bytes": 179
+    },
+    {
+      "tool": "git_commit",
+      "status": "PASS",
+      "durationMs": 159,
+      "bytes": 171
+    },
+    {
+      "tool": "read_document",
+      "status": "PASS",
+      "durationMs": 3,
+      "bytes": 16
+    },
+    {
+      "tool": "plan_update",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 41
+    },
+    {
+      "tool": "plan_status",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 41
+    },
+    {
+      "tool": "execute_command",
+      "status": "PASS",
+      "durationMs": 945,
+      "bytes": 73
+    },
+    {
+      "tool": "execute_powershell",
+      "status": "PASS",
+      "durationMs": 1458,
+      "bytes": 73
+    },
+    {
+      "tool": "run_tests",
+      "status": "PASS",
+      "durationMs": 1035,
+      "bytes": 71
+    },
+    {
+      "tool": "execute_python",
+      "status": "PASS",
+      "durationMs": 327,
+      "bytes": 73
+    },
+    {
+      "tool": "install_dependencies",
+      "status": "PASS",
+      "durationMs": 716,
+      "bytes": 71
+    },
+    {
+      "tool": "inspect_errors",
+      "status": "PASS",
+      "durationMs": 767,
+      "bytes": 82
+    },
+    {
+      "tool": "inspect_process",
+      "status": "PASS",
+      "durationMs": 192,
+      "bytes": 10218
+    },
+    {
+      "tool": "process_list",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 2
+    },
+    {
+      "tool": "process_start",
+      "status": "PASS",
+      "durationMs": 11,
+      "bytes": 80
+    },
+    {
+      "tool": "process_output",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 181
+    },
+    {
+      "tool": "process_wait",
+      "status": "PASS",
+      "durationMs": 751,
+      "bytes": 91
+    },
+    {
+      "tool": "process_stop",
+      "status": "PASS",
+      "durationMs": 27,
+      "bytes": 219
+    },
+    {
+      "tool": "process_start",
+      "status": "PASS",
+      "durationMs": 12,
+      "bytes": 79
+    },
+    {
+      "tool": "process_input",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 69
+    },
+    {
+      "tool": "process_wait",
+      "status": "PASS",
+      "durationMs": 719,
+      "bytes": 98
+    },
+    {
+      "tool": "process_stop",
+      "status": "PASS",
+      "durationMs": 21,
+      "bytes": 297
+    },
+    {
+      "tool": "checkpoint_create",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 86
+    },
+    {
+      "tool": "checkpoint_list",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 177
+    },
+    {
+      "tool": "checkpoint_diff",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 410
+    },
+    {
+      "tool": "checkpoint_drop",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 19
+    },
+    {
+      "tool": "transaction_begin",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 60
+    },
+    {
+      "tool": "transaction_status",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 78
+    },
+    {
+      "tool": "write_file",
+      "status": "PASS",
+      "durationMs": 3,
+      "bytes": 190
+    },
+    {
+      "tool": "transaction_commit",
+      "status": "PASS",
+      "durationMs": 0,
+      "bytes": 98
+    },
+    {
+      "tool": "transaction_begin",
+      "status": "PASS",
+      "durationMs": 1,
+      "bytes": 69
+    },
+    {
+      "tool": "write_file",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 189
+    },
+    {
+      "tool": "transaction_rollback",
+      "status": "PASS",
+      "durationMs": 2,
+      "bytes": 35
+    }
+  ],
+  "skipped": [
+    {
+      "tool": "browser",
+      "reason": "requires a real browser and is covered by tests/browser-*.test.ts"
+    },
+    {
+      "tool": "browser_automation",
+      "reason": "requires a real browser"
+    },
+    {
+      "tool": "browser_inspect",
+      "reason": "requires a real browser"
+    },
+    {
+      "tool": "browser_configure",
+      "reason": "requires a real browser"
+    },
+    {
+      "tool": "browser_sessions",
+      "reason": "requires a real browser"
+    },
+    {
+      "tool": "computer_use",
+      "reason": "native Windows desktop only"
+    },
+    {
+      "tool": "web_search",
+      "reason": "network-dependent; covered by local-web fixtures"
+    },
+    {
+      "tool": "read_webpage",
+      "reason": "network-dependent; covered by web tests"
+    },
+    {
+      "tool": "fetch_webpage",
+      "reason": "network-dependent; covered by web tests"
+    },
+    {
+      "tool": "fetch_documentation",
+      "reason": "network-dependent"
+    },
+    {
+      "tool": "download_to_disk",
+      "reason": "network-dependent"
+    },
+    {
+      "tool": "github_repo_inspector",
+      "reason": "network-dependent"
+    },
+    {
+      "tool": "lsp_request",
+      "reason": "needs an installed language server"
+    },
+    {
+      "tool": "ocr_image",
+      "reason": "needs Tesseract language data"
+    },
+    {
+      "tool": "delegate",
+      "reason": "needs a model and subagent workspace"
+    },
+    {
+      "tool": "agent_resume",
+      "reason": "needs a persisted model run"
+    },
+    {
+      "tool": "agent_message",
+      "reason": "needs a live team"
+    },
+    {
+      "tool": "agent_changes",
+      "reason": "needs a live team"
+    },
+    {
+      "tool": "agent_apply",
+      "reason": "needs a live team"
+    },
+    {
+      "tool": "request_tool",
+      "reason": "needs a model permission flow"
+    },
+    {
+      "tool": "ask_question",
+      "reason": "needs an interactive client"
+    },
+    {
+      "tool": "get_goal",
+      "reason": "needs active goal state"
+    },
+    {
+      "tool": "update_goal",
+      "reason": "needs active goal state"
+    },
+    {
+      "tool": "search_history",
+      "reason": "needs archived history"
+    },
+    {
+      "tool": "update_plan",
+      "reason": "alias covered by plan_update"
+    },
+    {
+      "tool": "transaction_commit",
+      "reason": "mutating transaction path covered by tests"
+    },
+    {
+      "tool": "checkpoint_restore",
+      "reason": "mutating restore path covered by tests"
+    }
+  ]
+}

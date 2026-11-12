@@ -48,6 +48,10 @@ test('tool schemas do not require parameters that have defaults', async t => {
   assert.deepEqual(readFile.required, ['path']);
   const runTests = f.registry.getSpec('run_tests')!.parameters as { required?: string[] };
   assert.deepEqual(runTests.required, ['command']);
+  const readFiles = f.registry.getSpec('read_files')!.parameters as { properties?: { files?: { items?: { required?: string[] } } } };
+  assert.deepEqual(readFiles.properties?.files?.items?.required, ['path']);
+  const searchBatch = f.registry.getSpec('search_batch')!.parameters as { properties?: { queries?: { items?: { required?: string[] } } } };
+  assert.deepEqual(searchBatch.properties?.queries?.items?.required, ['pattern']);
 });
 
 test('required sandbox mode fails closed for unisolated file writes and browser actions', async t => {
