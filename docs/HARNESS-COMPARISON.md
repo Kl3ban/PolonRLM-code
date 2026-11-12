@@ -36,20 +36,6 @@ The live comparison uses the same Groq model (`openai/gpt-oss-120b`), the same t
 
 Live results are stored in `docs/harness-live-report.json` (ignored by Git because it is machine-local evidence). The report records task, harness, pass/fail, duration, and token usage where the harness exposes it.
 
-### Same-model result — 2026-11-12
-
-Model: `nvidia/nemotron-3.5-lightning:free` via OpenRouter for both harnesses. Same prompt, starter workspace and hidden grader. One run per task. Details: [TOOL-BENCHMARK.md](TOOL-BENCHMARK.md).
-
-| Task | PolonRLM | OpenCode |
-| --- | --- | --- |
-| `retry-status` | PASS — 21.3 s | FAIL — 77.4 s; grader 1/2 |
-| `group-by` | PASS — 39.4 s | PASS — 21.6 s |
-| `merge-intervals` | PASS — 51.0 s | PASS — 66.2 s |
-| Score | **3/3** | **2/3** |
-| Total wall time | 111.7 s | 165.2 s |
-
-This is a small, single-run smoke test with a free model, not evidence of parity or superiority. Raw results: [`harness-shared-report.json`](harness-shared-report.json).
-
 ### Historical live result — 2026-11-11
 
 Model: `openai/gpt-oss-20b` via Groq, `reasoning_effort=low`. One run per harness/task, same prompt and starter, hidden grader. This is a smoke test, not a ranking. The 120B run earlier hit Groq's 200,000 TPD limit; the 20B model has a separate allowance.

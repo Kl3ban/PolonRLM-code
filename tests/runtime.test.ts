@@ -371,7 +371,6 @@ test('empty model replies retry with a recovery instruction and retain usage', a
     calls++;
     if (calls === 1) return reply('');
     assert.match(messages.at(-1)?.content ?? '', /previous response was empty/i);
-    assert.equal(options?.toolChoice, 'required');
     return reply('Recovered from empty response.');
   }, {}, 0);
   assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered from empty response.');
@@ -434,16 +433,31 @@ test('a schema-blind call is validated and executed without an extra model retry
   assert.equal(calls, 2);
 });
 
-test('repeated identical read-only calls are short-circuited before they waste more steps', async t => {
+test('repeated identical read-only calls warn once before stopping', async t => {
   let calls = 0;
   const h = await harness(t, async () => reply('', [{ id: `read-${++calls}`, name: 'read_file', arguments: { path: 'sample.txt' } }]), { permissions: 'all' });
   await writeFile(path.join(h.workspace.root, 'sample.txt'), 'stable content');
   const result = await h.runtime.run(h.session, 'Read the file and summarize it.', new AbortController().signal);
   assert.match(result, /repeated the same read/);
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   const toolMessages = h.store.messages(h.session).filter(message => message.role === 'tool' && message.name === 'read_file');
   assert.equal(toolMessages.filter(message => !message.isError).length, 1);
-  assert.equal(toolMessages.filter(message => message.isError).length, 1);
+  assert.equal(toolMessages.filter(message => message.isError).length, 2);
+});
+
+test('a duplicate read warning lets the model make the edit instead of ending the task', async t => {
+  let calls = 0;
+  const h = await harness(t, async () => {
+    calls++;
+    if (calls === 1) return reply('', [{ id: 'read-1', name: 'read_file', arguments: { path: 'sample.txt' } }]);
+    if (calls === 2) return reply('', [{ id: 'read-2', name: 'read_file', arguments: { path: 'sample.txt' } }]);
+    if (calls === 3) return reply('', [{ id: 'edit-1', name: 'edit_file', arguments: { path: 'sample.txt', old: 'stable', replacement: 'updated' } }]);
+    return reply('Updated the file.');
+  }, { permissions: 'all' });
+  await writeFile(path.join(h.workspace.root, 'sample.txt'), 'stable content');
+  assert.equal(await h.runtime.run(h.session, 'Read the file and update it.', new AbortController().signal), 'Updated the file.');
+  assert.equal(await readFile(path.join(h.workspace.root, 'sample.txt'), 'utf8'), 'updated content');
+  assert.equal(calls, 4);
 });
 
 test('read-cycle detection stops A-B-A when no successful state change occurred', async t => {

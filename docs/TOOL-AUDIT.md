@@ -60,24 +60,6 @@ File reads and aliases, batched reads/searches, directory listing, ripgrep searc
 
 Passing local probes do not prove that a remote website, MCP server, browser engine or desktop application is compatible. Those remain external dependencies.
 
-## Cross-harness benchmark
-
-The repository already contains a 50-task coding pack with hidden graders and reference solutions, and [`scripts/compare-harnesses.mjs`](compare-harnesses.mjs) runs the same task prompt and workspace against PolonRLM, OpenCode and Qwen.
-
-The deterministic tool audit is directly comparable across commits and machines. The model-based harness comparison is not reproduced here because the current machine has no shared provider credential: PolonRLM is configured for TeamRouter, while OpenCode has separate stored providers (Nvidia and OpenCode Console). Running those two would compare different models, not harnesses.
-
-Use the same provider and model for a fair run:
-
-```sh
-node scripts/compare-harnesses.mjs \
-  --harnesses polonrlm,opencode \
-  --model <shared-model> \
-  --tasks retry-status,group-by,merge-intervals \
-  --timeout-ms 600000
-```
-
-The script currently expects `GROQ_API_KEY` and an OpenAI-compatible Groq endpoint. A previous run on `openai/gpt-oss-20b` scored PolonRLM 2/3 and OpenCode 3/3; that result predates the browser/context changes and must not be presented as the current benchmark. See [HARNESS-COMPARISON.md](HARNESS-COMPARISON.md).
-
 ## Remaining risk
 
 - Browser and desktop tools depend on external engines, websites and window state.

@@ -163,7 +163,7 @@ export function createRunBudget(): RunBudget {
   return { usage: emptyUsage(), reserved: 0, reservedCost: 0, calls: 0, agents: 0, active: 0, webSearchCalls: 0, roles: new Map() };
 }
 const desktopIntent = /\b(?:computer\s*use|desktop|screen|screenshot|mouse|cursor|click\w*|open app|control (?:the )?computer|task\s*bar|taskbar|pc|komputer\w*|pasek\s+zada\w*|pasku\s+zada\w*|pulpit\w*|ekran\w*|zrzut ekranu|mysz\w*|kurs\w*|klik\w*|sterow\w*|steruj\w*|kontrol\w*|otw[oó]rz (?:aplikacj\w*|okn\w*)|okn\w*|aplikacj\w*|discord\w*|przeglądark\w*)(?=$|[^A-Za-z0-9_])/i;
-const EMPTY_RESPONSE_RECOVERY = 'Your previous response was empty. Continue the task now. If a tool is needed, call it; otherwise give the requested final answer. Do not return reasoning alone.';
+const EMPTY_RESPONSE_RECOVERY = 'Your previous response was empty. Continue the task now. Do not repeat a file read you already completed. If a file change is needed, call edit_file or write_file immediately with the complete corrected content. Otherwise give the requested final answer. Do not return reasoning alone.';
 const taskbarIntent = /\b(?:task\s*bar|taskbar|pasek\s+zada\w*|pasku\s+zada\w*|ikona\w*\s+(?:na\s+)?pasku)(?=$|[^A-Za-z0-9_])/i;
 function auditArguments(name: string, args: Record<string, unknown>): Record<string, unknown> {
   const safe = structuredClone(args);
@@ -602,6 +602,7 @@ ${skills.join('\n')}`;
     const testRunExitCodes: number[] = [];
     let lastSuccessfulReadOnlySignature: string | undefined;
     const successfulReadsWithoutProgress = new Set<string>();
+    let duplicateReadWarnings = 0;
     let stopForRepeatedRead = false;
     let stopForToolCycle = false;
     const factualResearch = research && /czym|what is|informacj|facts|opisz|describe|wyjaśn|explain|summari|podsumuj/i.test(task);
@@ -767,7 +768,6 @@ ${skills.join('\n')}`;
             ? [{ ...system, content: `${system.content}\n\nThis model does not support tool calls. You have no tool schemas or tool access for this turn. Answer the question normally. If the user requests an action involving files, the network, or the system, explain the limitation and do not claim it was done.` }, ...input.slice(1)]
             : input;
           let retryNumber = 0;
-          let forceToolChoice = false;
           while (true) {
             let emittedThisAttempt = false;
             let receivedTextThisAttempt = '';
@@ -783,7 +783,7 @@ ${skills.join('\n')}`;
                 receivedTextThisAttempt += text;
                 const safe = stream.push(text);
                 if (!depth && safe && !holdUnverified) { visiblePartial += safe; emittedThisAttempt = true; this.emit({ type: 'text', text: safe, model: respondingModel }); }
-              }, requestSignal, forceToolChoice && specs.length ? { toolChoice: 'required' } : undefined);
+              }, requestSignal);
               if (candidate.toolCalling === false && reply.toolCalls.length) throw new Error(`Model ${candidate.model} is marked as not supporting tools, but returned a tool call. No tool was executed.`);
               const tail = stream.flush();
               if (!depth && tail && !holdUnverified) { visiblePartial += tail; emittedThisAttempt = true; this.emit({ type: 'text', text: tail, model: respondingModel }); }
@@ -798,7 +798,6 @@ ${skills.join('\n')}`;
                 this.emit({ type: 'usage', usage: { ...budget.usage } });
                 budget.reserved -= reserve; budget.reservedCost -= reserveCost; roleUsage.reservedTokens -= reserve; roleUsage.reservedCost -= reserveCost; reservationCount--;
                 const error = new Error('The provider returned an empty response.'); error.name = 'EmptyProviderResponseError';
-                forceToolChoice = true;
                 if (!messages.some(message => message.content === EMPTY_RESPONSE_RECOVERY)) {
                   messages.push({ role: 'user', content: EMPTY_RESPONSE_RECOVERY });
                   input.splice(0, input.length, system, ...(recalled.message ? [recalled.message] : []), ...messages);
@@ -967,6 +966,12 @@ ${skills.join('\n')}`;
           const trackForLoopDetection = repeatableRead && !TRANSIENT_READ_TOOLS.has(call.name);
           if (repeatableRead && (readSignatureValue === lastSuccessfulReadOnlySignature || trackForLoopDetection && successfulReadsWithoutProgress.has(readSignatureValue))) {
             duplicateReadOnly = true;
+            const immediate = readSignatureValue === lastSuccessfulReadOnlySignature;
+            const recoverable = immediate && call.name === 'read_file' && duplicateReadWarnings === 0;
+            if (recoverable) {
+              duplicateReadWarnings++;
+              throw new Error('You already read this exact data and no successful state-changing tool has run since. Use the previous result now; do not repeat this read. Another duplicate read will stop the task.');
+            }
             stopForRepeatedRead = true;
             throw new Error('Stopping a repeated call that would not change state. This read already returned a result and no successful state-changing tool has run since; use the previous result or take a different action.');
           }
@@ -1100,6 +1105,7 @@ ${skills.join('\n')}`;
               if (!TRANSIENT_READ_TOOLS.has(call.name)) rememberSuccessfulRead(successfulReadsWithoutProgress, lastSuccessfulReadOnlySignature);
             } else {
               successfulReadsWithoutProgress.clear();
+              duplicateReadWarnings = 0;
             }
           }
         } catch (error: any) {
