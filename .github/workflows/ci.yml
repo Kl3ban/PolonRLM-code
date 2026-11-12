@@ -32,8 +32,12 @@ jobs:
         run: python scripts/setup_local_web.py
       - name: Type check
         run: npm run check
+      - name: Install headless browser for deterministic browser tests
+        run: npx playwright install --with-deps chromium --only-shell
       - name: Run tests
         run: npm test
+        env:
+          POLONRLM_BROWSER_TEST_REQUIRED: '1'
       - name: Build
         run: npm run build
       - name: Check package contents

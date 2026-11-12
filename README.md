@@ -98,6 +98,8 @@ Web search uses public search pages and does not need a search API key. Its loca
 
 Browser automation runs headless and does not use your regular browser profile or cookies. Playwright browser builds are downloaded only when first needed. Choose the browser in `/settings`.
 
+The [browser workbench](docs/BROWSER.md) adds compact page snapshots, exact element references, DOM and CSS inspection, iframe support, network diagnostics and page timings. A text-only model can use these tools. Viewport, timeouts, result sizes and resource blocking are configurable.
+
 ## Limits and permissions
 
 Token, cost, call, context, agent, process, and tool-output limits start unlimited in PolonRLM. Set limits in `/settings` or `/budget` if you want them. Your provider still applies its own limits and billing.
@@ -128,6 +130,7 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [ACP adapter](docs/ACP.md)
 - [OS command sandbox](docs/SANDBOX.md)
 - [Local web search](docs/LOCAL-WEB.md)
+- [Browser workbench](docs/BROWSER.md)
 - [Browser and desktop control](docs/COMPUTER-USE.md)
 - [License](LICENSE)
 

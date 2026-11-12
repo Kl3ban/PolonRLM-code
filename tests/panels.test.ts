@@ -91,7 +91,7 @@ test('settings panel edits infinity and per-tool rules without dumping configura
 
 test('every settings-panel field can be changed through its actual keyboard controls', { timeout: 20000 }, async t => {
   const values = { ...defaultSettings() } as Record<string, any>;
-  const jsonFields = new Set(['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
+  const jsonFields = new Set(['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
   for (const key of jsonFields) values[key] = JSON.stringify(values[key]);
   const changes: [string, string | number][] = [];
   const view = show(SettingsPanel, {
@@ -104,6 +104,7 @@ test('every settings-panel field can be changed through its actual keyboard cont
   t.after(view.cleanup);
 
   const textValues: Record<string, string> = {
+    browserOptions: '{"viewportWidth":1440}',
     verificationCommands: '["npm test"]',
     sandboxNetworkDomains: '["registry.npmjs.org"]',
     sandboxDockerImage: 'node:24-bookworm-slim',

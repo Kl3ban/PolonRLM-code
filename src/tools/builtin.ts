@@ -11,6 +11,7 @@ import { registerNetworkTools } from './network.js';
 import { registerComputerTool } from './computer.js';
 import { registerAdvancedTools } from './advanced.js';
 import { registerBrowserSessionTools } from './browser-session.js';
+import { defaultBrowserOptions } from '../core/browser-config.js';
 import { subprocessEnvironment } from '../core/secrets.js';
 import { resolvePythonCommand } from './python-runtime.js';
 import type { SandboxExecutor, PreparedCommand } from './sandbox.js';
@@ -28,7 +29,7 @@ export function withShellLock<T>(work: () => Promise<T>): Promise<T> {
 export function registerBuiltins(registry: ToolRegistry, workspace: Workspace, settings: Settings, options: { computer?: boolean; sandbox?: SandboxExecutor; store?: SessionStore } = {}): void {
   if (options.computer !== false) registerComputerTool(registry, workspace, undefined, settings.sandboxMode);
   registerAdvancedTools(registry, workspace, () => settings.maxProcesses, () => settings.timeoutMs, () => settings.toolOutputLimit, options.sandbox, options.store);
-  registerBrowserSessionTools(registry, workspace, () => settings.browserEngine);
+  registerBrowserSessionTools(registry, workspace, () => settings.browserEngine, {}, () => settings.browserOptions ?? defaultBrowserOptions());
   const file = z.object({ path: z.string().min(1) });
   const requireFileSandbox = (tool: string): void => {
     if (settings.sandboxMode === 'required') throw new Error(`${tool} is not covered by the OS command sandbox. Required mode refuses unisolated file writes; use sandboxMode auto with workspace permissions or disable required mode for this edit.`);

@@ -739,6 +739,25 @@ test('compact optional-tool guidance retains discovery cues and loads an exact s
   assert.equal(calls, 2);
 });
 
+test('browser inspector schema is loaded on demand without adding it to ordinary model requests', async t => {
+  let calls = 0;
+  const h = await harness(t, async (_messages, specs) => {
+    calls++;
+    if (calls === 1) {
+      assert.ok(!specs.some(spec => spec.name === 'browser_inspect'));
+      return reply('', [{ id: 'inspect-schema', name: 'discover_tools', arguments: { query: 'browser_inspect' } }]);
+    }
+    const inspector = specs.find(spec => spec.name === 'browser_inspect');
+    assert.ok(inspector);
+    const properties = inspector.parameters.properties as Record<string, unknown>;
+    for (const name of ['ref', 'snapshotId', 'selector', 'frameId', 'x', 'y', 'styles', 'matchedRules', 'probe']) assert.ok(properties[name], name);
+    assert.deepEqual(inspector.parameters.required, ['sessionId']);
+    return reply('The browser inspector schema is ready.');
+  });
+  await h.runtime.run(h.session, 'Inspect the browser_inspect tool schema without launching a browser.', new AbortController().signal);
+  assert.equal(calls, 2);
+});
+
 test('required sandbox mode refuses MCP tools instead of running them unisolated', async t => {
   let calls = 0, executions = 0;
   const tool = { name: 'mcp_required_probe', description: '[MCP probe] External call.', parameters: { type: 'object', properties: {} } };

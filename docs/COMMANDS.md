@@ -101,6 +101,7 @@ With no configured verification commands, `/verify` detects standard scripts in 
 | `/context` | Shows a local token estimate, the app input cap, and known model context. |
 | `/cost` | Shows token use and known provider costs. Unknown prices stay marked unknown. |
 | `/settings browserEngine auto` | Lets PolonRLM choose an available browser. |
+| `/settings browserOptions {"viewportWidth":1440,"timeoutMs":15000}` | Changes defaults for new browser sessions. More options and examples are in [BROWSER.md](BROWSER.md). |
 | `/settings browserEngine firefox` | Selects Playwright Firefox. It downloads on first use if needed. |
 | `PolonRLM setup web` | Prepares the local Python web search helper. |
 

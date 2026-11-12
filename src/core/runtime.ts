@@ -75,7 +75,7 @@ const PARALLEL_READ_TOOLS = new Set([
   'inspect_project', 'detect_project_type', 'analyze_dependencies',
   'git_status', 'git_diff', 'git_log', 'git_show', 'git_blame',
 ]);
-const TRANSIENT_READ_TOOLS = new Set(['browser', 'browser_sessions', 'browser_automation', 'process_list', 'process_output', 'process_wait', 'inspect_process']);
+const TRANSIENT_READ_TOOLS = new Set(['browser', 'browser_sessions', 'browser_inspect', 'browser_configure', 'browser_automation', 'process_list', 'process_output', 'process_wait', 'inspect_process']);
 function rememberSuccessfulRead(reads: Set<string>, signature: string): void {
   reads.delete(signature);
   reads.add(signature);
@@ -576,7 +576,7 @@ ${skills.join('\n')}`;
     if (research) {
       ['web_search', 'read_webpage', 'github_repo_inspector'].forEach(name => enabled.add(name));
       if (!/kursor|mysz|cursor|mouse|pulpit|desktop|klik/i.test(task)) {
-        ['browser', 'browser_sessions', 'browser_automation', 'computer_use'].forEach(name => { enabled.delete(name); if (browserRestrictedForTask) taskRestrictedTools.add(name); });
+        ['browser', 'browser_sessions', 'browser_inspect', 'browser_configure', 'browser_automation', 'computer_use'].forEach(name => { enabled.delete(name); if (browserRestrictedForTask) taskRestrictedTools.add(name); });
       }
     }
     if (browserRestrictedForTask) instructions += '\nFor this task, use web_search and read_webpage for ordinary research. Interactive browser tools are unavailable unless the user explicitly asks to use a browser. Do not try to re-enable them with discover_tools.';

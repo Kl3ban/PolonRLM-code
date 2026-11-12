@@ -313,7 +313,7 @@ export class Controller implements UIController {
   }
   readSettings(): ReturnType<NonNullable<UIController['readSettings']>> {
     const settings = this.config.settings;
-    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, ['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : settings[field.key as keyof Settings] as string | number])),
+    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, ['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'browserOptions' | 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : settings[field.key as keyof Settings] as string | number])),
       tools: this.registry.discovery(settings.mode).map(tool => ({ name: tool.name, description: tool.description, available: tool.available, policy: settings.toolPermissions[tool.name] ?? 'default' })) };
   }
   async updateSetting(name: string, value: string | number): Promise<void> {
@@ -330,11 +330,11 @@ export class Controller implements UIController {
       if (!SETTINGS_FIELDS.some(field => field.key === name)) throw new Error('Unknown setting.');
       const key = name as keyof Settings;
       let parsedInput: unknown = value;
-      if (['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) && typeof value === 'string') {
+      if (['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) && typeof value === 'string') {
         try { parsedInput = JSON.parse(value); }
         catch { throw new Error(`${name} must be valid JSON.`); }
       }
-      const parsedValue = ['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) ? parsedInput : name === 'tokenBudget' ? parseTokenBudget(value)
+      const parsedValue = ['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) ? parsedInput : name === 'tokenBudget' ? parseTokenBudget(value)
         : name === 'repeatFailureThreshold' ? parseUnlimitedLimit(value, 0)
         : name === 'verificationRepairAttempts' ? Number(value)
         : SETTINGS_FIELDS.some(field => field.key === name && field.section === 'limits') ? parseUnlimitedLimit(value, name === 'maxDepth' ? -1 : 0) : value;
@@ -995,7 +995,7 @@ export class Controller implements UIController {
       } break;
       case '/setting':
       case '/settings': {
-        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : ['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : String(settings[field.key as keyof Settings])}`), `Subagent tool profiles: ${JSON.stringify(settings.agentToolProfiles)}`, '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/settings sandboxMode auto|required|off controls isolation for shell, Python, background commands and LSP.', '/settings sandboxNetworkDomains ["registry.npmjs.org","github.com"] allows network access from sandboxed commands.', '/settings agentToolProfiles {"reviewer":["read_file","search_files"]} sets a strict subagent allowlist; unset roles inherit the normal catalog.', '/settings modelRoleBudgets {"coder":{"maxTokens":50000,"maxCost":1,"maxCalls":30}} sets optional role caps; omitted values and 0 are unlimited.', '/permissions manages tool permissions.'].join('\n')); break; }
+        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : ['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'browserOptions' | 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : String(settings[field.key as keyof Settings])}`), `Subagent tool profiles: ${JSON.stringify(settings.agentToolProfiles)}`, '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/settings sandboxMode auto|required|off controls isolation for shell, Python, background commands and LSP.', '/settings sandboxNetworkDomains ["registry.npmjs.org","github.com"] allows network access from sandboxed commands.', '/settings agentToolProfiles {"reviewer":["read_file","search_files"]} sets a strict subagent allowlist; unset roles inherit the normal catalog.', '/settings modelRoleBudgets {"coder":{"maxTokens":50000,"maxCost":1,"maxCalls":30}} sets optional role caps; omitted values and 0 are unlimited.', '/permissions manages tool permissions.'].join('\n')); break; }
         if (args[0].startsWith('provider.')) {
           const field = args[0].slice('provider.'.length);
           if (!['reasoning', 'reasoningSupported', 'reasoningControl', 'reasoningEfforts', 'requestTimeoutMs', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, reasoningControl, reasoningEfforts, requestTimeoutMs, temperature, pricing, and capabilities. Change the model with /model and the URL with /connect.');

@@ -11,7 +11,7 @@ import type { TerminalMouseEvent } from './input-router.js';
 
 const sections = ['General', 'Limits', 'Tools'];
 const policies = [{ value: 'default', label: 'Inherit' }, { value: 'ask', label: 'Ask' }, { value: 'auto', label: 'Auto' }, { value: 'off', label: 'Off' }];
-const JSON_SETTINGS = new Set(['verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
+const JSON_SETTINGS = new Set(['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
 type Row = SettingField & { value: string | number };
 
 export function SettingsPanel({ controller, state, width, rows, close, mouseEvents }: { controller: UIController; state: UIState; width: number; rows: number; close: () => void; mouseEvents?: EventEmitter }): React.JSX.Element {
@@ -88,8 +88,8 @@ export function SettingsPanel({ controller, state, width, rows, close, mouseEven
     <Box gap={2} marginY={1}>{sections.map((name, i) => <Text key={name} color={i === section ? colors.text : colors.faint} bold={i === section}>{i === section ? '● ' : ''}{name}</Text>)}</Box>
     {section === 2 && <Text color={colors.muted}>Search: {query || 'enter a tool name…'} · {entries.length}</Text>}
     {entries.slice(start, start + count).map((row, offset) => <Box key={row.key} ref={node => { const n = start + offset; if (node) rowRefs.current.set(n, node); else rowRefs.current.delete(n); }} height={1} backgroundColor={start + offset === index ? colors.selected : colors.canvas} justifyContent="space-between">
-      <Text color={start + offset === index ? colors.text : colors.muted} wrap="truncate-end">{start + offset === index ? '› ' : '  '}{row.label}</Text>
-      <Text color={colors.text} wrap="truncate-end">{editing && start + offset === index ? <>{draft}<Text inverse> </Text></> : valueLabel(row)}</Text>
+      <Box width="46%" flexShrink={0}><Text color={start + offset === index ? colors.text : colors.muted} wrap="truncate-end">{start + offset === index ? '› ' : '  '}{row.label}</Text></Box>
+      <Box width="54%" flexShrink={1}><Text color={colors.text} wrap="truncate-end">{editing && start + offset === index ? <>{Array.from(draft).slice(-Math.max(8, Math.floor((Math.min(76, width) - 4) * 0.54) - 2)).join('')}<Text inverse> </Text></> : valueLabel(row)}</Text></Box>
     </Box>)}
     {!entries.length && <Text color={colors.muted}>No matching tools.</Text>}
     <Box marginTop={1} minHeight={2}><Text color={colors.muted}>{active?.help ?? ''}</Text></Box>

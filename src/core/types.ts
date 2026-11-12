@@ -1,3 +1,5 @@
+import type { BrowserOptions } from './browser-config.js';
+
 export type Mode = 'PLAN' | 'BUILD' | 'REVIEW';
 export const AGENT_MODEL_ROLES = ['orchestrator', 'planner', 'coder', 'researcher', 'reviewer', 'tester', 'debugger'] as const;
 export type AgentModelRole = typeof AGENT_MODEL_ROLES[number];
@@ -43,6 +45,7 @@ export interface Settings {
   tokenBudget: number; dollarBudget: number; maxAgents: number; maxProcesses: number; maxDepth: number;
   permissions: 'ask' | 'workspace' | 'readonly' | 'all'; toolPermissions: Record<string, 'ask' | 'auto' | 'off'>; allowTools: string[]; denyTools: string[];
   theme: 'dark' | 'light'; toolOutputLimit: number; timeoutMs: number; webSearchMode: 'auto' | 'bing' | 'brave' | 'yahoo'; browserEngine: 'auto' | 'chromium' | 'chrome' | 'edge' | 'brave' | 'firefox';
+  browserOptions?: BrowserOptions;
   verificationCommands: string[]; verificationMode: 'manual' | 'after_changes'; verificationRepairAttempts: number; mcp: Record<string, MCPConfig>;
   agentToolProfiles: Record<string, string[]>;
   modelRoutes: Partial<Record<AgentModelRole, ModelRoute>>;

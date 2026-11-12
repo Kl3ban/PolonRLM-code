@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { AGENT_MODEL_ROLES, type Settings } from './types.js';
 import { PROVIDER_PRESETS } from '../providers/provider.js';
 import { isSecretEnvironmentName } from './secrets.js';
+import { browserOptionsSchema, defaultBrowserOptions } from './browser-config.js';
 
 // Node timers clamp larger delays to 1 ms; zero continues to mean no timeout.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -84,6 +85,7 @@ export const settingsSchema = z.object({
   theme: z.enum(['dark', 'light']), toolOutputLimit: z.number().int().nonnegative().safe(), timeoutMs: z.number().int().nonnegative().max(MAX_TIMER_DELAY_MS),
   webSearchMode: z.preprocess(value => value === 'duckduckgo' ? 'auto' : value, z.enum(['auto', 'bing', 'brave', 'yahoo']).default('auto')),
   browserEngine: z.enum(['auto', 'chromium', 'chrome', 'edge', 'brave', 'firefox']).default('auto'),
+  browserOptions: browserOptionsSchema.default(defaultBrowserOptions),
   verificationCommands: z.array(z.string().trim().min(1)).default([]),
   verificationMode: z.enum(['manual', 'after_changes']).default('after_changes'),
   verificationRepairAttempts: z.number().int().min(0).max(3).default(1),
@@ -107,7 +109,7 @@ export const settingsSchema = z.object({
 export function defaultSettings(): Settings {
   return { configVersion: CURRENT_CONFIG_VERSION, provider: 'openrouter', providers: structuredClone(PROVIDER_PRESETS), fallback: [], mode: 'BUILD', cortex: 1, cortexStrategy: 'adaptive', repeatFailureThreshold: 3,
     maxSteps: 0, maxInputTokens: 0, maxOutputTokens: 0, tokenBudget: 0, dollarBudget: 0,
-    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', verificationCommands: [], verificationMode: 'after_changes', verificationRepairAttempts: 1, mcp: {}, agentToolProfiles: {}, modelRoutes: {}, modelRoleBudgets: {}, plugins: {}, sandboxMode: 'auto', sandboxDockerImage: 'node:24-bookworm-slim', sandboxNetworkDomains: [] };
+    maxAgents: 0, maxProcesses: 0, maxDepth: -1, permissions: 'ask', toolPermissions: {}, allowTools: [], denyTools: [], theme: 'dark', toolOutputLimit: 0, timeoutMs: 0, webSearchMode: 'auto', browserEngine: 'auto', browserOptions: defaultBrowserOptions(), verificationCommands: [], verificationMode: 'after_changes', verificationRepairAttempts: 1, mcp: {}, agentToolProfiles: {}, modelRoutes: {}, modelRoleBudgets: {}, plugins: {}, sandboxMode: 'auto', sandboxDockerImage: 'node:24-bookworm-slim', sandboxNetworkDomains: [] };
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 const previousDefaultLimits: Record<string, number> = { maxSteps: 24, maxInputTokens: 32000, maxOutputTokens: 4096, tokenBudget: 200000, dollarBudget: 5, maxAgents: 3, maxDepth: 1, toolOutputLimit: 10000, timeoutMs: 120000 };
