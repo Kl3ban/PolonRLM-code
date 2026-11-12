@@ -38,7 +38,7 @@ async function runPolonRLM(task, workspace, home) {
   let controller;
   try {
     controller = await Controller.open(workspace, home, {
-      provider: 'groq', providers: { groq: provider }, cortex: 0, maxSteps: 40, maxOutputTokens: 1024,
+      provider: 'groq', providers: { groq: provider }, cortex: 0, maxSteps: 40, maxOutputTokens: 0,
       timeoutMs, permissions: 'workspace', verificationMode: 'manual',
       toolPermissions: { read_file: 'auto', write_file: 'auto', edit_file: 'auto', delete_file: 'auto', apply_patch: 'auto', execute_command: 'auto', run_tests: 'auto', list_directory: 'auto', search_files: 'auto', search_content: 'auto' },
     });

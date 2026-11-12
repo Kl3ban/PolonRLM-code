@@ -66,7 +66,7 @@ try {
           await new SecretVault(home).set(provider, key);
           const controller = await Controller.open(workspace, home, {
             provider, providers: { [provider]: { id: provider, kind: 'compatible', baseURL, model } },
-            cortex: 0, maxSteps: 40, maxOutputTokens: 8192, timeoutMs, permissions: 'workspace', sandboxMode: 'off', verificationMode: 'manual',
+            cortex: 0, maxSteps: 40, maxOutputTokens: 0, timeoutMs, permissions: 'workspace', sandboxMode: 'off', verificationMode: 'manual',
             toolPermissions: { read_file: 'auto', write_file: 'auto', edit_file: 'auto', list_directory: 'auto', search_files: 'auto', search_content: 'auto', execute_command: 'auto', run_tests: 'auto' },
           });
           controller.setApprover(async () => true);
