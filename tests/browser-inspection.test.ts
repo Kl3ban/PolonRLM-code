@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { chromium, type Browser } from 'playwright';
-import { browserOptionsSchema, defaultBrowserOptions } from '../src/core/browser-config.js';
+import { browserOptionsSchema, browserSessionOptionsSchema, defaultBrowserOptions } from '../src/core/browser-config.js';
 import { defaultSettings, settingsSchema } from '../src/core/config.js';
 import { Permissions } from '../src/core/permissions.js';
 import { registerBrowserSessionTools } from '../src/tools/browser-session.js';
@@ -17,6 +17,8 @@ test('browser settings validate defaults, merge partial config, and reject unsaf
   assert.equal(defaultBrowserOptions().maxChars, 6000);
   assert.equal(settingsSchema.parse(defaultSettings()).browserOptions.viewportWidth, 1365);
   assert.equal(browserOptionsSchema.parse({ viewportWidth: 1440 }).timeoutMs, 10000);
+  assert.deepEqual(browserSessionOptionsSchema.parse({ maxChars: 2000 }), { maxChars: 2000 });
+  assert.deepEqual(browserSessionOptionsSchema.parse({}), {});
   for (const options of [{ viewportWidth: 20 }, { locale: 'bad_locale' }, { timezoneId: 'Invalid/Zone' }, { timeoutMs: 0 }, { blockedResources: ['script'] }, { blockedResources: ['image', 'image'] }, { executablePath: 'custom.exe' }]) assert.equal(browserOptionsSchema.safeParse(options).success, false);
 });
 
@@ -135,6 +137,9 @@ test('real headless browser supports compact snapshots, DevTools inspection and 
   await t.test('configuration applies and reloads invalidate old refs even on identical pages', async () => {
     const config = JSON.parse(await registry.execute('browser_configure', { sessionId, options: { viewportWidth: 900, viewportHeight: 700, blockedResources: ['image', 'media'], maxChars: 2000 } }, context));
     assert.equal(config.options.viewportWidth, 900);
+    const patch = JSON.parse(await registry.execute('browser_configure', { sessionId, options: { maxChars: 1800 } }, context));
+    assert.equal(patch.options.viewportWidth, 900, 'partial changes preserve previous session options');
+    assert.deepEqual(patch.options.blockedResources, ['image', 'media']);
     assert.equal((await inspect({ view: 'performance' })).data.viewport.width, 900);
     const tab = JSON.parse(await call('new_tab', { url: base }));
     assert.equal((await inspect({ view: 'performance' })).data.viewport.width, 900, 'new tabs inherit session overrides');

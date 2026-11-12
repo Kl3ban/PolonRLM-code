@@ -15,5 +15,16 @@ export const browserOptionsSchema = z.object({
 }).strict();
 
 export type BrowserOptions = z.infer<typeof browserOptionsSchema>;
-export const browserSessionOptionsSchema = browserOptionsSchema.pick({ viewportWidth: true, viewportHeight: true, colorScheme: true, timeoutMs: true, navigationTimeoutMs: true, snapshotElements: true, maxChars: true, blockedResources: true }).partial();
+// Zod applies nested defaults even inside optional fields. Session patches must
+// omit untouched keys instead of resetting them to launch defaults.
+export const browserSessionOptionsSchema = z.object({
+  viewportWidth: browserOptionsSchema.shape.viewportWidth.removeDefault().optional(),
+  viewportHeight: browserOptionsSchema.shape.viewportHeight.removeDefault().optional(),
+  colorScheme: browserOptionsSchema.shape.colorScheme.removeDefault().optional(),
+  timeoutMs: browserOptionsSchema.shape.timeoutMs.removeDefault().optional(),
+  navigationTimeoutMs: browserOptionsSchema.shape.navigationTimeoutMs.removeDefault().optional(),
+  snapshotElements: browserOptionsSchema.shape.snapshotElements.removeDefault().optional(),
+  maxChars: browserOptionsSchema.shape.maxChars.removeDefault().optional(),
+  blockedResources: browserOptionsSchema.shape.blockedResources.removeDefault().optional(),
+}).strict();
 export const defaultBrowserOptions = (): BrowserOptions => browserOptionsSchema.parse({});
