@@ -130,6 +130,7 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [Tools](docs/TOOLS.md)
 - [Tool review and remaining gaps](docs/TOOL-REVIEW.md)
 - [Deterministic tool audit](docs/TOOL-AUDIT.md)
+- [Tool benchmark vs OpenCode](docs/TOOL-BENCHMARK.md)
 - [Plugin SDK](docs/PLUGIN-SDK.md)
 - [SDK](docs/SDK.md)
 - [Agent server](docs/AGENT-SERVER.md)

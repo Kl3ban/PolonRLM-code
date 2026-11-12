@@ -1,5 +1,5 @@
 {
-  "date": "2026-11-12T10:43:05.695Z",
+  "date": "2026-11-12T10:55:42.108Z",
   "summary": {
     "tools": 68,
     "schemaPassed": true,
@@ -13,7 +13,7 @@
     {
       "tool": "read_file",
       "status": "PASS",
-      "durationMs": 3,
+      "durationMs": 4,
       "bytes": 101
     },
     {
@@ -25,25 +25,25 @@
     {
       "tool": "list_directory",
       "status": "PASS",
-      "durationMs": 0,
+      "durationMs": 1,
       "bytes": 35
     },
     {
       "tool": "search_files",
       "status": "PASS",
-      "durationMs": 57,
+      "durationMs": 59,
       "bytes": 82
     },
     {
       "tool": "search_content",
       "status": "PASS",
-      "durationMs": 84,
+      "durationMs": 56,
       "bytes": 261
     },
     {
       "tool": "search_batch",
       "status": "PASS",
-      "durationMs": 59,
+      "durationMs": 61,
       "bytes": 467
     },
     {
@@ -67,7 +67,7 @@
     {
       "tool": "project_map",
       "status": "PASS",
-      "durationMs": 73,
+      "durationMs": 71,
       "bytes": 1049
     },
     {
@@ -79,7 +79,7 @@
     {
       "tool": "code_diagnostics",
       "status": "PASS",
-      "durationMs": 120,
+      "durationMs": 94,
       "bytes": 2
     },
     {
@@ -97,19 +97,19 @@
     {
       "tool": "symbol_hover",
       "status": "PASS",
-      "durationMs": 76,
+      "durationMs": 72,
       "bytes": 72
     },
     {
       "tool": "symbol_references",
       "status": "PASS",
-      "durationMs": 82,
+      "durationMs": 68,
       "bytes": 139
     },
     {
       "tool": "rename_symbol",
       "status": "PASS",
-      "durationMs": 64,
+      "durationMs": 65,
       "bytes": 570
     },
     {
@@ -139,7 +139,7 @@
     {
       "tool": "apply_patch",
       "status": "PASS",
-      "durationMs": 3,
+      "durationMs": 4,
       "bytes": 208
     },
     {
@@ -151,13 +151,13 @@
     {
       "tool": "git_status",
       "status": "PASS",
-      "durationMs": 98,
+      "durationMs": 83,
       "bytes": 71
     },
     {
       "tool": "git_diff",
       "status": "PASS",
-      "durationMs": 88,
+      "durationMs": 81,
       "bytes": 71
     },
     {
@@ -169,31 +169,31 @@
     {
       "tool": "git_show",
       "status": "PASS",
-      "durationMs": 118,
+      "durationMs": 83,
       "bytes": 959
     },
     {
       "tool": "git_blame",
       "status": "PASS",
-      "durationMs": 119,
+      "durationMs": 83,
       "bytes": 253
     },
     {
       "tool": "execute_command",
       "status": "PASS",
-      "durationMs": 1105,
+      "durationMs": 735,
       "bytes": 179
     },
     {
       "tool": "git_commit",
       "status": "PASS",
-      "durationMs": 159,
+      "durationMs": 140,
       "bytes": 171
     },
     {
       "tool": "read_document",
       "status": "PASS",
-      "durationMs": 3,
+      "durationMs": 2,
       "bytes": 16
     },
     {
@@ -205,50 +205,50 @@
     {
       "tool": "plan_status",
       "status": "PASS",
-      "durationMs": 1,
+      "durationMs": 0,
       "bytes": 41
     },
     {
       "tool": "execute_command",
       "status": "PASS",
-      "durationMs": 945,
+      "durationMs": 662,
       "bytes": 73
     },
     {
       "tool": "execute_powershell",
       "status": "PASS",
-      "durationMs": 1458,
+      "durationMs": 987,
       "bytes": 73
     },
     {
       "tool": "run_tests",
       "status": "PASS",
-      "durationMs": 1035,
+      "durationMs": 728,
       "bytes": 71
     },
     {
       "tool": "execute_python",
       "status": "PASS",
-      "durationMs": 327,
+      "durationMs": 303,
       "bytes": 73
     },
     {
       "tool": "install_dependencies",
       "status": "PASS",
-      "durationMs": 716,
+      "durationMs": 666,
       "bytes": 71
     },
     {
       "tool": "inspect_errors",
       "status": "PASS",
-      "durationMs": 767,
+      "durationMs": 674,
       "bytes": 82
     },
     {
       "tool": "inspect_process",
       "status": "PASS",
-      "durationMs": 192,
-      "bytes": 10218
+      "durationMs": 191,
+      "bytes": 10281
     },
     {
       "tool": "process_list",
@@ -259,49 +259,49 @@
     {
       "tool": "process_start",
       "status": "PASS",
-      "durationMs": 11,
+      "durationMs": 10,
       "bytes": 80
     },
     {
       "tool": "process_output",
       "status": "PASS",
-      "durationMs": 1,
+      "durationMs": 0,
       "bytes": 181
     },
     {
       "tool": "process_wait",
       "status": "PASS",
-      "durationMs": 751,
+      "durationMs": 650,
       "bytes": 91
     },
     {
       "tool": "process_stop",
       "status": "PASS",
-      "durationMs": 27,
+      "durationMs": 19,
       "bytes": 219
     },
     {
       "tool": "process_start",
       "status": "PASS",
-      "durationMs": 12,
+      "durationMs": 11,
       "bytes": 79
     },
     {
       "tool": "process_input",
       "status": "PASS",
-      "durationMs": 2,
+      "durationMs": 1,
       "bytes": 69
     },
     {
       "tool": "process_wait",
       "status": "PASS",
-      "durationMs": 719,
+      "durationMs": 664,
       "bytes": 98
     },
     {
       "tool": "process_stop",
       "status": "PASS",
-      "durationMs": 21,
+      "durationMs": 19,
       "bytes": 297
     },
     {
@@ -313,7 +313,7 @@
     {
       "tool": "checkpoint_list",
       "status": "PASS",
-      "durationMs": 0,
+      "durationMs": 1,
       "bytes": 177
     },
     {
@@ -331,7 +331,7 @@
     {
       "tool": "transaction_begin",
       "status": "PASS",
-      "durationMs": 0,
+      "durationMs": 1,
       "bytes": 60
     },
     {
@@ -343,25 +343,25 @@
     {
       "tool": "write_file",
       "status": "PASS",
-      "durationMs": 3,
+      "durationMs": 4,
       "bytes": 190
     },
     {
       "tool": "transaction_commit",
       "status": "PASS",
-      "durationMs": 0,
+      "durationMs": 1,
       "bytes": 98
     },
     {
       "tool": "transaction_begin",
       "status": "PASS",
-      "durationMs": 1,
+      "durationMs": 0,
       "bytes": 69
     },
     {
       "tool": "write_file",
       "status": "PASS",
-      "durationMs": 2,
+      "durationMs": 3,
       "bytes": 189
     },
     {

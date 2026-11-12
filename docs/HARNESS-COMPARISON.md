@@ -36,7 +36,21 @@ The live comparison uses the same Groq model (`openai/gpt-oss-120b`), the same t
 
 Live results are stored in `docs/harness-live-report.json` (ignored by Git because it is machine-local evidence). The report records task, harness, pass/fail, duration, and token usage where the harness exposes it.
 
-### Live result — 2026-11-11
+### Same-model result — 2026-11-12
+
+Model: `teamorouter/gpt-6.1-sol` for both harnesses. Same prompt, starter workspace and hidden grader. One run per task. Details: [TOOL-BENCHMARK.md](TOOL-BENCHMARK.md).
+
+| Task | PolonRLM | OpenCode |
+| --- | --- | --- |
+| `retry-status` | PASS — 22.5 s | PASS — 20.7 s |
+| `group-by` | PASS — 26.0 s | PASS — 21.8 s |
+| `merge-intervals` | PASS — 29.6 s | PASS — 32.2 s |
+| Score | **3/3** | **3/3** |
+| Total wall time | 78.0 s | 74.8 s |
+
+This is a small, single-run smoke test, not evidence of parity or superiority. Raw results: [`harness-shared-report.json`](harness-shared-report.json).
+
+### Historical live result — 2026-11-11
 
 Model: `openai/gpt-oss-20b` via Groq, `reasoning_effort=low`. One run per harness/task, same prompt and starter, hidden grader. This is a smoke test, not a ranking. The 120B run earlier hit Groq's 200,000 TPD limit; the 20B model has a separate allowance.
 
@@ -57,9 +71,9 @@ Qwen Code 0.27.2 was installed in a temporary prefix. A text-only probe through 
 1. **Exact subagent session restore**: PolonRLM persists a bounded transcript and can resume with it, but it does not restore the deleted worktree or unapplied diff. Qwen Code retains background-agent state and can continue completed agents; OpenCode has session/agent infrastructure.
 2. **Background agent notifications**: Qwen Code can run named agents in the background and deliver completion notifications. PolonRLM subagents are synchronous within a task.
 3. **Formatters, references, snapshots, policies**: OpenCode documents these as first-class configuration surfaces. PolonRLM has checkpoints/recovery but not a formatter pipeline or reference index.
-4. **SDK/daemon/ACP/GUI**: Qwen Code, OpenCode and DSH expose more product surfaces (SDK, daemon, ACP, web/desktop) than PolonRLM's terminal-first CLI.
-5. **Plugin tools**: DSH and OpenCode allow plugins to contribute tools and UI. PolonRLM's plugin SDK currently provides bounded lifecycle hooks, not tool registration.
-6. **Sandbox provisioning and coverage**: PolonRLM's OS sandbox is conditional and does not cover MCP, browser, desktop or plugins. Codex/Qwen/OpenCode document broader sandbox integration. On this Windows machine SRT is not provisioned, so host fallback is the current behaviour.
+4. **Product surfaces**: Qwen Code and OpenCode expose more ready-made product integrations (GUI/IDE/daemon). PolonRLM now has a typed SDK, HTTP/SSE server and ACP adapter, but no bundled GUI and no ACP permission-rich load/mode surface.
+5. **Plugin tools**: PolonRLM now registers plugin tools and runs plugin activation, hooks and tools in a host process; it still lacks a plugin UI extension surface.
+6. **Sandbox provisioning and coverage**: SRT is installed on this machine but cannot launch from the mapped `C:` workspace; Docker is unavailable because the host's Workstation/SMB services are disabled. `required` mode therefore fails closed for unisolated browser, desktop, MCP and file actions, and host fallback remains the behaviour in `auto`.
 7. **Notebook and media breadth**: Qwen Code documents notebook editing, PDF/media handling and computer use. PolonRLM has text/PDF/DOCX/XLSX and images, not notebook editing or audio/video.
 8. **Code index**: PolonRLM caps source indexing and uses best-effort non-JS parsers. It does not have BM25/vector search or monorepo-sharded indexes.
 9. **Benchmark scale**: PolonRLM now has a larger local pack, but it is not a public SWE-bench-style comparison and does not prove parity with any harness.

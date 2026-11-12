@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-12T10:52:01.753Z",
+  "provider": "teamorouter",
+  "model": "gpt-6.1-sol",
+  "opencodeModel": "teamorouter/gpt-6.1-sol",
+  "tasks": [
+    {
+      "id": "retry-status",
+      "title": "Classify retryable HTTP statuses"
+    },
+    {
+      "id": "group-by",
+      "title": "Preserve group order and values"
+    },
+    {
+      "id": "merge-intervals",
+      "title": "Merge overlapping closed intervals"
+    }
+  ],
+  "results": [
+    {
+      "task": "retry-status",
+      "harness": "polonrlm",
+      "status": "PASS",
+      "passed": true,
+      "summary": "2/2 groups passed",
+      "durationMs": 22474
+    },
+    {
+      "task": "retry-status",
+      "harness": "opencode",
+      "status": "PASS",
+      "exitCode": 0,
+      "timedOut": false,
+      "output": " [src/status.js](/C:/Users/ADMINI~1/AppData/Local/Temp/polonrlm-shared-bench-s0lwbw/retry-status-opencode/src/status.js) to retry only 408, 425, 429, and 500–599, while rejecting non-finite values. The named export is unchanged.\n\nVerified with local Node checks covering included statuses, excluded statuses, and non-finite values.\n\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m✱ \u001b[0mGlob \"**/src/status.js\" \u001b[90m1 match\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m→ \u001b[0mRead src/status.js \r\n> build · gpt-6.1-sol\r\n\u001b[0m% \u001b[0mPatch 1 file \r\n> build · gpt-6.1-sol\r\n\u001b[0m$ \u001b[0mnode -e \"import('./src/status.js').then(({shouldRetryStatus}) => { const cases = [[408,true],[425,true],[429,true],[500,true],[599,true],[400,false],[499,false],[600,false],[Infinity,false],[NaN,false],['500',false]]; for (const [value, expected] of cases) { if (shouldRetryStatus(value) !== expected) throw new Error('Unexpected result for ' + value); } console.log('status retry checks passed'); })\"\r\nstatus retry checks passed\r\n> build · gpt-6.1-sol",
+      "passed": true,
+      "summary": "2/2 groups passed",
+      "durationMs": 20693
+    },
+    {
+      "task": "group-by",
+      "harness": "polonrlm",
+      "status": "PASS",
+      "passed": true,
+      "summary": "6/6 checks passed",
+      "durationMs": 25983
+    },
+    {
+      "task": "group-by",
+      "harness": "opencode",
+      "status": "PASS",
+      "exitCode": 0,
+      "timedOut": false,
+      "output": "preserves first-seen key order and input order within each group, and does not mutate the input.\n\nA local Node check passed for ordering, original item references, non-mutation, and `TypeError` validation.\n\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m✱ \u001b[0mGlob \"**/*\" \u001b[90m2 matches\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m→ \u001b[0mRead package.json \r\n\u001b[0m→ \u001b[0mRead src/group.js \r\n> build · gpt-6.1-sol\r\n\u001b[0m% \u001b[0mPatch 1 file \r\n> build · gpt-6.1-sol\r\n\u001b[0m$ \u001b[0mnode --input-type=module -e \"import { groupBy } from './src/group.js'; const a = [{k:'b'}, {k:'a'}, {k:'b'}]; const result = groupBy(a, x => x.k); if ([...result.keys()].join(',') !== 'b,a' || result.get('b')[0] !== a[0] || result.get('b')[1] !== a[2] || a.length !== 3) throw new Error('groupBy behavior failed'); let threw = false; try { groupBy([], null); } catch (error) { threw = error instanceof TypeError; } if (!threw) throw new Error('TypeError validation failed'); console.log('groupBy checks passed');\"\r\ngroupBy checks passed\r\n> build · gpt-6.1-sol",
+      "passed": true,
+      "summary": "6/6 checks passed",
+      "durationMs": 21837
+    },
+    {
+      "task": "merge-intervals",
+      "harness": "polonrlm",
+      "status": "PASS",
+      "passed": true,
+      "summary": "7/7 checks passed",
+      "durationMs": 29553
+    },
+    {
+      "task": "merge-intervals",
+      "harness": "opencode",
+      "status": "PASS",
+      "exitCode": 0,
+      "timedOut": false,
+      "output": "ray for empty input.\n\nVerified with a local Node check covering merging, input preservation, empty input, and invalid inputs.\n\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m→ \u001b[0mRead src/intervals.js \r\n> build · gpt-6.1-sol\r\n\u001b[0m✱ \u001b[0mGlob \"**/*interval*\" \u001b[90m1 match\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m✱ \u001b[0mGlob \"**/*\" \u001b[90m2 matches\u001b[0m\r\n> build · gpt-6.1-sol\r\n\u001b[0m→ \u001b[0mRead package.json \r\n> build · gpt-6.1-sol\r\n\u001b[0m% \u001b[0mPatch 1 file \r\n> build · gpt-6.1-sol\r\n\u001b[0m$ \u001b[0mnode --input-type=module -e \"import assert from 'node:assert/strict'; import { mergeIntervals } from './src/intervals.js'; const input = [[5, 7], [1, 3], [3, 5], [10, 10]]; assert.deepEqual(mergeIntervals(input), [[1, 7], [10, 10]]); assert.deepEqual(input, [[5, 7], [1, 3], [3, 5], [10, 10]]); assert.deepEqual(mergeIntervals([]), []); for (const value of [null, [[1]], [[2, 1]], [[0, Infinity]]]) assert.throws(() => mergeIntervals(value), TypeError); console.log('interval checks passed');\"\r\ninterval checks passed\r\n> build · gpt-6.1-sol",
+      "passed": true,
+      "summary": "7/7 checks passed",
+      "durationMs": 32240
+    }
+  ]
+}
