@@ -21,7 +21,7 @@ if (!baseURL) throw new Error('Use --base-url <url> for this provider.');
 const keyEnv = option('--key-env', provider === 'openrouter' ? 'OPENROUTER_API_KEY' : provider === 'nvidia' ? 'NVIDIA_API_KEY' : '');
 const tasks = option('--tasks', 'retry-status,group-by,merge-intervals').split(',').map(value => value.trim()).filter(Boolean);
 const timeoutMs = Math.max(60_000, Math.min(900_000, Number(option('--timeout-ms', '300000'))));
-const reportPath = path.resolve(option('--report', 'docs/harness-shared-report.json'));
+const reportPath = path.resolve(option('--report', path.join(tmpdir(), 'polonrlm-private-harness-report.json')));
 const opencodeBin = option('--opencode-bin', process.env.OPENCODE_BIN ?? (process.platform === 'win32' ? 'opencode.cmd' : 'opencode'));
 const opencodeModel = option('--opencode-model', provider === 'openrouter' ? `openrouter/${model}` : `${provider}/${model}`);
 const defaultHome = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '.', '.local', 'share'), 'PolonRLM');

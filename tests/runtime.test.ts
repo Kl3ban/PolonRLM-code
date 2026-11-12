@@ -379,6 +379,12 @@ test('empty model replies retry with a recovery instruction and retain usage', a
   assert.equal(h.store.usage(h.session).output, 10);
 });
 
+test('empty replies never become a successful empty final answer', async t => {
+  const h = await harness(t, async () => reply(''), {}, 0);
+  await assert.rejects(h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), /empty response/i);
+  assert.equal(h.store.messages(h.session).filter(message => message.role === 'assistant' && !message.content).length, 0);
+});
+
 test('retry attempts consume the shared model-call limit', async t => {
   let calls = 0;
   const h = await harness(t, async () => { calls++; throw new Error('The selected provider is temporarily busy.'); }, { maxSteps: 1 }, 0);
