@@ -108,10 +108,57 @@ Snapshots return up to 40 elements and aim to stay within 6,000 characters by de
 
 Actions in one session are serialized, including calls made concurrently through the SDK. Popups become managed tabs, within the existing tab limit. Cancelling an active page operation closes that tab so a pending click cannot fire later; other tabs remain available. Sessions expire after 30 minutes of inactivity, with up to 3 sessions and 8 tabs per session.
 
-Normal tool permission rules still apply. Page reads and inspection are available in PLAN/REVIEW; clicks, typing and form changes require BUILD unless the user has explicitly approved all tools. Public-address validation and the egress proxy remain in place. Private/local addresses, WebSockets, service workers and file downloads remain blocked. Page content is untrusted data.
+Normal tool permission rules still apply. Page reads and inspection are available in PLAN/REVIEW; clicks, typing and form changes require BUILD unless the user has explicitly approved all tools. Public-address validation and the egress proxy remain in place. File downloads through the browser remain blocked; use the approved download tool. Page content is untrusted data.
+
+## Local development, WebSockets and service workers
+
+To test a local app, launch its exact loopback origin with approval:
+
+```json
+{"action":"launch","url":"http://localhost:5173","allowLocal":true}
+```
+
+This allows that origin and port for this session. It does not enable other localhost ports, LAN addresses or the regular browser profile. Persistent defaults can include `localOrigins`, for example `{"localOrigins":["http://localhost:5173"]}` under Browser options. This setting is for the user; `browser_configure` cannot expand the destination list. Ordinary web search and page-fetch tools still reject local addresses.
+
+WebSockets are enabled by default and use the same destination policy as HTTP. Set `webSockets` to `false` in Browser options to disable them for new sessions. Service workers are blocked by default. Set `serviceWorkers` to `"allow"` if a tested app needs one, then launch a new session. Worker requests pass through the egress proxy too; page-level resource blocking and network diagnostics do not cover every worker-owned request.
+
+The proxy checks DNS answers and pins connections to verified addresses. It supports WebSocket upgrades and tries verified IPv4 and IPv6 addresses when one family is unavailable. HTTP CONNECT identifies a host and port, so tunnel enforcement uses the approved destination host and port; page and WebSocket routes also validate the full origin. This is a browser destination guard, not an OS sandbox for a compromised browser process.
+
+## Logging in and saving a login
+
+The app browser can log into a site through ordinary forms. Cookies stay in that running context until it is closed or expires. Saving a login to disk is **off by default**. The user must enable it:
+
+```text
+/browser-auth on
+```
+
+Enabling this setting does not save anything by itself. The agent must explicitly save a named state, then select that name on a later launch:
+
+```json
+{"action":"save_auth","sessionId":"SESSION","authName":"work"}
+{"action":"launch","url":"https://example.com","authName":"work"}
+```
+
+These are two separate calls. Saved state contains cookies and localStorage. `indexedDB: true` on `save_auth` also includes IndexedDB when a site needs it. It is encrypted in local app data, scoped to the current project, and never reads your ordinary browser profile. It is not a password manager; it does not save typed passwords as password-manager entries. Server expiry, sign-out, MFA and CAPTCHA can still require a fresh login.
+
+`auth_states` lists saved names without cookie contents. `delete_auth` with `authName` removes one saved file. Saving and deleting require BUILD and normal approval. Disable both saving and loading with:
+
+```text
+/browser-auth off
+```
+
+Disabling does not delete encrypted files or sign out a running session. Close or sign out of that session separately. The agent cannot enable saving through `browser_configure`; a disabled save/load returns a message asking for the user command.
+
+For a password that should not be placed in chat, set a dedicated environment variable before starting PolonRLM, then let the tool read its name:
+
+```json
+{"action":"fill","sessionId":"SESSION","selector":"input[type=password]","secretEnv":"POLONRLM_BROWSER_SECRET_LOGIN"}
+```
+
+Only names beginning with `POLONRLM_BROWSER_SECRET_` are accepted. The value is read locally, registered for log redaction, and sent to the form rather than included in model tool arguments. A password typed into chat is part of the conversation sent to the model provider. Avoid asking the model to read credentials back from a page.
 
 ## Checks
 
-`tests/browser-inspection.test.ts` uses a real headless Chromium and an isolated local HTTP fixture. Only its injected test dependencies allow the loopback fixture. Production address rules are unchanged. It covers references, deltas, stale IDs, DOM/CSS, overlays, actionability probes, Shadow DOM, iframes, diagnostics, configuration, popups, serialization and cancellation.
+`tests/browser-inspection.test.ts` covers references, deltas, stale IDs, DOM/CSS, overlays, actionability probes, Shadow DOM, iframes, diagnostics, configuration, popups, serialization and cancellation. `tests/browser-network.test.ts` uses the production URL policy and proxy with a real headless Chromium. It checks explicit loopback access, a real WebSocket handshake, service-worker destination enforcement, encrypted login save/load, the opt-in gate and dedicated secret filling. It also checks IPv6-first DNS against an IPv4-only server.
 
-Run `npx tsx --test tests/browser-inspection.test.ts tests/web.test.ts`. If Chromium is absent, the real-browser case skips without downloading it. Set `POLONRLM_BROWSER_TEST_REQUIRED=1` to require it. CI explicitly installs the headless browser and runs these tests on Windows, Ubuntu and macOS. No model API key is needed.
+Run `npx tsx --test tests/browser-inspection.test.ts tests/browser-network.test.ts tests/web.test.ts`. If Chromium is absent, real-browser cases skip without downloading it. Set `POLONRLM_BROWSER_TEST_REQUIRED=1` to require it. CI explicitly installs the headless browser and runs these tests on Windows, Ubuntu and macOS. No model API key is needed.

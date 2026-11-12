@@ -2,6 +2,12 @@ import { z } from 'zod';
 
 /** User defaults also validate per-session overrides. No executable JS or arbitrary launch flags. */
 export const browserOptionsSchema = z.object({
+  localOrigins: z.array(z.string().max(300).refine(value => {
+    try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.pathname === '/' && !url.search && !url.hash; } catch { return false; }
+  }, 'Use an exact loopback HTTP(S) origin with a port, e.g. http://localhost:5173.').transform(value => new URL(value).origin)).max(32).default([]),
+  webSockets: z.boolean().default(true),
+  serviceWorkers: z.enum(['block', 'allow']).default('block'),
+  persistAuth: z.boolean().default(false),
   viewportWidth: z.number().int().min(320).max(3840).default(1365),
   viewportHeight: z.number().int().min(240).max(2160).default(900),
   locale: z.string().min(2).max(40).refine(value => { try { return Intl.getCanonicalLocales(value).length === 1; } catch { return false; } }, 'Use a valid locale, e.g. en-US.').default('en-US'),

@@ -11,7 +11,7 @@ import type { TerminalMouseEvent } from './input-router.js';
 
 const sections = ['General', 'Limits', 'Tools'];
 const policies = [{ value: 'default', label: 'Inherit' }, { value: 'ask', label: 'Ask' }, { value: 'auto', label: 'Auto' }, { value: 'off', label: 'Off' }];
-const JSON_SETTINGS = new Set(['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
+const JSON_SETTINGS = new Set(['webSearchOptions', 'browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
 type Row = SettingField & { value: string | number };
 
 export function SettingsPanel({ controller, state, width, rows, close, mouseEvents }: { controller: UIController; state: UIState; width: number; rows: number; close: () => void; mouseEvents?: EventEmitter }): React.JSX.Element {

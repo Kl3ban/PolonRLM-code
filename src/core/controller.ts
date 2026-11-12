@@ -13,6 +13,7 @@ import { Permissions } from './permissions.js';
 import { Workspace } from '../tools/workspace.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { registerBuiltins } from '../tools/builtin.js';
+import { BrowserAuthStore } from '../tools/browser-auth.js';
 import { SkillsManager } from '../integrations/skills.js';
 import { MCPManager, mcpConfigPreview } from '../integrations/mcp.js';
 import { createProvider, providerConfigForModel, PROVIDER_PRESETS } from '../providers/provider.js';
@@ -56,7 +57,8 @@ export const HELP = `/goal [--tokens N] <goal> | status | pause | resume | clear
 /mcp [list|add|connect|disconnect|remove]
 /plugins [list|create|show|enable|disable|remove]
 /mode [PLAN|BUILD|REVIEW]          Tab changes mode; Ctrl+P opens commands
-/cortex [0-5]                     Set maximum work level; /settings cortexStrategy toggles adaptive selection
+/cortex [0-5|stats]               Set maximum work level or inspect measured outcomes
+/browser-auth [on|off]            Enable or disable encrypted saved browser logins
 /sessions [search]                Search project conversation history
 /copy [user|ai|last]               Copy a message; /copy alone opens a picker
 /new                              Start a new conversation
@@ -168,7 +170,7 @@ export class Controller implements UIController {
     }
     this.skills = new SkillsManager(this.config.home, this.workspace.root); this.mcp = new MCPManager(settings.mcp);
     this.registry = new ToolRegistry(this.permissions, () => settings.toolOutputLimit); this.sandbox = new SandboxExecutor(settings, this.workspace.root);
-    registerBuiltins(this.registry, this.workspace, settings, { sandbox: this.sandbox, store: this.store });
+    registerBuiltins(this.registry, this.workspace, settings, { sandbox: this.sandbox, store: this.store, browserAuth: new BrowserAuthStore(this.config.home, this.workspace.root, this.recoveryCipher, () => settings.browserOptions?.persistAuth === true) });
     this.registry.onClose(() => this.sandbox.close());
     this.session = this.store.create(this.workspace.root);
     this.state = { workspace: this.workspace.root, sessionId: this.session, provider: settings.provider, model: settings.providers[settings.provider]?.model ?? '', mode: settings.mode, cortex: settings.cortex,
@@ -314,7 +316,7 @@ export class Controller implements UIController {
   }
   readSettings(): ReturnType<NonNullable<UIController['readSettings']>> {
     const settings = this.config.settings;
-    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, ['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'browserOptions' | 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : settings[field.key as keyof Settings] as string | number])),
+    return { values: Object.fromEntries(SETTINGS_FIELDS.map(field => [field.key, ['webSearchOptions', 'browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'webSearchOptions' | 'browserOptions' | 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : settings[field.key as keyof Settings] as string | number])),
       tools: this.registry.discovery(settings.mode).map(tool => ({ name: tool.name, description: tool.description, available: tool.available, policy: settings.toolPermissions[tool.name] ?? 'default' })) };
   }
   async updateSetting(name: string, value: string | number): Promise<void> {
@@ -331,11 +333,11 @@ export class Controller implements UIController {
       if (!SETTINGS_FIELDS.some(field => field.key === name)) throw new Error('Unknown setting.');
       const key = name as keyof Settings;
       let parsedInput: unknown = value;
-      if (['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) && typeof value === 'string') {
+      if (['webSearchOptions', 'browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) && typeof value === 'string') {
         try { parsedInput = JSON.parse(value); }
         catch { throw new Error(`${name} must be valid JSON.`); }
       }
-      const parsedValue = ['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) ? parsedInput : name === 'tokenBudget' ? parseTokenBudget(value)
+      const parsedValue = ['webSearchOptions', 'browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(name) ? parsedInput : name === 'tokenBudget' ? parseTokenBudget(value)
         : name === 'repeatFailureThreshold' ? parseUnlimitedLimit(value, 0)
         : name === 'verificationRepairAttempts' ? Number(value)
         : SETTINGS_FIELDS.some(field => field.key === name && field.section === 'limits') ? parseUnlimitedLimit(value, name === 'maxDepth' ? -1 : 0) : value;
@@ -996,9 +998,16 @@ export class Controller implements UIController {
         const previous = settings.cortex; settings.cortex = level;
         await this.persistSettings(() => { settings.cortex = previous; }); this.sync();
       } break;
+      case '/browser-auth': {
+        if (!tail) { this.note(`Persistent browser login: ${settings.browserOptions?.persistAuth ? 'on' : 'off'}. Use /browser-auth on or off. Saved state belongs to the app browser, not your normal browser profile.`); break; }
+        if (!['on', 'off'].includes(tail)) throw new Error('Use /browser-auth on or /browser-auth off.');
+        await this.updateSetting('browserOptions', JSON.stringify({ ...settings.browserOptions, persistAuth: tail === 'on' }));
+        this.note(tail === 'on' ? 'Encrypted browser login saving is enabled. The agent must explicitly save a named state. Regular browser profiles remain separate.' : 'Persistent browser login saving and loading are disabled. Existing saved files remain encrypted; active sessions keep their current cookies until closed or logged out.');
+        break;
+      }
       case '/setting':
       case '/settings': {
-        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : ['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'browserOptions' | 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : String(settings[field.key as keyof Settings])}`), `Subagent tool profiles: ${JSON.stringify(settings.agentToolProfiles)}`, '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/settings sandboxMode auto|required|off controls isolation for shell, Python, background commands and LSP.', '/settings sandboxNetworkDomains ["registry.npmjs.org","github.com"] allows network access from sandboxed commands.', '/settings agentToolProfiles {"reviewer":["read_file","search_files"]} sets a strict subagent allowlist; unset roles inherit the normal catalog.', '/settings modelRoleBudgets {"coder":{"maxTokens":50000,"maxCost":1,"maxCalls":30}} sets optional role caps; omitted values and 0 are unlimited.', '/permissions manages tool permissions.'].join('\n')); break; }
+        if (!args[0]) { this.note(['SETTINGS', ...SETTINGS_FIELDS.map(field => `${field.label}: ${field.section === 'limits' ? displayLimit(field.key, settings[field.key as keyof Settings] as number) : ['webSearchOptions', 'browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets'].includes(field.key) ? JSON.stringify(settings[field.key as 'webSearchOptions' | 'browserOptions' | 'verificationCommands' | 'sandboxNetworkDomains' | 'fallback' | 'agentToolProfiles' | 'modelRoutes' | 'modelRoleBudgets']) : String(settings[field.key as keyof Settings])}`), `Subagent tool profiles: ${JSON.stringify(settings.agentToolProfiles)}`, '', '/settings <name> infinity · 0 removes most limits; maxDepth 0 disables delegation and infinity removes the depth cap.', '/settings sandboxMode auto|required|off controls isolation for shell, Python, background commands and LSP.', '/settings sandboxNetworkDomains ["registry.npmjs.org","github.com"] allows network access from sandboxed commands.', '/settings agentToolProfiles {"reviewer":["read_file","search_files"]} sets a strict subagent allowlist; unset roles inherit the normal catalog.', '/settings modelRoleBudgets {"coder":{"maxTokens":50000,"maxCost":1,"maxCalls":30}} sets optional role caps; omitted values and 0 are unlimited.', '/permissions manages tool permissions.'].join('\n')); break; }
         if (args[0].startsWith('provider.')) {
           const field = args[0].slice('provider.'.length);
           if (!['reasoning', 'reasoningSupported', 'reasoningControl', 'reasoningEfforts', 'requestTimeoutMs', 'temperature', 'contextWindow', 'maxOutputTokens', 'inputPrice', 'outputPrice', 'toolCalling', 'vision', 'apiKeyEnv', 'kind'].includes(field)) throw new Error('Provider fields: reasoning, reasoningSupported, reasoningControl, reasoningEfforts, requestTimeoutMs, temperature, pricing, and capabilities. Change the model with /model and the URL with /connect.');

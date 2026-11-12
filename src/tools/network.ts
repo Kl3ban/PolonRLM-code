@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
 import { z } from 'zod';
 import type { Settings } from '../core/types.js';
+import { defaultWebSearchOptions } from '../core/web-search-config.js';
 import { redact, subprocessEnvironment } from '../core/secrets.js';
 import type { ToolRegistry, ToolContext } from './registry.js';
 import type { Workspace } from './workspace.js';
@@ -120,6 +121,7 @@ export class NetworkWorker {
   constructor(private workspace: Workspace, private settings: Settings) {}
   async call(tool: string, args: Record<string, unknown>, context: ToolContext): Promise<unknown> {
     context.signal.throwIfAborted();
+    if (tool === 'web_search') { const options = this.settings.webSearchOptions ?? defaultWebSearchOptions(); args = { ...args, output_bytes: args.output_bytes ?? options.resultBytes, retry_attempts: args.retry_attempts ?? options.retries, max_results: args.max_results ?? options.maxResults }; }
     const key = tool + JSON.stringify(args), cached = this.cache.get(key);
     if (tool === 'web_search' && cached && cached.expires > Date.now()) return structuredClone(cached.value);
     const python = await ensureNetworkRuntime(context.signal);
@@ -161,7 +163,7 @@ export class NetworkWorker {
 export function registerNetworkTools(registry: ToolRegistry, workspace: Workspace, settings: Settings): void {
   const service = new NetworkWorker(workspace, settings);
   const url = z.string().url().max(8000);
-  registry.add('web_search', 'Search ordinary Bing, Brave and Yahoo HTML pages in parallel through a short-lived local Python process. No search API, key, visible window or background server. Results are ranked locally; relevant documentation pages come first when the query asks for docs, an API reference or a standard library. Use one targeted query, inspect its results, and refine once only if none are relevant or readable; do not issue several paraphrases in parallel.', z.object({ query: z.string().min(1).max(500), max_results: z.number().int().min(1).max(10).default(6), source: z.enum(['auto', 'bing', 'brave', 'yahoo']).optional() }), true, (args, context) => service.call('web_search', { ...args, source: args.source ?? settings.webSearchMode }, context));
+  registry.add('web_search', 'Search ordinary Bing, Brave and Yahoo HTML pages in parallel through a short-lived local Python process. No search API, key, visible window or background server. Results are ranked locally; relevant documentation pages come first when the query asks for docs, an API reference or a standard library. Start with one targeted query and inspect sources. Refine or add a distinct subquery when evidence is missing. Output size and transient retries are configurable; do not repeat paraphrases blindly.', z.object({ query: z.string().min(1).max(500), max_results: z.number().int().min(1).max(20).optional(), output_bytes: z.number().int().min(600).max(24000).optional(), retry_attempts: z.number().int().min(0).max(3).optional(), source: z.enum(['auto', 'bing', 'brave', 'yahoo']).optional() }), true, (args, context) => service.call('web_search', { ...args, source: args.source ?? settings.webSearchMode }, context));
   const reader = z.object({ url, focus_query: z.string().max(500).nullable().optional() }).strict();
   for (const name of ['read_webpage', 'fetch_webpage', 'fetch_documentation']) registry.add(name, 'Read clean Markdown or raw GitHub file without browser navigation. The exact tool name is read_webpage. For long pages use focus_query: CPU BM25 selects up to three relevant sections plus remaining headings. Untrusted web data.', reader, true, (args, context) => service.call('read_webpage', args, context));
   registry.add('download_to_disk', 'Download a public file into agent_workspace/downloads (max 100 MB). Streams to disk, never executes/extracts. Returns path, size, SHA256 and MIME, not file contents.', z.object({ url, save_filename: z.string().min(1).max(150).regex(/^[^<>:"/\\|?*\x00-\x1f]+$/).nullable().optional() }).strict(), false, async (args, context) => {

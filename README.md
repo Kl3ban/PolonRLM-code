@@ -100,6 +100,10 @@ Browser automation runs headless and does not use your regular browser profile o
 
 The [browser workbench](docs/BROWSER.md) adds compact page snapshots, exact element references, DOM and CSS inspection, iframe support, network diagnostics and page timings. A text-only model can use these tools. Viewport, timeouts, result sizes and resource blocking are configurable.
 
+Local development sites can be allowed by exact localhost origin and port. WebSockets are supported; service workers are optional. Saving login state starts disabled. Use `/browser-auth on` to allow explicit encrypted saves in the app's separate browser, or `/browser-auth off` to disable saving and loading. This does not use your regular browser profile.
+
+Search has no task-count cap by default. Result size, result count and transient retries are configurable. See the [tool review](docs/TOOL-REVIEW.md) for comparisons and the gaps that remain.
+
 ## Limits and permissions
 
 Token, cost, call, context, agent, process, and tool-output limits start unlimited in PolonRLM. Set limits in `/settings` or `/budget` if you want them. Your provider still applies its own limits and billing.
@@ -124,6 +128,7 @@ These tests run locally and do not need a model API key. Live tests use a real p
 - [Commands](docs/COMMANDS.md)
 - [Providers](docs/PROVIDERS.md)
 - [Tools](docs/TOOLS.md)
+- [Tool review and remaining gaps](docs/TOOL-REVIEW.md)
 - [Plugin SDK](docs/PLUGIN-SDK.md)
 - [SDK](docs/SDK.md)
 - [Agent server](docs/AGENT-SERVER.md)

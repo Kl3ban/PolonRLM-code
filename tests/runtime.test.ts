@@ -867,17 +867,17 @@ test('explicit browser_automation request stays available while reading a URL', 
   assert.equal(calls, 3);
 });
 
-test('web research executes at most two searches and feeds a clear stop signal for batched extras', async t => {
+test('web research honors a configured two-search budget and feeds a clear stop signal for batched extras', async t => {
   let calls = 0, executed = 0;
   const h = await harness(t, async messages => {
     calls++;
     if (calls === 1) return reply('', ['one', 'two', 'three', 'four'].map((query, index) => ({ id: `search-${index}`, name: 'web_search', arguments: { query } })));
     const tools = messages.filter(message => message.role === 'tool' && message.name === 'web_search');
     assert.equal(tools.length, 4);
-    assert.equal(tools.filter(message => message.content.includes('two-search limit')).length, 2);
-    assert.match(messages.at(-1)?.content ?? '', /two-search limit/);
+    assert.equal(tools.filter(message => message.content.includes('configured search limit')).length, 2);
+    assert.match(messages.at(-1)?.content ?? '', /configured search limit/);
     return reply('I will read the best result and cite it.');
-  });
+  }, { webSearchOptions: { maxSearches: 2, resultBytes: 6000, maxResults: 8, retries: 1 } });
   const { z } = await import('zod');
   h.tools.add('web_search', 'Fixture local search', z.object({ query: z.string() }), true, async args => { executed++; return [{ title: args.query, url: `https://example.org/${args.query}`, snippet: 'result' }]; });
   await h.runtime.run(h.session, 'Search the web for reliable documentation.', new AbortController().signal);
@@ -885,7 +885,19 @@ test('web research executes at most two searches and feeds a clear stop signal f
   assert.equal(calls, 2);
 });
 
-test('parallel subagents share the task-wide two-search limit', async t => {
+test('default search settings permit more than two distinct searches without a hidden task cap', async t => {
+  let calls = 0, executed = 0;
+  const h = await harness(t, async () => {
+    if (++calls === 1) return reply('', ['language docs', 'database docs', 'browser docs', 'protocol docs'].map((query, index) => ({ id: `unlimited-search-${index}`, name: 'web_search', arguments: { query } })));
+    return reply('Collected four distinct source groups.');
+  });
+  const { z } = await import('zod');
+  h.tools.add('web_search', 'Fixture local search', z.object({ query: z.string() }), true, async args => { executed++; return [{ title: args.query, url: 'https://example.org', snippet: 'fixture' }]; });
+  await h.runtime.run(h.session, 'Search four distinct documentation topics.', new AbortController().signal);
+  assert.equal(executed, 4); assert.equal(calls, 2);
+});
+
+test('parallel subagents share the task-wide configured search limit', async t => {
   const previousWebPython = process.env.POLONRLM_WEB_PYTHON;
   // If a regression lets a child execute a real search, fail locally without
   // preparing Python or contacting a search engine.
@@ -921,9 +933,9 @@ test('parallel subagents share the task-wide two-search limit', async t => {
       return reply('', [{ id: `${role}-search`, name: 'web_search', arguments: { query: role } }]);
     }
     const skipped = messages.findLast(message => message.role === 'tool' && message.name === 'web_search');
-    assert.match(skipped?.content ?? '', /two-search limit/);
+    assert.match(skipped?.content ?? '', /configured search limit/);
     return reply(`${role} stopped at the shared search limit.`);
-  }, { maxAgents: 2, maxDepth: 1 });
+  }, { maxAgents: 2, maxDepth: 1, webSearchOptions: { maxSearches: 2, resultBytes: 6000, maxResults: 8, retries: 1 } });
   const { z } = await import('zod');
   h.tools.add('web_search', 'Fixture local search', z.object({ query: z.string() }), true, async args => {
     parentSearches++;

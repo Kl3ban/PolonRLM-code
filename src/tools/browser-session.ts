@@ -7,15 +7,17 @@ import { BrowserSnapshots, DEFAULT_STYLES, inspectElement, inspectPerformance } 
 import { browserReport, safeBrowserUrl, safeDiagnosticText } from './browser-output.js';
 import type { ToolContext, ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
-import { createSafeEgressProxy, publicURL, type SafeEgressProxy } from './web.js';
+import { browserURL, createSafeEgressProxy, isLoopbackOrigin, publicURL, type SafeEgressProxy } from './web.js';
+import type { BrowserAuthStore } from './browser-auth.js';
+import { registerSecret } from '../core/secrets.js';
 
 type Session = { id: string; engine: Exclude<BrowserEngine, 'auto'>; browser: Browser; proxy: SafeEgressProxy; context: BrowserContext; pages: Map<string, Page>; active: string; touched: number; options: BrowserOptions; pending: Promise<unknown> };
 type ConsoleEntry = { id: number; type: string; text: string; url?: string; line?: number };
 type NetworkEntry = { id: number; kind: 'response' | 'failed'; method: string; url: string; status?: number; error?: string; resourceType?: string; durationMs?: number };
 type PageDiagnostics = { console: ConsoleEntry[]; network: NetworkEntry[]; sequence: number };
-export interface BrowserSessionDependencies { launchBrowser: typeof launchBrowser; createSafeEgressProxy: typeof createSafeEgressProxy; publicURL: typeof publicURL }
+export interface BrowserSessionDependencies { launchBrowser: typeof launchBrowser; createSafeEgressProxy: typeof createSafeEgressProxy; publicURL: typeof publicURL; authStore?: BrowserAuthStore }
 const maxSessions = 3, maxTabs = 8, maxAge = 30 * 60_000;
-const mutating = ['click', 'fill', 'type', 'press', 'select', 'check', 'uncheck'];
+const mutating = ['click', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'save_auth', 'delete_auth'];
 function pushBounded<T>(items: T[], item: T): void { items.push(item); if (items.length > 200) items.splice(0, items.length - 200); }
 function observePage(page: Page, diagnostics: WeakMap<Page, PageDiagnostics>, snapshots: BrowserSnapshots): void {
   const current: PageDiagnostics = { console: [], network: [], sequence: 0 };
@@ -53,7 +55,9 @@ const targetFields = {
 const maxCharsField = z.number().int().min(1000).max(30000).optional();
 
 export function registerBrowserSessionTools(registry: ToolRegistry, workspace: Workspace, engine: () => BrowserEngine = () => 'auto', dependencies: Partial<BrowserSessionDependencies> = {}, defaults: () => BrowserOptions = defaultBrowserOptions): void {
-  const openBrowser = dependencies.launchBrowser ?? launchBrowser, createProxy = dependencies.createSafeEgressProxy ?? createSafeEgressProxy, checkPublicURL = dependencies.publicURL ?? publicURL;
+  const openBrowser = dependencies.launchBrowser ?? launchBrowser, createProxy = dependencies.createSafeEgressProxy ?? createSafeEgressProxy;
+  const checkPublicURL = (url: string, origins: readonly string[] = []) => dependencies.publicURL ? dependencies.publicURL(url) : browserURL(url, origins);
+  const auth = () => { if (!dependencies.authStore) throw new Error('Saved browser auth is available in the main app. This browser session is temporary.'); return dependencies.authStore; };
   const sessions = new Map<string, Session>(), diagnostics = new WeakMap<Page, PageDiagnostics>();
   let launches = 0;
   const pageReady = new WeakMap<Page, Promise<unknown>>();
@@ -174,39 +178,52 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
       });
     });
   });
-  registry.add('browser', 'Persistent headless browser. Start launch, then snapshot for compact ARIA elements; act with ref + snapshotId or an exact selector/text. since returns snapshot changes only. frames lists iframe IDs. console/network accept sinceId/filter; network defaults to errors, errorsOnly:false includes successful requests. Use browser_inspect for DOM/styles/performance and browser_configure for options. DOM actions need no screenshot or vision model. Interactions require BUILD and configured permission. Public HTTP(S) only.', z.object({
-    action: z.enum(['launch', 'snapshot', 'frames', 'navigate', 'back', 'forward', 'reload', 'new_tab', 'activate_tab', 'close_tab', 'tabs', 'forms', 'links', 'console', 'network', 'click', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'scroll', 'wait', 'text', 'screenshot', 'close']),
+  registry.add('browser', 'Persistent headless browser. Start launch, then snapshot for compact ARIA elements; act with ref + snapshotId or an exact selector/text. since returns snapshot changes only. frames lists iframe IDs. console/network accept sinceId/filter; network defaults to errors, errorsOnly:false includes successful requests. Use browser_inspect for DOM/styles/performance and browser_configure for options. DOM actions need no screenshot or vision model. Interactions require BUILD and configured permission. Public HTTP(S) and explicitly approved loopback origins only. WebSockets use the same destination policy. Saved logins require the user command /browser-auth on.', z.object({
+    action: z.enum(['launch', 'snapshot', 'frames', 'navigate', 'back', 'forward', 'reload', 'new_tab', 'activate_tab', 'close_tab', 'tabs', 'forms', 'links', 'console', 'network', 'click', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'scroll', 'wait', 'text', 'screenshot', 'close', 'auth_states', 'save_auth', 'delete_auth']),
+    allowLocal: z.boolean().default(false).describe('Launch only: allow exactly the supplied localhost/127.0.0.1/[::1] origin, including its port, after browser approval.'),
+    authName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/).optional().describe('Opt-in encrypted project login state: load at launch, or save/delete by name. auth_states lists names only.'),
+    indexedDB: z.boolean().default(false).describe('save_auth only: include IndexedDB if the site needs it for login; default cookies and localStorage only.'),
+    secretEnv: z.string().regex(/^POLONRLM_BROWSER_SECRET_[A-Z0-9_]{1,70}$/).optional().describe('fill/type only: read this dedicated local environment variable instead of sending its value through the model.'),
     sessionId: z.string().optional(), tabId: z.string().optional(), url: z.string().max(4000).optional(), ...targetFields, text: z.string().max(10000).optional(), key: z.string().max(100).optional(), direction: z.enum(['up', 'down']).default('down'), amount: z.number().int().min(50).max(3000).default(700),
     timeoutMs: z.number().int().min(100).max(60000).optional(), limit: z.number().int().min(1).max(200).optional(), maxChars: maxCharsField,
     since: z.string().max(40).optional().describe('Previous snapshotId for compact changes.'), sinceId: z.number().int().nonnegative().optional().describe('Diagnostic cursor from previous console/network result.'), filter: z.string().max(100).optional(), errorsOnly: z.boolean().default(true),
   }).superRefine((args, context) => {
     const required = (field: 'url' | 'sessionId' | 'text' | 'key', condition: boolean) => { if (condition && (args[field] === undefined || args[field] === '')) context.addIssue({ code: 'custom', path: [field], message: `Action ${args.action} requires ${field}.` }); };
-    required('sessionId', args.action !== 'launch'); required('url', ['launch', 'navigate'].includes(args.action));
+    required('sessionId', !['launch', 'auth_states', 'delete_auth'].includes(args.action)); required('url', ['launch', 'navigate'].includes(args.action));
     if (['fill', 'type', 'press', 'select', 'check', 'uncheck', 'wait', 'click'].includes(args.action) && !args.ref && !args.selector && !(args.action === 'click' && args.text)) context.addIssue({ code: 'custom', path: ['selector'], message: `${args.action} requires selector or ref + snapshotId${args.action === 'click' ? ' or exact text' : ''}.` });
     if (args.ref && !args.snapshotId) context.addIssue({ code: 'custom', path: ['snapshotId'], message: 'Provide snapshotId returned with the ref.' });
     if (args.ref && args.selector) context.addIssue({ code: 'custom', message: 'Use ref or selector, not both.' });
-    required('text', ['fill', 'type', 'select'].includes(args.action) && args.text === undefined); required('key', args.action === 'press');
+    required('text', ['fill', 'type', 'select'].includes(args.action) && args.text === undefined && !args.secretEnv); required('key', args.action === 'press');
+    if (['save_auth', 'delete_auth'].includes(args.action) && !args.authName) context.addIssue({ code: 'custom', path: ['authName'], message: 'Provide the login state name.' });
+    if (args.secretEnv && (!['fill', 'type'].includes(args.action) || args.text !== undefined)) context.addIssue({ code: 'custom', path: ['secretEnv'], message: 'Use secretEnv only for fill/type, without text.' });
   }), false, async (args, context) => {
     const action = args.action;
     const targetDescription = args.ref ?? args.selector ?? (action === 'click' ? args.text : undefined);
-    await approve('browser', `Browser: ${action}${args.sessionId ? ` in session ${args.sessionId}` : ''}${targetDescription ? ` on ${safeDiagnosticText(targetDescription).slice(0, 200)}` : ''}${args.url ? ` ${safeBrowserUrl(args.url)}` : ''}.${action === 'launch' ? ' A missing Playwright engine may be downloaded to the local cache.' : ''}`, context, mutating.includes(action));
+    await approve('browser', `Browser: ${action}${args.sessionId ? ` in session ${args.sessionId}` : ''}${targetDescription ? ` on ${safeDiagnosticText(targetDescription).slice(0, 200)}` : ''}${args.url ? ` ${safeBrowserUrl(args.url)}` : ''}${args.authName ? `; saved login state ${args.authName}` : ''}.${args.allowLocal ? ' This allows the exact local origin and port for this session.' : ''}${action === 'launch' ? ' A missing Playwright engine may be downloaded to the local cache.' : ''}`, context, mutating.includes(action));
+    if (action === 'auth_states') return { available: !!dependencies.authStore, enabled: dependencies.authStore?.isEnabled() ?? false, states: dependencies.authStore?.isEnabled() ? await dependencies.authStore.list() : [], command: '/browser-auth on|off' };
+    if (action === 'delete_auth') { await auth().remove(args.authName!); return 'Saved browser login state deleted. Active sessions remain signed in until closed or logged out.'; }
     if (action === 'launch') {
-      await checkPublicURL(args.url!); await pruneExpired();
+      const options = structuredClone(defaults());
+      if (args.allowLocal) { if (!isLoopbackOrigin(args.url!)) throw new Error('allowLocal requires an exact localhost, 127.0.0.1 or [::1] HTTP(S) URL.'); if (!options.localOrigins.includes(new URL(args.url!).origin)) options.localOrigins.push(new URL(args.url!).origin); }
+      await checkPublicURL(args.url!, options.localOrigins); await pruneExpired();
+      const storageState = args.authName ? await auth().load(args.authName, options.localOrigins) : undefined;
       if (sessions.size + launches >= maxSessions) throw new Error(`Browser session limit reached (${maxSessions}).`);
       launches++;
       try {
-      const proxy = await createProxy(); let browser: Browser, selectedEngine: Exclude<BrowserEngine, 'auto'>;
+      const proxy = await createProxy(undefined, options.localOrigins); let browser: Browser, selectedEngine: Exclude<BrowserEngine, 'auto'>;
       try { ({ browser, engine: selectedEngine } = await openBrowser(engine(), proxy.url, context.signal)); } catch (error) { await proxy.close(); throw error; }
       try {
-        const options = structuredClone(defaults());
-        const browserContext = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block', viewport: { width: options.viewportWidth, height: options.viewportHeight }, locale: options.locale, timezoneId: options.timezoneId, colorScheme: options.colorScheme, reducedMotion: 'reduce' });
+        const browserContext = await browser.newContext({ acceptDownloads: false, serviceWorkers: options.serviceWorkers, ...(storageState ? { storageState } : {}), viewport: { width: options.viewportWidth, height: options.viewportHeight }, locale: options.locale, timezoneId: options.timezoneId, colorScheme: options.colorScheme, reducedMotion: 'reduce' });
         const session: Session = { id: randomUUID().slice(0, 10), engine: selectedEngine, browser, proxy, context: browserContext, pages: new Map(), active: '', touched: Date.now(), options, pending: Promise.resolve() };
-        await browserContext.routeWebSocket('**/*', socket => socket.close());
+        await browserContext.routeWebSocket('**/*', async socket => {
+          try { if (!options.webSockets) throw new Error('WebSockets disabled.'); const url = new URL(socket.url()); url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'; await checkPublicURL(url.href, options.localOrigins); socket.connectToServer(); }
+          catch { socket.close({ code: 1008, reason: 'Destination blocked by browser policy.' }); }
+        });
         await browserContext.route('**/*', async route => {
           try {
             const request = route.request(), requestUrl = request.url();
             if (/^(data|blob|about):/i.test(requestUrl)) { await route.continue(); return; }
-            await checkPublicURL(requestUrl);
+            await checkPublicURL(requestUrl, options.localOrigins);
             if (session.options.blockedResources.includes(request.resourceType() as 'image' | 'media' | 'font')) { await route.abort('blockedbyclient'); return; }
             await route.continue();
           } catch { await route.abort().catch(() => {}); }
@@ -220,11 +237,12 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
       } finally { launches--; }
     }
     return withSession(args.sessionId!, context.signal, async session => {
+      if (action === 'save_auth') { const store = auth(); if (!store.isEnabled()) throw new Error('Persistent browser login is disabled. Ask the user to enable /browser-auth on; do not bypass this setting.'); await store.save(args.authName!, await session.context.storageState({ indexedDB: args.indexedDB }), session.options.localOrigins); return `Saved encrypted browser login state ${args.authName}. Use authName on a future launch; server expiry and MFA rules still apply.`; }
       if (action === 'close') { await close(session.id); return 'Browser session closed.'; }
       if (action === 'tabs') return JSON.stringify(await Promise.all([...session.pages].map(([id, p]) => summarizeBrowserTab(id, p, id === session.active))));
       if (action === 'new_tab') {
         if (session.pages.size >= maxTabs) throw new Error(`Tab limit reached for this session (${maxTabs}).`);
-        if (args.url) await checkPublicURL(args.url);
+        if (args.url) await checkPublicURL(args.url, session.options.localOrigins);
         const next = await session.context.newPage(), id = trackPage(session, next);
         try {
           await withPage(next, context, async () => {
@@ -240,7 +258,7 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
       return withPage(current, context, async () => {
         if (['navigate', 'back', 'forward', 'reload'].includes(action)) {
           const options = { waitUntil: 'domcontentloaded' as const, timeout: args.timeoutMs ?? session.options.navigationTimeoutMs };
-          if (action === 'navigate') { await checkPublicURL(args.url!); await current.goto(args.url!, options); } else if (action === 'back') await current.goBack(options); else if (action === 'forward') await current.goForward(options); else await current.reload(options);
+          if (action === 'navigate') { await checkPublicURL(args.url!, session.options.localOrigins); await current.goto(args.url!, options); } else if (action === 'back') await current.goBack(options); else if (action === 'forward') await current.goForward(options); else await current.reload(options);
           snapshots.invalidate(current); return JSON.stringify({ url: safeBrowserUrl(current.url()), title: safeDiagnosticText(await current.title()) });
         }
         if (action === 'frames') return browserReport({ frames: current.frames().map(item => ({ frameId: frameId(item), name: item.name(), url: safeBrowserUrl(item.url()), main: item === current.mainFrame(), parentId: item.parentFrame() ? frameId(item.parentFrame()!) : null })) }, maxChars);
@@ -267,11 +285,13 @@ export function registerBrowserSessionTools(registry: ToolRegistry, workspace: W
         if (action === 'screenshot') { if (context.vision === false) throw new Error('browser screenshot requires a vision model. Use snapshot and browser_inspect with a text-only model.'); const bytes = await current.screenshot({ type: 'jpeg', quality: 72, animations: 'disabled', timeout }); context.onImage?.({ data: bytes.toString('base64'), mediaType: 'image/jpeg' }); return `Screenshot of tab ${session.active}: ${safeBrowserUrl(current.url())} (${bytes.length} image bytes).`; }
         if (action === 'scroll') { await frame(current, args.frameId).evaluate(amount => window.scrollBy({ top: amount, behavior: 'instant' }), args.direction === 'down' ? args.amount : -args.amount); return `Scrolled ${args.direction}.`; }
         const locator = target(current, args);
+        const inputText = args.secretEnv ? process.env[args.secretEnv] : args.text;
+        if (args.secretEnv) { if (!inputText) throw new Error('Dedicated browser secret environment variable is empty or missing.'); registerSecret(inputText); }
         if (action === 'wait') { await locator.waitFor({ state: 'visible', timeout }); return 'Element is visible.'; }
         if (action === 'press') { await locator.press(args.key!, { timeout }); return 'Key sent.'; }
         if (action === 'click') { await locator.click({ timeout }); return 'Clicked element.'; }
-        if (action === 'fill') { await locator.fill(args.text!, { timeout }); return 'Form field updated.'; }
-        if (action === 'type') { await locator.pressSequentially(args.text!, { delay: 20, timeout }); return 'Text entered.'; }
+        if (action === 'fill') { await locator.fill(inputText!, { timeout }); return 'Form field updated.'; }
+        if (action === 'type') { await locator.pressSequentially(inputText!, { delay: 20, timeout }); return 'Text entered.'; }
         if (action === 'select') { await locator.selectOption(args.text!, { timeout }); return 'Option selected.'; }
         if (action === 'check') { await locator.check({ timeout }); return checkboxStatus(action); }
         if (action === 'uncheck') { await locator.uncheck({ timeout }); return checkboxStatus(action); }

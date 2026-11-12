@@ -18,7 +18,7 @@ It writes only JSON to stdout. Errors use `{"error":{"code":"...","message":"...
 
 | Tool | Behavior |
 | --- | --- |
-| `web_search(query, max_results=6, source="auto")` | Queries Bing, Brave, and Yahoo result pages in parallel. The process and parsing run locally. It uses no search API, key, or visible browser window. Results are merged, deduplicated, and ranked locally with BM25; relevant documentation pages come first when a query asks for docs, an API reference, or a standard library. Select `auto`, `bing`, `brave`, or `yahoo` as the source. The runtime allows at most two searches per task. |
+| `web_search(query, max_results=8, source="auto")` | Queries Bing, Brave, and Yahoo result pages in parallel. The process and parsing run locally. It uses no search API, key, or visible browser window. Results are merged, deduplicated, and ranked locally with BM25; relevant documentation pages come first when a query asks for docs, an API reference, or a standard library. Select `auto`, `bing`, `brave`, or `yahoo` as the source. There is no task search-count cap by default. |
 | `read_webpage(url, focus_query=null)` | Trafilatura returns Markdown without navigation. GitHub `/blob/` URLs are changed to raw URLs. BM25 selects up to three matching sections from long pages and includes titles for other sections. Short pages return metadata and visible text. Literal HTML or JavaScript redirects are read without executing JavaScript. |
 | `download_to_disk(url, save_filename=null)` | Streams data in 64 KB chunks to `agent_workspace/downloads`, up to 100 MB. It never overwrites, runs, or extracts files. The result includes path, size, SHA-256, and MIME type. Requires write approval. |
 | `github_repo_inspector(repo_url, subpath="")` | Returns up to 200 names, paths, types, and sizes from one public repository directory. It uses the public GitHub Contents API without a key and does not clone the repository. |
@@ -35,13 +35,19 @@ Downloads check the target directory, symlinks, path traversal, and Windows devi
 
 Control characters and invisible Unicode characters are removed. Page content remains untrusted data. Sanitizing characters cannot remove every possible instruction embedded in a page. Missing content is explicit: `readable: false`. For factual descriptions, if no source returns content that can be checked, the runtime reports that it could not verify the information instead of filling in a description. This is not a complete truth check for every claim.
 
-Search output is limited to 1,200 UTF-8 bytes. Full URLs are kept first, so there may be fewer results than `max_results`. Around 320 tokens is a target that depends on language and tokenizer. The page reader limits its main text to about 1,200 tokens. Short search results are cached for 2 minutes, up to 32 entries, without keeping Python running.
+Search defaults to 8 results within 6,000 UTF-8 bytes. Full URLs are kept first, so there may be fewer results than `max_results`. Set defaults with:
 
-Rate limits (429), CAPTCHA pages, certificate errors, and changes to search page HTML can prevent results. The code does not solve CAPTCHA, disable TLS validation, or switch to a paid API. Once one source responds, slower sources get at most another 0.5 seconds.
+```text
+/settings webSearchOptions {"maxSearches":0,"resultBytes":6000,"maxResults":8,"retries":1}
+```
+
+`maxSearches: 0` means no task search-count cap; a positive value sets a shared task cap. `resultBytes` accepts 600 to 24,000, `maxResults` accepts 1 to 20, and `retries` accepts 0 to 3. Individual tool calls can choose `output_bytes`, `max_results` and `retry_attempts` within those ranges. Omitted settings use the defaults above. These are output-size and reliability controls, not billed token estimates. Different result budgets have separate cache keys. The page reader limits its main text to about 1,200 tokens. Search results are cached for 2 minutes, up to 32 entries, without keeping Python running.
+
+Transient connection errors and HTTP 500/502/503/504 get one retry per source by default, with a short bounded delay. Rate limits (429), CAPTCHA pages, certificate errors, and changes to search page HTML can still prevent results. A 403 or CAPTCHA response is not blindly retried. The code does not solve CAPTCHA, disable TLS validation, or switch to a search API. Once one source responds, slower sources get at most another 0.8 seconds. The agent can refine a failed query or search a distinct subproblem; repeatedly paraphrasing a successful query is discouraged.
 
 ## Checks
 
-`npm test` also runs Python tests when the web runtime is set up. Tests cover DNS pinning, redirects to loopback, stream limits, parsers, BM25 ranking, traversal, SHA-256, filename collisions, and cleanup.
+`npm test` also runs Python tests when the web runtime is set up. Tests cover DNS pinning, redirects to loopback, stream limits, parsers, BM25 ranking, configurable result budgets, transient retries, traversal, SHA-256, filename collisions, and cleanup. Fixtures detect known parser regressions; they cannot guarantee that external search HTML never changes.
 
 Run `npm run test:web:local` for the direct local check. It verifies official-site search results and caching, the reader aliases, GitHub metadata, a real download's SHA-256, and rejection of loopback URLs. The report is written to `docs/network-integration-check.json`.
 

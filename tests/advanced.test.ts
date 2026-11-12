@@ -127,6 +127,33 @@ test('AST edits require fresh hashes and exact nodes and reject broken syntax', 
   await assert.rejects(f.run('ast_edit', { path: 'a.ts', hash: found.hash, start: range.start, end: range.end, replacement: '0' }), /Hash is stale/);
 });
 
+test('semantic diagnostics resolve installed declaration packages and include mjs/cjs sources', async t => {
+  const f = await fixture(t);
+  const dependency = path.join(f.root, 'node_modules', 'typed-fixture'); await mkdir(dependency, { recursive: true });
+  await writeFile(path.join(dependency, 'package.json'), JSON.stringify({ name: 'typed-fixture', types: 'index.d.ts' }));
+  await writeFile(path.join(dependency, 'index.d.ts'), 'export declare const count: number;');
+  await writeFile(path.join(f.root, 'app.ts'), "import { count } from 'typed-fixture';\nexport const value: number = count;\n");
+  assert.deepEqual(await f.run('code_diagnostics', { path: 'app.ts' }), []);
+  await writeFile(path.join(f.root, 'part.mjs'), 'export const value = 42;');
+  await writeFile(path.join(f.root, 'app.mjs'), "import { value } from './part.mjs';\nconsole.log(value);");
+  const definition = await f.run('symbol_definition', { path: 'app.mjs', line: 2, column: 14 });
+  assert.equal(definition[0]?.path, 'part.mjs');
+  await assert.rejects(f.run('symbol_hover', { path: 'app.ts', line: 1, column: 9999 }), /Column is outside this line/);
+});
+
+test('semantic rename rolls back all earlier files when a later permission check fails', async t => {
+  const f = await fixture(t);
+  const a = 'export const amount = 1;\n', b = "import { amount } from './a';\nexport const doubled = amount * 2;\n";
+  await writeFile(path.join(f.root, 'a.ts'), a); await writeFile(path.join(f.root, 'b.ts'), b);
+  const preview = await f.run('rename_symbol', { path: 'a.ts', line: 1, column: 14, newName: 'total' });
+  assert.equal(preview.length, 2); assert.match(preview[0].preview, /@@/); assert.match(preview[0].afterHash, /^[a-f0-9]{64}$/);
+  const originalCheck = f.permissions.check.bind(f.permissions);
+  f.permissions.check = async (...args: Parameters<Permissions['check']>) => { if (args[0] === 'rename_symbol' && args[1] === 'write' && args[2].includes('b.ts')) throw new Error('Fixture permission refusal'); return originalCheck(...args); };
+  const result = await f.run('rename_symbol', { path: 'a.ts', line: 1, column: 14, newName: 'total', apply: true });
+  assert.match(result.error ?? '', /Fixture permission refusal/);
+  assert.equal(await readFile(path.join(f.root, 'a.ts'), 'utf8'), a); assert.equal(await readFile(path.join(f.root, 'b.ts'), 'utf8'), b);
+});
+
 test('semantic rename preserves shorthand object keys and rejects reserved names', async t => {
   const f = await fixture(t); await writeFile(path.join(f.root, 'a.ts'), 'const amount = 1;\nconst result = { amount };');
   await assert.rejects(f.run('rename_symbol', { path: 'a.ts', line: 1, column: 8, newName: 'class', apply: true }), /syntax error/);

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { execa } from 'execa';
 import { chromium, firefox, type Browser, type LaunchOptions } from 'playwright';
+import { subprocessEnvironment } from '../core/secrets.js';
 
 export type BrowserEngine = 'auto' | 'chromium' | 'chrome' | 'edge' | 'brave' | 'firefox';
 type Candidate = { engine: Exclude<BrowserEngine, 'auto'>; launch: () => Promise<Browser> };
@@ -124,7 +125,7 @@ async function existingBraveExecutable(): Promise<string | undefined> {
 }
 
 function launchOptions(proxyServer: string): LaunchOptions {
-  return { headless: true, proxy: { server: proxyServer } };
+  return { headless: true, proxy: { server: proxyServer }, env: subprocessEnvironment(true) };
 }
 
 export async function launchBrowser(engine: BrowserEngine, proxyServer: string, signal?: AbortSignal): Promise<{ browser: Browser; engine: Exclude<BrowserEngine, 'auto'> }> {

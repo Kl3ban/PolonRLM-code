@@ -7,20 +7,26 @@ import { z } from 'zod';
 import type { ToolRegistry } from './registry.js';
 import type { Workspace } from './workspace.js';
 import { contentHash } from './checkpoints.js';
+import { createTwoFilesPatch } from 'diff';
 
 export function registerCodeTools(registry: ToolRegistry, workspace: Workspace): void {
   const position = z.object({ path: z.string(), line: z.number().int().positive(), column: z.number().int().positive() });
   async function project(filename: string) {
     const target = await workspace.resolve(filename);
-    const listed = await execa(rgPath, ['--files', '--glob', '*.{ts,tsx,js,jsx,mts,cts,json}', '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.polonrlm', '--glob', '!.januszgpt'], { cwd: workspace.root, windowsHide: true, timeout: 10000, maxBuffer: 1000000, reject: false });
+    const listed = await execa(rgPath, ['--files', '--glob', '*.{ts,tsx,js,jsx,mts,cts,mjs,cjs,json}', '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.polonrlm', '--glob', '!.januszgpt'], { cwd: workspace.root, windowsHide: true, timeout: 10000, maxBuffer: 1000000, reject: false });
     if (listed.exitCode !== 0 && listed.exitCode !== 1) throw new Error(`Code indexing failed (ripgrep exit ${listed.exitCode ?? 'unknown'}): ${listed.stderr || listed.shortMessage}`);
     const paths = [...new Set([filename, ...listed.stdout.split(/\r?\n/).filter(Boolean)])];
     if (paths.length > 500) throw new Error('Project exceeds the 500-file index limit. Narrow the workspace.');
     const files = new Map<string, string>(); let size = 0;
     for (const name of paths) { const resolved = await workspace.resolve(name); const text = await workspace.readText(name); size += Buffer.byteLength(text); if (size > 20000000) throw new Error('Code index exceeds 20 MB.'); files.set(resolved, text); }
     const lib = path.dirname(ts.getDefaultLibFilePath({}));
-    const allowed = (name: string) => { try { const actual = realpathSync(name); return path.dirname(actual) === lib && /^lib\..*\.d\.ts$/.test(path.basename(actual)); } catch { return false; } };
-    const read = (name: string) => files.get(path.resolve(name)) ?? (allowed(name) ? ts.sys.readFile(name) : undefined);
+    let dependencyRoot: string | undefined;
+    try { dependencyRoot = realpathSync(path.join(workspace.root, 'node_modules')); } catch { /* A dependency-free project is valid. */ }
+    const inside = (root: string, filename: string) => { const relative = path.relative(root, filename); return !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative); };
+    const allowed = (name: string) => { try { const actual = realpathSync(name); return path.dirname(actual) === lib && /^lib\..*\.d\.ts$/.test(path.basename(actual)) || !!dependencyRoot && inside(dependencyRoot, actual) && /(?:\.d\.[cm]?ts|\.json)$/i.test(actual); } catch { return false; } };
+    const typeFiles = new Map<string, string | undefined>();
+    const read = (name: string) => { const filename = path.resolve(name); if (files.has(filename)) return files.get(filename); if (!typeFiles.has(filename)) typeFiles.set(filename, allowed(filename) ? ts.sys.readFile(filename) : undefined); return typeFiles.get(filename); };
+    const allowedDirectory = (name: string) => { try { const actual = realpathSync(name); return inside(workspace.root, actual) || actual === lib || !!dependencyRoot && inside(dependencyRoot, actual); } catch { return false; } };
     const options: ts.CompilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, allowJs: true, checkJs: true, skipLibCheck: true, noEmit: true };
     const config = files.get(path.join(workspace.root, 'tsconfig.json'));
     if (config) {
@@ -28,13 +34,13 @@ export function registerCodeTools(registry: ToolRegistry, workspace: Workspace):
       if (parsed.error) throw new Error(ts.flattenDiagnosticMessageText(parsed.error.messageText, '\n'));
       Object.assign(options, ts.convertCompilerOptionsFromJson(parsed.config.compilerOptions ?? {}, workspace.root).options, { noEmit: true });
     }
-    const host: ts.LanguageServiceHost = { getScriptFileNames: () => [...files.keys()].filter(name => /\.[cm]?[jt]sx?$/.test(name)), getScriptVersion: () => '1', getScriptSnapshot: name => { const text = read(name); return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text); }, getCurrentDirectory: () => workspace.root, getCompilationSettings: () => options, getDefaultLibFileName: options => ts.getDefaultLibFilePath(options), fileExists: name => read(name) !== undefined, readFile: read, readDirectory: () => [...files.keys()] };
+    const host: ts.LanguageServiceHost = { getScriptFileNames: () => [...files.keys()].filter(name => /\.[cm]?[jt]sx?$/.test(name)), getScriptVersion: () => '1', getScriptSnapshot: name => { const text = read(name); return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text); }, getCurrentDirectory: () => workspace.root, getCompilationSettings: () => options, getDefaultLibFileName: options => ts.getDefaultLibFilePath(options), fileExists: name => read(name) !== undefined, readFile: read, readDirectory: () => [...files.keys()], directoryExists: name => allowedDirectory(name) && ts.sys.directoryExists(name), getDirectories: name => allowedDirectory(name) ? ts.sys.getDirectories(name).filter(directory => allowedDirectory(path.join(name, directory))) : [] };
     const service = ts.createLanguageService(host);
     const source = service.getProgram()?.getSourceFile(target);
     if (!source) { service.dispose(); throw new Error('Supported files: TypeScript and JavaScript.'); }
     return { service, source, target, files };
   }
-  const offset = (source: ts.SourceFile, line: number, column: number) => { if (line > source.getLineStarts().length) throw new Error('Line is outside the file.'); const at = source.getPositionOfLineAndCharacter(line - 1, column - 1); if (at > source.text.length) throw new Error('Column is outside the file.'); return at; };
+  const offset = (source: ts.SourceFile, line: number, column: number) => { const starts = source.getLineStarts(); if (line > starts.length) throw new Error('Line is outside the file.'); const start = starts[line - 1]!, end = starts[line] ?? source.text.length; const text = source.text.slice(start, end).replace(/[\r\n]+$/, ''); if (column > text.length + 1) throw new Error('Column is outside this line; positions are 1-based UTF-16.'); return start + column - 1; };
   const location = (file: string, span: ts.TextSpan, service: ts.LanguageService) => { const source = service.getProgram()?.getSourceFile(file); const pos = source?.getLineAndCharacterOfPosition(span.start); return { path: path.relative(workspace.root, file), line: pos ? pos.line + 1 : undefined, column: pos ? pos.character + 1 : undefined, start: span.start, length: span.length }; };
   registry.add('code_diagnostics', 'Real TypeScript/JavaScript syntactic and semantic diagnostics from the TypeScript language service. Disk files only; no arbitrary compiler plugins.', z.object({ path: z.string() }), true, async args => {
     const p = await project(args.path); try { return [...p.service.getSyntacticDiagnostics(p.target), ...p.service.getSemanticDiagnostics(p.target)].slice(0, 100).map(d => ({ ...location(p.target, { start: d.start ?? 0, length: d.length ?? 0 }, p.service), code: d.code, message: ts.flattenDiagnosticMessageText(d.messageText, '\n') })); } finally { p.service.dispose(); }
@@ -56,7 +62,7 @@ export function registerCodeTools(registry: ToolRegistry, workspace: Workspace):
   for (const name of ['symbol_definition', 'symbol_references', 'symbol_hover'] as const) registry.add(name, 'TypeScript/JavaScript semantic symbol navigation. Positions are 1-based UTF-16.', position, true, async args => {
     const p = await project(args.path); try { const at = offset(p.source, args.line, args.column); if (name === 'symbol_hover') { const info = p.service.getQuickInfoAtPosition(p.target, at); return info ? { text: ts.displayPartsToString(info.displayParts), documentation: ts.displayPartsToString(info.documentation) } : { found: false }; } const found = name === 'symbol_definition' ? p.service.getDefinitionAtPosition(p.target, at) : p.service.getReferencesAtPosition(p.target, at); return (found ?? []).slice(0, 100).map(item => location(item.fileName, item.textSpan, p.service)); } finally { p.service.dispose(); }
   });
-  registry.add('rename_symbol', 'Semantically rename a TypeScript/JavaScript symbol across indexed workspace files. Preview with apply=false in any mode; applying requires BUILD and follows the configured write permission policy. Applying uses permission-checked atomic file writes and stale-content checks; multi-file changes may be partial.', position.extend({ newName: z.string().regex(/^[A-Za-z_$][\w$]*$/), apply: z.boolean().default(false) }), false, async (args, context) => {
+  registry.add('rename_symbol', 'Semantically rename a TypeScript/JavaScript symbol across indexed workspace files. Preview with apply=false in any mode; applying requires BUILD and follows the configured write permission policy. Applying uses one permission-checked transaction, preflights stale content and rolls back earlier writes after a later failure. Preview returns hashes and a small unified diff.', position.extend({ newName: z.string().regex(/^[A-Za-z_$][\w$]*$/), apply: z.boolean().default(false) }), false, async (args, context) => {
     const p = await project(args.path); try {
       const at = offset(p.source, args.line, args.column); const info = p.service.getRenameInfo(p.target, at);
       if (!info.canRename) throw new Error(info.localizedErrorMessage);
@@ -64,10 +70,8 @@ export function registerCodeTools(registry: ToolRegistry, workspace: Workspace):
       const groups = new Map<string, ts.RenameLocation[]>();
       for (const item of found) { const file = path.resolve(item.fileName); if (!p.files.has(file)) throw new Error('Rename target is outside the project index.'); const group = groups.get(file) ?? []; group.push(item); groups.set(file, group); }
       const changes = [...groups].map(([file, edits]) => { const before = p.files.get(file)!; let after = before; for (const edit of edits.sort((a,b) => b.textSpan.start-a.textSpan.start)) after = after.slice(0, edit.textSpan.start) + (edit.prefixText ?? '') + args.newName + (edit.suffixText ?? '') + after.slice(edit.textSpan.start + edit.textSpan.length); const parsed = ts.createSourceFile(file, after, ts.ScriptTarget.Latest, true) as ts.SourceFile & { parseDiagnostics: ts.Diagnostic[] }; if (parsed.parseDiagnostics.length) throw new Error('Rename would introduce a syntax error.'); return { path: path.relative(workspace.root, file), before, after }; });
-      if (!args.apply) return changes.map(change => ({ path: change.path, beforeHash: contentHash(change.before), preview: change.after.slice(0, 3000) }));
-      const applied: string[] = [];
-      for (const change of changes) { context.signal.throwIfAborted(); try { await workspace.change('rename_symbol', change.path, current => { if (current !== change.before) throw new Error('File changed since analysis.'); return change.after; }, context.mode, context.signal); applied.push(change.path); } catch (error: any) { return { applied, failed: change.path, error: error.message }; } }
-      return { applied };
+      if (!args.apply) return changes.map(change => { const diff = createTwoFilesPatch(change.path, change.path, change.before, change.after, undefined, undefined, { context: 3 }); return { path: change.path, beforeHash: contentHash(change.before), afterHash: contentHash(change.after), preview: diff.slice(0, 3000), truncated: diff.length > 3000 }; });
+      return workspace.applyChangesAtomically('rename_symbol', changes, context.mode, context.signal);
     } finally { p.service.dispose(); }
   }, args => args.apply === true);
   registry.add('code_outline', 'List declaration names, AST kinds and source positions for a TypeScript/JavaScript file.', z.object({ path: z.string() }), true, async args => {

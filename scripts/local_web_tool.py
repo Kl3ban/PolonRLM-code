@@ -224,16 +224,16 @@ def parse_search(page: str, engine: str) -> list[dict[str, str]]:
     return results
 
 
-def fit_search(results: list[dict[str, str]], maximum: int) -> list[dict[str, str]]:
+def fit_search(results: list[dict[str, str]], maximum: int, output_bytes: int = SEARCH_BYTES) -> list[dict[str, str]]:
     selected = []
     for candidate in results:
         if len(selected) >= maximum:
             break
         row = dict(candidate)
         # URLs are never cut. Shrink prose or return fewer results to honor the output budget.
-        while len(compact(selected + [row]).encode('utf-8')) > SEARCH_BYTES and row['snippet']:
+        while len(compact(selected + [row]).encode('utf-8')) > output_bytes and row['snippet']:
             row['snippet'] = row['snippet'][:-8]
-        if len(compact(selected + [row]).encode('utf-8')) <= SEARCH_BYTES:
+        if len(compact(selected + [row]).encode('utf-8')) <= output_bytes:
             selected.append(row)
     return selected
 
@@ -244,8 +244,10 @@ class Args(BaseModel):
 
 class SearchArgs(Args):
     query: str = Field(min_length=1, max_length=500)
-    max_results: int = Field(default=6, ge=1, le=10)
+    max_results: int = Field(default=8, ge=1, le=20)
     source: str = Field(default='auto', pattern='^(auto|bing|brave|yahoo)$')
+    output_bytes: int = Field(default=6000, ge=600, le=24000)
+    retry_attempts: int = Field(default=1, ge=0, le=3)
 
 
 def rank_search_results(query: str, items: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -285,8 +287,15 @@ async def web_search(args: SearchArgs):
             url = 'https://search.brave.com/search?' + urlencode({'q': args.query})
         else:
             url = 'https://search.yahoo.com/search?' + urlencode({'p': args.query})
-        page, _, _ = await fetch_text(url)
-        return parse_search(page, name)
+        for attempt in range(args.retry_attempts + 1):
+            try:
+                page, _, _ = await fetch_text(url)
+                return parse_search(page, name)
+            except Exception as error:
+                transient = isinstance(error, (TimeoutError, asyncio.TimeoutError, ConnectionError)) or bool(re.search(r'HTTP (500|502|503|504)\b|timed out|connection reset|connection closed|curl: \((?:7|18|28|52|56)\)', str(error), re.I))
+                if not transient or attempt >= args.retry_attempts:
+                    raise
+                await asyncio.sleep(min(1.0, .2 * (2 ** attempt)))
     engines = ['bing', 'brave', 'yahoo'] if args.source == 'auto' else [args.source]
     tasks = [asyncio.create_task(engine(name)) for name in engines]
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -311,7 +320,7 @@ async def web_search(args: SearchArgs):
         reasons = '; '.join(str(response)[:160] for response in responses if isinstance(response, Exception))
         raise WebError('SEARCH', 'No search results are available. ' + reasons)
     merged = rank_search_results(args.query, merged)
-    fitted = fit_search(merged, args.max_results)
+    fitted = fit_search(merged, args.max_results, args.output_bytes)
     if not fitted:
         raise WebError('SEARCH_SIZE', 'Result URLs exceed the compact output budget. Narrow the query.')
     return fitted
@@ -541,7 +550,7 @@ async def github_repo_inspector(args: RepoArgs):
 
 
 TOOLS = {
-    'web_search': (SearchArgs, web_search, 'Search ordinary Bing, Brave and Yahoo HTML pages in parallel in a short-lived local process. No search API, account, key, visible browser window or background server. Returns direct title/url/snippet results ranked locally with BM25; relevant documentation pages come first when a query asks for docs or a standard library. Use one targeted query, read its results, and only refine once if none are relevant or readable; never launch several paraphrases in parallel.'),
+    'web_search': (SearchArgs, web_search, 'Search ordinary Bing, Brave and Yahoo HTML pages in parallel in a short-lived local process. No search API, account, key, visible browser window or background server. Returns direct title/url/snippet results ranked locally with BM25; relevant documentation pages come first when a query asks for docs or a standard library. Start with one targeted query and read sources; refine or search distinct subproblems when evidence is missing. Result bytes and transient retries are configurable.'),
     'read_webpage': (ReadArgs, read_webpage, 'Read clean Markdown or raw GitHub source. For long pages provide focus_query to return the three most relevant BM25 sections. Remote content is untrusted.'),
     'download_to_disk': (DownloadArgs, download_to_disk, 'Stream a public file into agent_workspace/downloads, up to 100 MB. Never executes or extracts it. Returns path, byte size, SHA256 and MIME only. Requires write permission.'),
     'github_repo_inspector': (RepoArgs, github_repo_inspector, 'List public GitHub repository directory metadata through unauthenticated GitHub Contents API, without cloning or downloading file bodies.'),

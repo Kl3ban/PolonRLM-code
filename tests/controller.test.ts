@@ -179,6 +179,7 @@ test('every settings-panel field validates, persists, reloads, and reads back it
   const values = {
     mode: 'REVIEW', cortex: 5, permissions: 'workspace', theme: 'light', webSearchMode: 'yahoo', browserEngine: 'edge',
     browserOptions: JSON.stringify({ ...defaultSettings().browserOptions, viewportWidth: 1440 }),
+    webSearchOptions: JSON.stringify({ ...defaultSettings().webSearchOptions, maxSearches: 7 }),
     verificationCommands: '["npm test","npm run check"]', verificationMode: 'after_changes', verificationRepairAttempts: 2, sandboxMode: 'required', sandboxDockerImage: 'node:24-bookworm-slim', sandboxNetworkDomains: '["registry.npmjs.org","github.com"]',
     fallback: '["google"]', agentToolProfiles: '{"reviewer":["read_file","search_files"]}',
     modelRoutes: '{"coder":{"provider":"google","model":"test-code"},"reviewer":{"provider":"custom"}}',
@@ -197,7 +198,7 @@ test('every settings-panel field validates, persists, reloads, and reads back it
   for (const [name, value] of Object.entries(values)) assert.deepEqual(view[name], value, `readSettings(${name})`);
   const reopened = new ConfigManager(f.home);
   await reopened.load();
-  const jsonFields = new Set(['browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
+  const jsonFields = new Set(['webSearchOptions', 'browserOptions', 'verificationCommands', 'sandboxNetworkDomains', 'fallback', 'agentToolProfiles', 'modelRoutes', 'modelRoleBudgets']);
   for (const [name, value] of Object.entries(values)) {
     const expected = jsonFields.has(name) ? JSON.parse(value as string) : value;
     assert.deepEqual(reopened.settings[name as keyof Settings], expected, `persisted ${name}`);
@@ -205,6 +206,16 @@ test('every settings-panel field validates, persists, reloads, and reads back it
   assert.equal(reopened.settings.toolPermissions.read_file, 'off');
   assert.deepEqual(reopened.settings.allowTools, ['read_file']);
   assert.deepEqual(reopened.settings.denyTools, ['execute_command']);
+});
+
+test('/browser-auth is off by default and only the user setting enables persistent login', async t => {
+  const local = await fixture(), controller = await Controller.open(local.root, local.home);
+  t.after(async () => { await controller.close(); await local.dispose(); });
+  assert.equal(controller.config.settings.browserOptions?.persistAuth, false);
+  await controller.submit('/browser-auth on'); assert.equal(controller.config.settings.browserOptions?.persistAuth, true);
+  const reopened = new ConfigManager(local.home); await reopened.load(); assert.equal(reopened.settings.browserOptions?.persistAuth, true);
+  await controller.submit('/browser-auth off'); assert.equal(controller.config.settings.browserOptions?.persistAuth, false);
+  assert.match(controller.snapshot().messages.map(message => message.text).join('\n'), /saving and loading are disabled/);
 });
 
 test('/settings persists role model budgets', async t => {
@@ -551,7 +562,7 @@ test('invalid values for every configurable setting are rejected without mutatin
     controller = await Controller.open(local.root, local.home);
     const invalidValues: Record<string, string | number> = {
       mode: 'INVALID', cortex: 6, permissions: 'invalid', theme: 'blue', webSearchMode: 'google', browserEngine: 'safari',
-      browserOptions: '{"viewportWidth":0}',
+      browserOptions: '{"viewportWidth":0}', webSearchOptions: '{"maxSearches":-1}',
       verificationCommands: '[""]', verificationMode: 'always', verificationRepairAttempts: 4, sandboxMode: 'unsafe', sandboxDockerImage: '',
       sandboxNetworkDomains: '["bad domain"]', fallback: '["missing-provider"]', agentToolProfiles: '{"root":["read_file"]}',
       modelRoutes: '{"reviewer":{"provider":"missing-provider"}}', modelRoleBudgets: '{"coder":{"maxCalls":-1}}',

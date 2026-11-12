@@ -103,6 +103,9 @@ With no configured verification commands, `/verify` detects standard scripts in 
 | `/cost` | Shows token use and known provider costs. Unknown prices stay marked unknown. |
 | `/settings browserEngine auto` | Lets PolonRLM choose an available browser. |
 | `/settings browserOptions {"viewportWidth":1440,"timeoutMs":15000}` | Changes defaults for new browser sessions. More options and examples are in [BROWSER.md](BROWSER.md). |
+| `/browser-auth on` | Enables encrypted login save/load for the app's separate browser. Off by default; the agent must still explicitly save a named state. |
+| `/browser-auth off` | Disables login save/load. Keeps encrypted files and active session cookies until separately deleted or closed. With no argument, shows status. |
+| `/settings webSearchOptions {"maxSearches":0,"resultBytes":6000,"maxResults":8,"retries":1}` | Sets local search output and transient retries. `maxSearches: 0` leaves task search count unlimited. |
 | `/settings browserEngine firefox` | Selects Playwright Firefox. It downloads on first use if needed. |
 | `PolonRLM setup web` | Prepares the local Python web search helper. |
 

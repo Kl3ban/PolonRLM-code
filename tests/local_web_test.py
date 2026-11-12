@@ -121,6 +121,33 @@ class LocalWebTests(unittest.IsolatedAsyncioTestCase):
         ordinary_query = web.rank_search_results('Rust Vec push', results)
         self.assertEqual(ordinary_query[0]['url'], results[2]['url'])
 
+    def test_search_output_budget_is_configurable_and_keeps_complete_urls(self):
+        results = [{'title': 'Source ' + str(i), 'url': 'https://example.org/source/' + str(i), 'snippet': 'Relevant source details. ' * 8} for i in range(20)]
+        small = web.fit_search(results, 20, 600)
+        larger = web.fit_search(results, 20, 6000)
+        self.assertGreater(len(larger), len(small))
+        self.assertLessEqual(len(web.compact(small).encode()), 600)
+        self.assertLessEqual(len(web.compact(larger).encode()), 6000)
+        self.assertTrue(all(row['url'] in {item['url'] for item in results} for row in small + larger))
+
+    async def test_search_retries_transient_source_errors_but_not_forbidden_responses(self):
+        page = '<div class="snippet"><a href="https://example.org/source"><h3>Retry source</h3></a><p class="snippet-description">Recovered result</p></div>'
+        attempts = 0
+        async def fetch(url):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise web.WebError('HTTP', 'HTTP 503.')
+            return page, url, 'text/html'
+        with patch.object(web, 'fetch_text', side_effect=fetch), patch.object(web.asyncio, 'sleep', return_value=None):
+            result = await web.web_search(web.SearchArgs(query='retry source', source='brave', retry_attempts=1))
+        self.assertEqual(attempts, 2)
+        self.assertEqual(result[0]['url'], 'https://example.org/source')
+        with patch.object(web, 'fetch_text', side_effect=web.WebError('HTTP', 'HTTP 403.')) as forbidden:
+            with self.assertRaises(web.WebError):
+                await web.web_search(web.SearchArgs(query='retry source', source='brave', retry_attempts=3))
+        self.assertEqual(forbidden.call_count, 1)
+
     def test_compact_results_keep_valid_complete_urls(self):
         source = [{'title': 'Polski tytuł ' * 4, 'url': 'https://example.org/' + str(i), 'snippet': 'ą' * 180} for i in range(10)]
         result = web.fit_search(source, 6)

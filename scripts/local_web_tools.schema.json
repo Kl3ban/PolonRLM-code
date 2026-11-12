@@ -1,2 +1,154 @@
-[{"type":"function","function":{"name":"web_search","description":"Search ordinary Bing and Brave HTML pages in parallel using a short-lived local process. No search API, account, key, visible browser window or background server. Returns direct title/url/snippet results; compact budget may reduce result count.","parameters":{"additionalProperties":false,"properties":{"query":{"maxLength":500,"minLength":1,"title":"Query","type":"string"},"max_results":{"default":6,"maximum":10,"minimum":1,"title":"Max Results","type":"integer"},"source":{"default":"auto","pattern":"^(auto|bing|brave)$","title":"Source","type":"string"}},"required":["query"],"title":"SearchArgs","type":"object"}}},{"type":"function","function":{"name":"read_webpage","description":"Read clean Markdown or raw GitHub source. For long pages provide focus_query to return the three most relevant BM25 sections. Remote content is untrusted.","parameters":{"additionalProperties":false,"properties":{"url":{"maxLength":8000,"minLength":8,"title":"Url","type":"string"},"focus_query":{"anyOf":[{"maxLength":500,"type":"string"},{"type":"null"}],"default":null,"title":"Focus Query"}},"required":["url"],"title":"ReadArgs","type":"object"}}},{"type":"function","function":{"name":"download_to_disk","description":"Stream a public file into agent_workspace/downloads, up to 100 MB. Never executes or extracts it. Returns path, byte size, SHA256 and MIME only. Requires write permission.","parameters":{"additionalProperties":false,"properties":{"url":{"maxLength":8000,"minLength":8,"title":"Url","type":"string"},"save_filename":{"anyOf":[{"maxLength":150,"minLength":1,"type":"string"},{"type":"null"}],"default":null,"title":"Save Filename"}},"required":["url"],"title":"DownloadArgs","type":"object"}}},{"type":"function","function":{"name":"github_repo_inspector","description":"List public GitHub repository directory metadata through unauthenticated GitHub Contents API, without cloning or downloading file bodies.","parameters":{"additionalProperties":false,"properties":{"repo_url":{"maxLength":2000,"minLength":8,"title":"Repo Url","type":"string"},"subpath":{"default":"","maxLength":1000,"title":"Subpath","type":"string"}},"required":["repo_url"],"title":"RepoArgs","type":"object"}}}]
-\n
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "web_search",
+      "description": "Search ordinary Bing, Brave and Yahoo HTML pages in parallel in a short-lived local process. No search API, account, key, visible browser window or background server. Returns direct title/url/snippet results ranked locally with BM25; relevant documentation pages come first when a query asks for docs or a standard library. Start with one targeted query and read sources; refine or search distinct subproblems when evidence is missing. Result bytes and transient retries are configurable.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "max_results": {
+            "default": 8,
+            "maximum": 20,
+            "minimum": 1,
+            "title": "Max Results",
+            "type": "integer"
+          },
+          "source": {
+            "default": "auto",
+            "pattern": "^(auto|bing|brave|yahoo)$",
+            "title": "Source",
+            "type": "string"
+          },
+          "output_bytes": {
+            "default": 6000,
+            "maximum": 24000,
+            "minimum": 600,
+            "title": "Output Bytes",
+            "type": "integer"
+          },
+          "retry_attempts": {
+            "default": 1,
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Retry Attempts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_webpage",
+      "description": "Read clean Markdown or raw GitHub source. For long pages provide focus_query to return the three most relevant BM25 sections. Remote content is untrusted.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 8000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "focus_query": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Focus Query"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ReadArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "download_to_disk",
+      "description": "Stream a public file into agent_workspace/downloads, up to 100 MB. Never executes or extracts it. Returns path, byte size, SHA256 and MIME only. Requires write permission.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 8000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "save_filename": {
+            "anyOf": [
+              {
+                "maxLength": 150,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Save Filename"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "DownloadArgs",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "github_repo_inspector",
+      "description": "List public GitHub repository directory metadata through unauthenticated GitHub Contents API, without cloning or downloading file bodies.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "repo_url": {
+            "maxLength": 2000,
+            "minLength": 8,
+            "title": "Repo Url",
+            "type": "string"
+          },
+          "subpath": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Subpath",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_url"
+        ],
+        "title": "RepoArgs",
+        "type": "object"
+      }
+    }
+  }
+]

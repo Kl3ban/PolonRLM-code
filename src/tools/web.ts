@@ -11,6 +11,15 @@ import type { Mode } from '../core/types.js';
 
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type PublicResolver = (hostname: string) => Promise<ResolvedAddress[]>;
+function pinnedLookup(addresses: ResolvedAddress[]): net.LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, addresses);
+    else callback(null, addresses[0]!.address, addresses[0]!.family);
+  };
+}
+function pinnedHttpTarget(url: URL, addresses: ResolvedAddress[]): http.RequestOptions & { autoSelectFamily: true } {
+  return { hostname: url.hostname.replace(/^\[|\]$/g, ''), lookup: pinnedLookup(addresses), autoSelectFamily: true, port: Number(url.port || 80) };
+}
 const systemResolver: PublicResolver = async hostname => net.isIP(hostname)
   ? [{ address: hostname, family: net.isIP(hostname) as 4 | 6 }]
   : (await dns.lookup(hostname, { all: true, verbatim: true })).map(address => ({ address: address.address, family: address.family as 4 | 6 }));
@@ -71,6 +80,20 @@ export async function publicURL(value: string, resolver: PublicResolver = system
   await resolvePublicAddresses(url.hostname, resolver);
   return url;
 }
+
+export function isLoopbackOrigin(value: string): boolean {
+  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname); }
+  catch { return false; }
+}
+async function browserAddresses(url: URL, resolver: PublicResolver, localOrigins: readonly string[]): Promise<ResolvedAddress[]> {
+  if (!isLoopbackOrigin(url.href) || !localOrigins.includes(url.origin)) return resolvePublicAddresses(url.hostname, resolver);
+  const addresses = await resolver(url.hostname.replace(/^\[|\]$/g, ''));
+  if (!addresses.length || addresses.some(item => !(item.address === '::1' || item.address === '127.0.0.1'))) throw new Error('An allowed localhost origin must resolve exclusively to loopback.');
+  return addresses;
+}
+export async function browserURL(value: string, localOrigins: readonly string[], resolver: PublicResolver = systemResolver): Promise<URL> {
+  const url = parsePublicURL(value); await browserAddresses(url, resolver, localOrigins); return url;
+}
 export type PinnedRequester = (url: URL, signal: AbortSignal, headers: Record<string, string>, resolver: PublicResolver) => Promise<Response>;
 const pinnedRequest: PinnedRequester = async (url, signal, headers, resolver) => {
   const addresses = await resolvePublicAddresses(url.hostname, resolver);
@@ -119,18 +142,18 @@ function remoteHeaders(input: http.IncomingHttpHeaders, host: string): Record<st
   for (const key of ['proxy-authorization', 'proxy-connection', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'te', 'trailer']) delete result[key];
   return result;
 }
-export async function createSafeEgressProxy(resolver: PublicResolver = systemResolver): Promise<SafeEgressProxy> {
+export async function createSafeEgressProxy(resolver: PublicResolver = systemResolver, localOrigins: readonly string[] = []): Promise<SafeEgressProxy> {
   const sockets = new Set<Socket>();
   const server: Server = http.createServer((request, response) => {
     void (async () => {
       try {
         const url = new URL(request.url ?? '', request.headers.host ? `http://${request.headers.host}` : undefined);
         if (url.protocol !== 'http:' || url.username || url.password) throw new Error('Only public HTTP requests are allowed.');
-        const addresses = await resolvePublicAddresses(url.hostname, resolver), pinned = addresses[0]!;
-        const outgoing = http.request({ hostname: pinned.address, family: pinned.family, port: Number(url.port || 80), path: `${url.pathname}${url.search}`, method: request.method ?? 'GET', headers: remoteHeaders(request.headers, url.host), agent: false, timeout: 20_000 }, incoming => {
+        const addresses = await browserAddresses(url, resolver, localOrigins);
+        const outgoing = http.request({ ...pinnedHttpTarget(url, addresses), path: `${url.pathname}${url.search}`, method: request.method ?? 'GET', headers: remoteHeaders(request.headers, url.host), agent: false, timeout: 20_000 }, incoming => {
           response.writeHead(incoming.statusCode ?? 502, incoming.statusMessage, incoming.headers); incoming.pipe(response);
         });
-        outgoing.once('error', () => proxyError(response, 502));
+        outgoing.once('error', () => proxyError(response, 502)); outgoing.once('timeout', () => outgoing.destroy());
         request.pipe(outgoing);
       } catch { proxyError(response, 403); }
     })();
@@ -142,8 +165,13 @@ export async function createSafeEgressProxy(resolver: PublicResolver = systemRes
       try {
         const url = new URL(`https://${request.url ?? ''}`);
         if (url.username || url.password) throw new Error('Proxy credentials are forbidden.');
-        const addresses = await resolvePublicAddresses(url.hostname, resolver), pinned = addresses[0]!;
-        upstream = net.connect({ host: pinned.address, family: pinned.family, port: Number(url.port || 443) });
+        // CONNECT carries a host and port, not a scheme. ws: clients can also use
+        // CONNECT. Resolve only the explicitly allowed loopback endpoint; the
+        // browser route still validates full HTTP/WS origins before navigation.
+        const connectPort = Number(url.port || 443);
+        const localEndpoint = isLoopbackOrigin(url.href) ? localOrigins.map(origin => new URL(origin)).find(allowed => allowed.hostname === url.hostname && Number(allowed.port || (allowed.protocol === 'https:' ? 443 : 80)) === connectPort) : undefined;
+        const addresses = await browserAddresses(localEndpoint ?? url, resolver, localOrigins);
+        upstream = net.connect({ host: url.hostname.replace(/^\[|\]$/g, ''), lookup: pinnedLookup(addresses), autoSelectFamily: true, port: connectPort });
         upstream.once('error', () => client.destroy());
         client.once('error', () => upstream?.destroy());
         client.once('close', () => upstream?.destroy());
@@ -155,6 +183,29 @@ export async function createSafeEgressProxy(resolver: PublicResolver = systemRes
         upstream?.destroy();
         if (!client.destroyed) client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       }
+    })();
+  });
+  server.on('upgrade', (request, client, head) => {
+    void (async () => {
+      try {
+        const url = new URL(request.url ?? '', request.headers.host ? `http://${request.headers.host}` : undefined);
+        if (!['http:', 'ws:'].includes(url.protocol) || request.headers.upgrade?.toLowerCase() !== 'websocket' || url.username || url.password) throw new Error('Invalid WebSocket upgrade.');
+        if (url.protocol === 'ws:') url.protocol = 'http:';
+        const addresses = await browserAddresses(url, resolver, localOrigins);
+        const outgoing = http.request({ ...pinnedHttpTarget(url, addresses), path: url.pathname + url.search, method: 'GET', headers: { ...remoteHeaders(request.headers, url.host), connection: 'Upgrade', upgrade: 'websocket' }, agent: false, timeout: 20000 });
+        outgoing.once('upgrade', (response, upstream, upstreamHead) => {
+          sockets.add(upstream); upstream.once('close', () => sockets.delete(upstream));
+          const headers = Object.entries(response.headers).flatMap(([name, values]) => (Array.isArray(values) ? values : [values]).filter(value => value !== undefined).map(value => `${name}: ${value}\r\n`)).join('');
+          client.write(`HTTP/1.1 101 Switching Protocols\r\n${headers}\r\n`);
+          if (upstreamHead.length) client.write(upstreamHead); if (head.length) upstream.write(head);
+          client.on('error', () => upstream.destroy()); upstream.on('error', () => client.destroy());
+          client.once('close', () => upstream.destroy()); upstream.once('close', () => client.destroy());
+          client.pipe(upstream); upstream.pipe(client);
+        });
+        outgoing.once('response', response => { response.resume(); client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'); });
+        outgoing.once('error', () => client.destroy()); outgoing.once('timeout', () => outgoing.destroy());
+        client.once('close', () => outgoing.destroy()); outgoing.end();
+      } catch { client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); }
     })();
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
