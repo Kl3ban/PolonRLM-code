@@ -371,6 +371,7 @@ test('empty model replies retry with a recovery instruction and retain usage', a
     calls++;
     if (calls === 1) return reply('');
     assert.match(messages.at(-1)?.content ?? '', /previous response was empty/i);
+    assert.match(messages.at(-1)?.content ?? '', /Original task/);
     return reply('Recovered from empty response.');
   }, {}, 0);
   assert.equal(await h.runtime.run(h.session, 'Answer briefly.', new AbortController().signal), 'Recovered from empty response.');

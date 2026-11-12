@@ -752,6 +752,7 @@ ${skills.join('\n')}`;
       let reply: ModelReply | undefined;
       let respondingModel = providerConfig.model;
       let visiblePartial = '';
+      let emptyContextReset = false;
       // Do not stream a factual conclusion after known unreadable sources. Tool calls may still recover.
       const holdUnverified = factualResearch && (searchedWeb || attemptedWebRead) && !readableWebSource;
       try {
@@ -798,7 +799,11 @@ ${skills.join('\n')}`;
                 this.emit({ type: 'usage', usage: { ...budget.usage } });
                 budget.reserved -= reserve; budget.reservedCost -= reserveCost; roleUsage.reservedTokens -= reserve; roleUsage.reservedCost -= reserveCost; reservationCount--;
                 const error = new Error('The provider returned an empty response.'); error.name = 'EmptyProviderResponseError';
-                if (!messages.some(message => message.content === EMPTY_RESPONSE_RECOVERY)) {
+                if (!emptyContextReset) {
+                  emptyContextReset = true;
+                  messages.splice(0, messages.length, { role: 'user', content: `${EMPTY_RESPONSE_RECOVERY}\n\nOriginal task:\n${clip(task, 8_000)}` });
+                  input.splice(0, input.length, system, ...(recalled.message ? [recalled.message] : []), ...messages);
+                } else if (!messages.some(message => message.content === EMPTY_RESPONSE_RECOVERY)) {
                   messages.push({ role: 'user', content: EMPTY_RESPONSE_RECOVERY });
                   input.splice(0, input.length, system, ...(recalled.message ? [recalled.message] : []), ...messages);
                 }
